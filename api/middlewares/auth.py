@@ -35,7 +35,7 @@ def _path_exempt(path: str) -> bool:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Require valid session for /api/v1/* when auth is enabled."""
+    """Require valid session for /api/v1/* and /personal-api/* when auth is enabled."""
 
     async def dispatch(
         self,
@@ -49,7 +49,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _path_exempt(path):
             return await call_next(request)
 
-        if not path.startswith("/api/v1/"):
+        if not (path.startswith("/api/v1/") or path.startswith("/personal-api/")):
             return await call_next(request)
 
         cookie_val = request.cookies.get(COOKIE_NAME)

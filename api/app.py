@@ -393,6 +393,25 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     
     app.include_router(api_v1_router, prefix="/api/v1")
     add_error_handlers(app)
+
+    # ============================================================
+    # 个人扩展层 API（可选，默认启用）
+    # ============================================================
+    # 必须位于 SPA catch-all 之前，否则 /personal-api/* 会被前端回退吞掉。
+    # 个人层代码不在 upstream 内；不存在或导入失败时只降级并记录 warning。
+    _personal_enabled = os.environ.get("PERSONAL_API_ENABLED", "true").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    if _personal_enabled:
+        try:
+            _personal_root = Path(__file__).resolve().parents[2]
+            if str(_personal_root) not in sys.path:
+                sys.path.insert(0, str(_personal_root))
+            from personal.api.app import create_app as _create_personal_app
+            app.mount("/personal-api", _create_personal_app())
+            logger.info("Personal extension API mounted at /personal-api")
+        except Exception as exc:  # noqa: BLE001 - optional layer must not break upstream
+            logger.warning("Personal extension API not mounted: %s", exc)
     
     # ============================================================
     # 根路由和健康检查
