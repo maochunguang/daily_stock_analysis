@@ -1,0 +1,1357 @@
+diff --git a/api/app.py b/api/app.py
+index dd814e4..56e5e67 100644
+--- a/api/app.py
++++ b/api/app.py
+@@ -393,6 +393,25 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
+     
+     app.include_router(api_v1_router, prefix="/api/v1")
+     add_error_handlers(app)
++
++    # ============================================================
++    # 个人扩展层 API（可选，默认启用）
++    # ============================================================
++    # 必须位于 SPA catch-all 之前，否则 /personal-api/* 会被前端回退吞掉。
++    # 个人层代码不在 upstream 内；不存在或导入失败时只降级并记录 warning。
++    _personal_enabled = os.environ.get("PERSONAL_API_ENABLED", "true").strip().lower() not in {
++        "0", "false", "no", "off",
++    }
++    if _personal_enabled:
++        try:
++            _personal_root = Path(__file__).resolve().parents[2]
++            if str(_personal_root) not in sys.path:
++                sys.path.insert(0, str(_personal_root))
++            from personal.api.app import create_app as _create_personal_app
++            app.mount("/personal-api", _create_personal_app())
++            logger.info("Personal extension API mounted at /personal-api")
++        except Exception as exc:  # noqa: BLE001 - optional layer must not break upstream
++            logger.warning("Personal extension API not mounted: %s", exc)
+     
+     # ============================================================
+     # 根路由和健康检查
+diff --git a/api/middlewares/auth.py b/api/middlewares/auth.py
+index 6c8a221..7743eb5 100644
+--- a/api/middlewares/auth.py
++++ b/api/middlewares/auth.py
+@@ -35,7 +35,7 @@ def _path_exempt(path: str) -> bool:
+ 
+ 
+ class AuthMiddleware(BaseHTTPMiddleware):
+-    """Require valid session for /api/v1/* when auth is enabled."""
++    """Require valid session for /api/v1/* and /personal-api/* when auth is enabled."""
+ 
+     async def dispatch(
+         self,
+@@ -49,7 +49,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
+         if _path_exempt(path):
+             return await call_next(request)
+ 
+-        if not path.startswith("/api/v1/"):
++        if not (path.startswith("/api/v1/") or path.startswith("/personal-api/")):
+             return await call_next(request)
+ 
+         cookie_val = request.cookies.get(COOKIE_NAME)
+diff --git a/apps/dsa-web/src/App.tsx b/apps/dsa-web/src/App.tsx
+index c3a1338..1bd1728 100644
+--- a/apps/dsa-web/src/App.tsx
++++ b/apps/dsa-web/src/App.tsx
+@@ -20,6 +20,7 @@ import './App.css';
+ 
+ const HomePage = lazy(() => import('./pages/HomePage'));
+ const BacktestPage = lazy(() => import('./pages/BacktestPage'));
++const PersonalPage = lazy(() => import('./pages/PersonalPage'));
+ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+ const LoginPage = lazy(() => import('./pages/LoginPage'));
+ const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
+@@ -95,6 +96,7 @@ const routeChildren = [
+   { path: '/screening', element: <StockScreeningPage /> },
+   { path: '/data', element: <DataCenterPage /> },
+   { path: '/backtest', element: <BacktestPage /> },
++  { path: '/personal', element: <PersonalPage /> },
+   { path: '/alerts', element: <AlertsPage /> },
+   { path: '/usage', element: <TokenUsagePage /> },
+   { path: '/settings', element: <SettingsPage /> },
+diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
+new file mode 100644
+index 0000000..b64e9c0
+--- /dev/null
++++ b/apps/dsa-web/src/api/personal.ts
+@@ -0,0 +1,80 @@
++import type {
++  PersonalBacktestResponse,
++  PersonalPlugin,
++  PersonalQmtHealth,
++  PersonalStatus,
++  PersonalSyncResponse,
++  PersonalUpstreamRecent,
++} from '../types/personal';
++
++const BASE = '/personal-api/api';
++
++async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
++  const response = await fetch(`${BASE}${path}`, {
++    credentials: 'include',
++    headers: {
++      'Content-Type': 'application/json',
++      ...(init.headers ?? {}),
++    },
++    ...init,
++  });
++  const text = await response.text();
++  let payload: unknown = {};
++  if (text) {
++    try {
++      payload = JSON.parse(text);
++    } catch {
++      payload = { detail: text };
++    }
++  }
++  if (!response.ok) {
++    const detail =
++      payload && typeof payload === 'object' && 'detail' in payload
++        ? String((payload as { detail: unknown }).detail)
++        : `${response.status} ${response.statusText}`;
++    throw new Error(detail);
++  }
++  return payload as T;
++}
++
++export interface PersonalSyncRequest {
++  dataset: 'bars' | 'adjust';
++  source: string;
++  codes: string[] | null;
++  start: string | null;
++  end: string | null;
++}
++
++export interface PersonalDemoRequest {
++  days: number;
++  save: boolean;
++}
++
++export interface PersonalReplayRequest {
++  start: string | null;
++  end: string | null;
++  include: 'both' | 'analyses' | 'signals';
++  save: boolean;
++}
++
++export const personalApi = {
++  status: () => request<PersonalStatus>('/status'),
++  plugins: () => request<{ plugins: PersonalPlugin[]; errors: string[] }>('/plugins'),
++  sync: (body: PersonalSyncRequest) =>
++    request<PersonalSyncResponse>('/data/sync', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  demo: (body: PersonalDemoRequest) =>
++    request<PersonalBacktestResponse>('/backtest/demo', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  replay: (body: PersonalReplayRequest) =>
++    request<PersonalBacktestResponse>('/backtest/replay', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  upstreamRecent: () => request<PersonalUpstreamRecent>('/upstream/recent?limit=20'),
++  qmtHealth: () => request<PersonalQmtHealth>('/qmt/health'),
++};
+diff --git a/apps/dsa-web/src/components/layout/ShellHeader.tsx b/apps/dsa-web/src/components/layout/ShellHeader.tsx
+index e740de6..9507b45 100644
+--- a/apps/dsa-web/src/components/layout/ShellHeader.tsx
++++ b/apps/dsa-web/src/components/layout/ShellHeader.tsx
+@@ -18,6 +18,7 @@ const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
+   '/portfolio': { title: 'layout.route.portfolio.title', description: 'layout.route.portfolio.description' },
+   '/screening': { title: 'layout.route.screening.title', description: 'layout.route.screening.description' },
+   '/backtest': { title: 'layout.route.backtest.title', description: 'layout.route.backtest.description' },
++  '/personal': { title: 'layout.route.personal.title', description: 'layout.route.personal.description' },
+   '/alerts': { title: 'layout.route.alerts.title', description: 'layout.route.alerts.description' },
+   '/data': { title: 'layout.route.dataCenter.title', description: 'layout.route.dataCenter.description' },
+   '/usage': { title: 'layout.route.usage.title', description: 'layout.route.usage.description' },
+diff --git a/apps/dsa-web/src/components/layout/SidebarNav.tsx b/apps/dsa-web/src/components/layout/SidebarNav.tsx
+index 1fad650..f8b9957 100644
+--- a/apps/dsa-web/src/components/layout/SidebarNav.tsx
++++ b/apps/dsa-web/src/components/layout/SidebarNav.tsx
+@@ -1,5 +1,5 @@
+ import React, { useState } from 'react';
+-import { Activity, BarChart3, Bell, BriefcaseBusiness, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
++import { Activity, BarChart3, Bell, BriefcaseBusiness, Database, Gauge, Home, LogOut, MessageSquareQuote, Search, Settings2, Sparkles } from 'lucide-react';
+ import { NavLink, useLocation } from 'react-router-dom';
+ import { useAuth } from '../../contexts/AuthContext';
+ import { useAgentChatStore } from '../../stores/agentChatStore';
+@@ -33,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
+   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
+   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
+   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
++  { key: 'personal', labelKey: 'layout.nav.personal', to: '/personal', icon: Sparkles },
+   { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
+   { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
+   { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
+diff --git a/apps/dsa-web/src/i18n/uiText.ts b/apps/dsa-web/src/i18n/uiText.ts
+index 7a43dc5..d4d53e6 100644
+--- a/apps/dsa-web/src/i18n/uiText.ts
++++ b/apps/dsa-web/src/i18n/uiText.ts
+@@ -59,6 +59,7 @@ const zh = {
+   'layout.nav.decisionSignals': 'AI 建议',
+   'layout.nav.dataCenter': '数据中心',
+   'layout.nav.home': '首页',
++  'layout.nav.personal': '个人扩展',
+   'layout.nav.portfolio': '持仓',
+   'layout.nav.settings': '设置',
+   'layout.nav.screening': '选股',
+@@ -70,6 +71,8 @@ const zh = {
+   'layout.route.alerts.title': '告警',
+   'layout.route.backtest.description': '回测任务与结果浏览',
+   'layout.route.backtest.title': '回测',
++  'layout.route.personal.description': '个人数据质量、成本回测、插件与 QMT',
++  'layout.route.personal.title': '个人扩展',
+   'layout.route.chat.description': '多轮策略问答与历史会话管理',
+   'layout.route.chat.title': '问股',
+   'layout.route.decisionSignals.description': 'AI 建议、风险与观察条件',
+@@ -1063,6 +1066,7 @@ const en: Record<UiTextKey, string> = {
+   'layout.nav.decisionSignals': 'AI signals',
+   'layout.nav.dataCenter': 'Data center',
+   'layout.nav.home': 'Home',
++  'layout.nav.personal': 'Personal',
+   'layout.nav.portfolio': 'Portfolio',
+   'layout.nav.settings': 'Settings',
+   'layout.nav.screening': 'Screening',
+@@ -1074,6 +1078,8 @@ const en: Record<UiTextKey, string> = {
+   'layout.route.alerts.title': 'Alerts',
+   'layout.route.backtest.description': 'Backtest jobs and result review',
+   'layout.route.backtest.title': 'Backtest',
++  'layout.route.personal.description': 'Personal data quality, cost-aware backtests, plugins and QMT',
++  'layout.route.personal.title': 'Personal extension',
+   'layout.route.chat.description': 'Multi-turn strategy Q&A and sessions',
+   'layout.route.chat.title': 'Ask',
+   'layout.route.decisionSignals.description': 'AI recommendations, risks, and watch conditions',
+diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
+new file mode 100644
+index 0000000..a053994
+--- /dev/null
++++ b/apps/dsa-web/src/pages/PersonalPage.tsx
+@@ -0,0 +1,979 @@
++import type React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import {
++  Activity,
++  BarChart3,
++  Database,
++  PlugZap,
++  RefreshCw,
++  ServerCog,
++  Sparkles,
++} from 'lucide-react';
++import {
++  CartesianGrid,
++  Legend,
++  Line,
++  LineChart,
++  ResponsiveContainer,
++  Tooltip,
++  XAxis,
++  YAxis,
++} from 'recharts';
++import { personalApi } from '../api/personal';
++import {
++  AppPage,
++  Badge,
++  Button,
++  Card,
++  EmptyState,
++  InlineAlert,
++  Loading,
++  PageHeader,
++  StatCard,
++} from '../components/common';
++import { useUiLanguage } from '../contexts/UiLanguageContext';
++import type {
++  PersonalBacktestResponse,
++  PersonalPlugin,
++  PersonalRun,
++  PersonalStatus,
++  PersonalSyncResponse,
++  PersonalUpstreamRecent,
++} from '../types/personal';
++
++type TabKey = 'overview' | 'data' | 'backtest' | 'plugins' | 'qmt';
++
++const INPUT_CLASS =
++  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
++const LABEL_CLASS = 'mb-2 block text-sm font-medium text-foreground';
++const TABLE_HEAD_CLASS = 'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS = 'border-b border-border/40 py-2.5 pr-4 text-sm text-foreground';
++
++const COPY = {
++  zh: {
++    title: '个人扩展',
++    description: '数据质量、成本回测、插件与 QMT 状态',
++    refresh: '刷新',
++    tabs: {
++      overview: '总览',
++      data: '数据同步',
++      backtest: '个人回测',
++      plugins: '插件',
++      qmt: 'QMT',
++    },
++    loading: '正在加载个人扩展状态…',
++    loadError: '加载个人扩展状态失败',
++    upstream: '上游 DSA',
++    upstreamReady: '已连接',
++    upstreamMissing: '未生成',
++    personalDb: '个人库',
++    symbols: '代码',
++    sources: '数据源',
++    plugins: '插件',
++    qmt: 'QMT 桥',
++    qmtReadonly: '只读/未启用',
++    qmtEnabled: '交易已启用',
++    coverage: '数据覆盖',
++    recentRuns: '最近回测',
++    recentAnalyses: '最近分析',
++    quality: '数据质量事件',
++    noData: '暂无数据',
++    dataset: '数据集',
++    source: '数据源',
++    codes: '代码（逗号分隔）',
++    start: '开始日期',
++    end: '结束日期',
++    sync: '开始同步',
++    syncing: '同步中…',
++    syncDone: '同步完成',
++    syncResult: '同步结果',
++    datasetBars: '日线 Bars',
++    datasetAdjust: '复权因子 Adjust',
++    sourceAuto: 'auto（优先级 fallback）',
++    sourceSynthetic: 'synthetic（离线测试）',
++    sourceTushare: 'tushare',
++    sourceBaostock: 'baostock',
++    sourceAkshare: 'akshare',
++    backtestKind: '类型',
++    demo: 'Demo（合成数据）',
++    replay: 'Replay（上游 AI 建议）',
++    days: '历史天数',
++    include: '信号来源',
++    includeBoth: '分析 + 决策信号',
++    includeAnalyses: '仅分析历史',
++    includeSignals: '仅决策信号',
++    saveRun: '保存到个人库',
++    run: '运行',
++    running: '回测中…',
++    backtestDone: '回测完成',
++    metrics: '绩效',
++    equity: '净值曲线',
++    trades: '交易明细',
++    strategy: '策略',
++    benchmark: '基准',
++    finalCash: '期末现金',
++    positions: '期末持仓',
++    pluginList: '已加载插件',
++    pluginErrors: '插件加载错误',
++    permissions: '权限',
++    qmtTitle: 'QMT 桥状态',
++    qmtHint: 'QMT 桥运行在 Windows QMT 机器上；这里只做只读健康检查，不会下单。',
++    qmtCheck: '检查连接',
++    qmtChecking: '检查中…',
++    qmtResult: 'QMT 桥返回',
++    emptyPlugins: '没有加载到插件',
++    upstreamUnavailable: '上游数据库不可用，生成一次上游分析后即可使用 Replay。',
++  },
++  en: {
++    title: 'Personal Extension',
++    description: 'Data quality, cost-aware backtests, plugins and QMT status',
++    refresh: 'Refresh',
++    tabs: {
++      overview: 'Overview',
++      data: 'Data',
++      backtest: 'Backtest',
++      plugins: 'Plugins',
++      qmt: 'QMT',
++    },
++    loading: 'Loading personal extension status…',
++    loadError: 'Failed to load personal extension status',
++    upstream: 'Upstream DSA',
++    upstreamReady: 'Connected',
++    upstreamMissing: 'Not generated',
++    personalDb: 'Personal DB',
++    symbols: 'Symbols',
++    sources: 'Sources',
++    plugins: 'Plugins',
++    qmt: 'QMT bridge',
++    qmtReadonly: 'Read-only / disabled',
++    qmtEnabled: 'Trading enabled',
++    coverage: 'Data coverage',
++    recentRuns: 'Recent backtests',
++    recentAnalyses: 'Recent analyses',
++    quality: 'Data quality events',
++    noData: 'No data',
++    dataset: 'Dataset',
++    source: 'Source',
++    codes: 'Codes (comma separated)',
++    start: 'Start',
++    end: 'End',
++    sync: 'Sync',
++    syncing: 'Syncing…',
++    syncDone: 'Sync complete',
++    syncResult: 'Sync result',
++    datasetBars: 'Daily bars',
++    datasetAdjust: 'Adjustment factors',
++    sourceAuto: 'auto (priority fallback)',
++    sourceSynthetic: 'synthetic (offline test)',
++    sourceTushare: 'tushare',
++    sourceBaostock: 'baostock',
++    sourceAkshare: 'akshare',
++    backtestKind: 'Type',
++    demo: 'Demo (synthetic)',
++    replay: 'Replay (upstream AI advice)',
++    days: 'History days',
++    include: 'Signal source',
++    includeBoth: 'Analyses + decision signals',
++    includeAnalyses: 'Analyses only',
++    includeSignals: 'Decision signals only',
++    saveRun: 'Save to personal DB',
++    run: 'Run',
++    running: 'Running…',
++    backtestDone: 'Backtest complete',
++    metrics: 'Performance',
++    equity: 'Equity curve',
++    trades: 'Trades',
++    strategy: 'Strategy',
++    benchmark: 'Benchmark',
++    finalCash: 'Final cash',
++    positions: 'Final positions',
++    pluginList: 'Loaded plugins',
++    pluginErrors: 'Plugin load errors',
++    permissions: 'Permissions',
++    qmtTitle: 'QMT bridge status',
++    qmtHint: 'The QMT bridge runs on the Windows QMT machine. This is a read-only health check.',
++    qmtCheck: 'Check connection',
++    qmtChecking: 'Checking…',
++    qmtResult: 'QMT bridge response',
++    emptyPlugins: 'No plugins loaded',
++    upstreamUnavailable: 'Upstream database is unavailable. Run one upstream analysis to use Replay.',
++  },
++} as const;
++
++const METRIC_LABELS: Record<string, { zh: string; en: string }> = {
++  total_return: { zh: '累计收益', en: 'Total return' },
++  cagr: { zh: '年化收益', en: 'CAGR' },
++  annual_vol: { zh: '年化波动', en: 'Volatility' },
++  sharpe: { zh: 'Sharpe', en: 'Sharpe' },
++  max_drawdown: { zh: '最大回撤', en: 'Max drawdown' },
++  calmar: { zh: 'Calmar', en: 'Calmar' },
++  benchmark_return: { zh: '基准收益', en: 'Benchmark' },
++  excess_return: { zh: '超额收益', en: 'Excess return' },
++  win_rate: { zh: '胜率', en: 'Win rate' },
++  profit_factor: { zh: '盈亏比', en: 'Profit factor' },
++  turnover: { zh: '换手率', en: 'Turnover' },
++  total_fees: { zh: '总费用', en: 'Fees' },
++  trade_count: { zh: '交易数', en: 'Trades' },
++  closed_trade_count: { zh: '平仓数', en: 'Closed' },
++};
++
++function isoDaysAgo(days: number): string {
++  const value = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
++  return value.toISOString().slice(0, 10);
++}
++
++function formatNumber(value: number | null | undefined, digits = 2): string {
++  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
++  return Number(value).toFixed(digits);
++}
++
++function formatMetric(key: string, value: number | null | undefined): string {
++  if (value === null || value === undefined) return '—';
++  if (key.endsWith('_return') || key.endsWith('_drawdown') || key === 'annual_vol' || key === 'win_rate' || key === 'turnover') {
++    return `${(Number(value) * 100).toFixed(2)}%`;
++  }
++  if (key === 'total_fees') return `¥${formatNumber(Number(value), 2)}`;
++  if (key === 'trade_count' || key === 'closed_trade_count') return String(Math.round(Number(value)));
++  return formatNumber(Number(value), 2);
++}
++
++function parseRunMetrics(run: PersonalRun): Record<string, number | null> {
++  try {
++    return JSON.parse(run.metrics_json) as Record<string, number | null>;
++  } catch {
++    return {};
++  }
++}
++
++const PersonalPage: React.FC = () => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const [tab, setTab] = useState<TabKey>('overview');
++  const [status, setStatus] = useState<PersonalStatus | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState('');
++
++  const [syncDataset, setSyncDataset] = useState<'bars' | 'adjust'>('bars');
++  const [syncSource, setSyncSource] = useState('auto');
++  const [syncCodes, setSyncCodes] = useState('');
++  const [syncStart, setSyncStart] = useState(isoDaysAgo(730));
++  const [syncEnd, setSyncEnd] = useState(isoDaysAgo(0));
++  const [syncBusy, setSyncBusy] = useState(false);
++  const [syncResult, setSyncResult] = useState<PersonalSyncResponse | null>(null);
++  const [syncError, setSyncError] = useState('');
++
++  const [kind, setKind] = useState<'demo' | 'replay'>('demo');
++  const [days, setDays] = useState(400);
++  const [btStart, setBtStart] = useState(isoDaysAgo(365));
++  const [btEnd, setBtEnd] = useState(isoDaysAgo(0));
++  const [include, setInclude] = useState<'both' | 'analyses' | 'signals'>('both');
++  const [saveRun, setSaveRun] = useState(false);
++  const [btBusy, setBtBusy] = useState(false);
++  const [btResult, setBtResult] = useState<PersonalBacktestResponse | null>(null);
++  const [btError, setBtError] = useState('');
++
++  const [upstream, setUpstream] = useState<PersonalUpstreamRecent | null>(null);
++  const [qmtBusy, setQmtBusy] = useState(false);
++  const [qmtResult, setQmtResult] = useState('');
++
++  const loadStatus = useCallback(async () => {
++    setLoading(true);
++    try {
++      const data = await personalApi.status();
++      setStatus(data);
++      setError('');
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setLoading(false);
++    }
++  }, []);
++
++  const loadUpstream = useCallback(async () => {
++    try {
++      setUpstream(await personalApi.upstreamRecent());
++    } catch {
++      setUpstream(null);
++    }
++  }, []);
++
++  useEffect(() => {
++    document.title = `${copy.title} - DSA`;
++    void loadStatus();
++    void loadUpstream();
++  }, [copy.title, loadStatus, loadUpstream]);
++
++  useEffect(() => {
++    if (status && !syncCodes) {
++      setSyncCodes(status.settings.stock_list.join(','));
++    }
++  }, [status, syncCodes]);
++
++  const chartData = useMemo(() => {
++    if (!btResult || btResult.equity.length === 0) return [];
++    const base = btResult.equity[0]?.value || 1;
++    const benchmark = new Map((btResult.benchmark ?? []).map((point) => [point.date, point.value]));
++    return btResult.equity.map((point) => ({
++      date: point.date.slice(5),
++      strategy: point.value / base,
++      benchmark: benchmark.get(point.date) ?? null,
++    }));
++  }, [btResult]);
++
++  const handleSync = async (event: React.FormEvent) => {
++    event.preventDefault();
++    setSyncBusy(true);
++    setSyncError('');
++    setSyncResult(null);
++    try {
++      const result = await personalApi.sync({
++        dataset: syncDataset,
++        source: syncSource,
++        codes: syncCodes
++          .split(/[,，\s]+/)
++          .map((item) => item.trim())
++          .filter(Boolean),
++        start: syncStart || null,
++        end: syncEnd || null,
++      });
++      setSyncResult(result);
++      await loadStatus();
++    } catch (err) {
++      setSyncError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setSyncBusy(false);
++    }
++  };
++
++  const handleBacktest = async (event: React.FormEvent) => {
++    event.preventDefault();
++    setBtBusy(true);
++    setBtError('');
++    try {
++      const result =
++        kind === 'demo'
++          ? await personalApi.demo({ days, save: saveRun })
++          : await personalApi.replay({
++              start: btStart || null,
++              end: btEnd || null,
++              include,
++              save: saveRun,
++            });
++      setBtResult(result);
++      if (saveRun) await loadStatus();
++    } catch (err) {
++      setBtError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setBtBusy(false);
++    }
++  };
++
++  const handleQmt = async () => {
++    setQmtBusy(true);
++    try {
++      const result = await personalApi.qmtHealth();
++      setQmtResult(JSON.stringify(result, null, 2));
++    } catch (err) {
++      setQmtResult(err instanceof Error ? err.message : String(err));
++    } finally {
++      setQmtBusy(false);
++    }
++  };
++
++  const renderPlugins = (plugins: PersonalPlugin[]) => {
++    if (plugins.length === 0) {
++      return (
++        <EmptyState
++          icon={<PlugZap className="h-6 w-6" />}
++          title={copy.emptyPlugins}
++          description="plugins/<name>/plugin.yaml"
++        />
++      );
++    }
++    return (
++      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
++        {plugins.map((plugin) => (
++          <div key={plugin.name} className="rounded-2xl border border-border/60 bg-card/60 p-4">
++            <div className="flex items-start justify-between gap-2">
++              <div>
++                <h3 className="text-base font-semibold text-foreground">{plugin.display_name || plugin.name}</h3>
++                <p className="mt-1 text-xs text-secondary-text">
++                  {plugin.name} · {plugin.version} · {plugin.type}
++                </p>
++              </div>
++              <Badge variant="info">{plugin.type}</Badge>
++            </div>
++            {plugin.description ? <p className="mt-3 text-sm text-secondary-text">{plugin.description}</p> : null}
++            <p className="mt-3 text-xs text-muted-text">
++              {copy.permissions}: {(plugin.permissions ?? []).join(', ') || 'none'}
++            </p>
++          </div>
++        ))}
++      </div>
++    );
++  };
++
++  return (
++    <AppPage className="space-y-5">
++      <PageHeader
++        eyebrow="Personal Layer"
++        title={copy.title}
++        description={copy.description}
++        actions={
++          <Button size="sm" variant="secondary" isLoading={loading} loadingText={copy.loading} onClick={() => void loadStatus()}>
++            <RefreshCw className="h-4 w-4" />
++            {copy.refresh}
++          </Button>
++        }
++      />
++
++      {error ? (
++        <InlineAlert
++          variant="danger"
++          title={copy.loadError}
++          message={error}
++          action={
++            <Button size="sm" variant="secondary" onClick={() => void loadStatus()}>
++              {copy.refresh}
++            </Button>
++          }
++        />
++      ) : null}
++
++      {loading && !status ? <Loading label={copy.loading} /> : null}
++
++      <div className="flex flex-wrap gap-2">
++        {(Object.keys(copy.tabs) as TabKey[]).map((key) => (
++          <button
++            key={key}
++            type="button"
++            onClick={() => setTab(key)}
++            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition-colors ${
++              tab === key
++                ? 'border-cyan/30 bg-cyan/10 text-cyan'
++                : 'border-border/60 bg-card/60 text-secondary-text hover:bg-hover hover:text-foreground'
++            }`}
++          >
++            {key === 'overview' ? <Activity className="h-4 w-4" /> : null}
++            {key === 'data' ? <Database className="h-4 w-4" /> : null}
++            {key === 'backtest' ? <BarChart3 className="h-4 w-4" /> : null}
++            {key === 'plugins' ? <PlugZap className="h-4 w-4" /> : null}
++            {key === 'qmt' ? <ServerCog className="h-4 w-4" /> : null}
++            {copy.tabs[key]}
++          </button>
++        ))}
++      </div>
++
++      {tab === 'overview' && status ? (
++        <>
++          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
++            <StatCard
++              label={copy.upstream}
++              value={status.upstream.available ? copy.upstreamReady : copy.upstreamMissing}
++              hint={
++                status.upstream.available
++                  ? `analysis=${status.upstream.has_analysis_history} portfolio=${status.upstream.has_portfolio}`
++                  : copy.upstreamMissing
++              }
++              tone={status.upstream.available ? 'success' : 'warning'}
++              icon={<Activity className="h-5 w-5" />}
++            />
++            <StatCard
++              label={copy.personalDb}
++              value={`${status.storage.symbols ?? 0} / ${status.storage.sources ?? 0}`}
++              hint={`${copy.symbols} / ${copy.sources} · ${status.storage.daily_bar ?? 0} bars`}
++              tone="primary"
++              icon={<Database className="h-5 w-5" />}
++            />
++            <StatCard
++              label={copy.plugins}
++              value={String(status.plugins.length)}
++              hint={status.plugins.map((plugin) => plugin.name).join(', ') || copy.emptyPlugins}
++              icon={<PlugZap className="h-5 w-5" />}
++            />
++            <StatCard
++              label={copy.qmt}
++              value={status.qmt.trading_enabled ? copy.qmtEnabled : copy.qmtReadonly}
++              hint={status.qmt.bridge_url}
++              tone={status.qmt.trading_enabled ? 'warning' : 'default'}
++              icon={<ServerCog className="h-5 w-5" />}
++            />
++          </div>
++
++          <div className="grid gap-4 xl:grid-cols-2">
++            <Card title={copy.coverage} variant="bordered">
++              <div className="overflow-x-auto">
++                <table className="w-full">
++                  <thead>
++                    <tr className={TABLE_HEAD_CLASS}>
++                      <th className="py-2 pr-4">Code</th>
++                      <th className="py-2 pr-4">Source</th>
++                      <th className="py-2 pr-4 text-right">Rows</th>
++                      <th className="py-2 pr-4">Start</th>
++                      <th className="py-2">End</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {status.coverage.length ? (
++                      status.coverage.map((row) => (
++                        <tr key={`${row.code}-${row.source}`}>
++                          <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                          <td className={TABLE_CELL_CLASS}>
++                            <Badge variant={row.source === 'synthetic' ? 'warning' : 'info'}>{row.source}</Badge>
++                          </td>
++                          <td className={`${TABLE_CELL_CLASS} text-right`}>{row.rows}</td>
++                          <td className={TABLE_CELL_CLASS}>{row.start_date ?? '—'}</td>
++                          <td className={TABLE_CELL_CLASS}>{row.end_date ?? '—'}</td>
++                        </tr>
++                      ))
++                    ) : (
++                      <tr>
++                        <td className="py-3 text-sm text-secondary-text" colSpan={5}>
++                          {copy.noData}
++                        </td>
++                      </tr>
++                    )}
++                  </tbody>
++                </table>
++              </div>
++            </Card>
++
++            <Card title={copy.recentRuns} variant="bordered">
++              <div className="overflow-x-auto">
++                <table className="w-full">
++                  <thead>
++                    <tr className={TABLE_HEAD_CLASS}>
++                      <th className="py-2 pr-4">Run</th>
++                      <th className="py-2 pr-4">Mode</th>
++                      <th className="py-2 pr-4">Period</th>
++                      <th className="py-2 text-right">Return</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {status.recent_runs.length ? (
++                      status.recent_runs.map((run) => {
++                        const metrics = parseRunMetrics(run);
++                        return (
++                          <tr key={run.run_id}>
++                            <td className={TABLE_CELL_CLASS}>{run.run_id}</td>
++                            <td className={TABLE_CELL_CLASS}>{run.mode}</td>
++                            <td className={TABLE_CELL_CLASS}>
++                              {run.start_date ?? '—'} → {run.end_date ?? '—'}
++                            </td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>
++                              {formatMetric('total_return', metrics.total_return)}
++                            </td>
++                          </tr>
++                        );
++                      })
++                    ) : (
++                      <tr>
++                        <td className="py-3 text-sm text-secondary-text" colSpan={4}>
++                          {copy.noData}
++                        </td>
++                      </tr>
++                    )}
++                  </tbody>
++                </table>
++              </div>
++            </Card>
++          </div>
++
++          <div className="grid gap-4 xl:grid-cols-2">
++            <Card title={copy.recentAnalyses} variant="bordered">
++              {upstream && !upstream.available ? (
++                <InlineAlert variant="warning" title={copy.upstreamUnavailable} message={upstream.missing ?? ''} />
++              ) : (
++                <div className="overflow-x-auto">
++                  <table className="w-full">
++                    <thead>
++                      <tr className={TABLE_HEAD_CLASS}>
++                        <th className="py-2 pr-4">Code</th>
++                        <th className="py-2 pr-4">Name</th>
++                        <th className="py-2 pr-4">Advice</th>
++                        <th className="py-2 text-right">Score</th>
++                      </tr>
++                    </thead>
++                    <tbody>
++                      {upstream?.analyses?.length ? (
++                        upstream.analyses.slice(0, 8).map((item) => (
++                          <tr key={item.id}>
++                            <td className={TABLE_CELL_CLASS}>{item.code}</td>
++                            <td className={TABLE_CELL_CLASS}>{item.name ?? '—'}</td>
++                            <td className={TABLE_CELL_CLASS}>{item.advice ?? '—'}</td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>{item.score ?? '—'}</td>
++                          </tr>
++                        ))
++                      ) : (
++                        <tr>
++                          <td className="py-3 text-sm text-secondary-text" colSpan={4}>
++                            {copy.noData}
++                          </td>
++                        </tr>
++                      )}
++                    </tbody>
++                  </table>
++                </div>
++              )}
++            </Card>
++
++            <Card title={copy.quality} variant="bordered">
++              <div className="overflow-x-auto">
++                <table className="w-full">
++                  <thead>
++                    <tr className={TABLE_HEAD_CLASS}>
++                      <th className="py-2 pr-4">Rule</th>
++                      <th className="py-2 pr-4">Severity</th>
++                      <th className="py-2">Detail</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {status.recent_quality.length ? (
++                      status.recent_quality.slice(0, 8).map((event) => (
++                        <tr key={event.id}>
++                          <td className={TABLE_CELL_CLASS}>{event.rule}</td>
++                          <td className={TABLE_CELL_CLASS}>
++                            <Badge variant={event.severity === 'error' ? 'danger' : event.severity === 'warn' ? 'warning' : 'default'}>
++                              {event.severity}
++                            </Badge>
++                          </td>
++                          <td className={TABLE_CELL_CLASS}>{event.detail}</td>
++                        </tr>
++                      ))
++                    ) : (
++                      <tr>
++                        <td className="py-3 text-sm text-secondary-text" colSpan={3}>
++                          {copy.noData}
++                        </td>
++                      </tr>
++                    )}
++                  </tbody>
++                </table>
++              </div>
++            </Card>
++          </div>
++        </>
++      ) : null}
++
++      {tab === 'data' ? (
++        <Card title={copy.tabs.data} variant="bordered">
++          <form className="grid gap-3 md:grid-cols-3" onSubmit={(event) => void handleSync(event)}>
++            <label>
++              <span className={LABEL_CLASS}>{copy.dataset}</span>
++              <select className={INPUT_CLASS} value={syncDataset} onChange={(event) => setSyncDataset(event.target.value as 'bars' | 'adjust')}>
++                <option value="bars">{copy.datasetBars}</option>
++                <option value="adjust">{copy.datasetAdjust}</option>
++              </select>
++            </label>
++            <label>
++              <span className={LABEL_CLASS}>{copy.source}</span>
++              <select className={INPUT_CLASS} value={syncSource} onChange={(event) => setSyncSource(event.target.value)}>
++                <option value="auto">{copy.sourceAuto}</option>
++                <option value="synthetic">{copy.sourceSynthetic}</option>
++                <option value="tushare">{copy.sourceTushare}</option>
++                <option value="baostock">{copy.sourceBaostock}</option>
++                <option value="akshare">{copy.sourceAkshare}</option>
++              </select>
++            </label>
++            <label>
++              <span className={LABEL_CLASS}>{copy.codes}</span>
++              <input className={INPUT_CLASS} value={syncCodes} onChange={(event) => setSyncCodes(event.target.value)} placeholder="600519,000001,510050" />
++            </label>
++            <label>
++              <span className={LABEL_CLASS}>{copy.start}</span>
++              <input className={INPUT_CLASS} type="date" value={syncStart} onChange={(event) => setSyncStart(event.target.value)} />
++            </label>
++            <label>
++              <span className={LABEL_CLASS}>{copy.end}</span>
++              <input className={INPUT_CLASS} type="date" value={syncEnd} onChange={(event) => setSyncEnd(event.target.value)} />
++            </label>
++            <div className="flex items-end">
++              <Button type="submit" isLoading={syncBusy} loadingText={copy.syncing}>
++                <Sparkles className="h-4 w-4" />
++                {copy.sync}
++              </Button>
++            </div>
++          </form>
++
++          {syncError ? <InlineAlert className="mt-4" variant="danger" title={copy.syncResult} message={syncError} /> : null}
++          {syncResult ? (
++            <div className="mt-4 space-y-3">
++              <InlineAlert
++                variant={syncResult.results.some((result) => result.rows > 0) ? 'success' : 'warning'}
++                title={copy.syncDone}
++                message={`${syncResult.dataset} · ${syncResult.start} → ${syncResult.end}`}
++              />
++              <div className="overflow-x-auto">
++                <table className="w-full">
++                  <thead>
++                    <tr className={TABLE_HEAD_CLASS}>
++                      <th className="py-2 pr-4">Code</th>
++                      <th className="py-2 pr-4">Source</th>
++                      <th className="py-2 pr-4 text-right">Rows</th>
++                      <th className="py-2 pr-4">Quality</th>
++                      <th className="py-2">Errors</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {syncResult.results.map((result) => (
++                      <tr key={`${result.code}-${result.source}`}>
++                        <td className={TABLE_CELL_CLASS}>{result.code}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.source ?? '—'}</td>
++                        <td className={`${TABLE_CELL_CLASS} text-right`}>{result.rows}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.quality_issues}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.errors.join('; ') || '—'}</td>
++                      </tr>
++                    ))}
++                  </tbody>
++                </table>
++              </div>
++            </div>
++          ) : null}
++
++          {status ? (
++            <div className="mt-6">
++              <h3 className="mb-3 text-sm font-semibold text-foreground">{copy.coverage}</h3>
++              <div className="overflow-x-auto">
++                <table className="w-full">
++                  <thead>
++                    <tr className={TABLE_HEAD_CLASS}>
++                      <th className="py-2 pr-4">Code</th>
++                      <th className="py-2 pr-4">Source</th>
++                      <th className="py-2 pr-4 text-right">Rows</th>
++                      <th className="py-2 pr-4">Start</th>
++                      <th className="py-2">End</th>
++                    </tr>
++                  </thead>
++                  <tbody>
++                    {status.coverage.map((row) => (
++                      <tr key={`${row.code}-${row.source}`}>
++                        <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                        <td className={TABLE_CELL_CLASS}>{row.source}</td>
++                        <td className={`${TABLE_CELL_CLASS} text-right`}>{row.rows}</td>
++                        <td className={TABLE_CELL_CLASS}>{row.start_date ?? '—'}</td>
++                        <td className={TABLE_CELL_CLASS}>{row.end_date ?? '—'}</td>
++                      </tr>
++                    ))}
++                  </tbody>
++                </table>
++              </div>
++            </div>
++          ) : null}
++        </Card>
++      ) : null}
++
++      {tab === 'backtest' ? (
++        <div className="space-y-4">
++          <Card title={copy.tabs.backtest} variant="bordered">
++            <form className="grid gap-3 md:grid-cols-3" onSubmit={(event) => void handleBacktest(event)}>
++              <label>
++                <span className={LABEL_CLASS}>{copy.backtestKind}</span>
++                <select className={INPUT_CLASS} value={kind} onChange={(event) => setKind(event.target.value as 'demo' | 'replay')}>
++                  <option value="demo">{copy.demo}</option>
++                  <option value="replay">{copy.replay}</option>
++                </select>
++              </label>
++              {kind === 'demo' ? (
++                <label>
++                  <span className={LABEL_CLASS}>{copy.days}</span>
++                  <input
++                    className={INPUT_CLASS}
++                    type="number"
++                    min={60}
++                    max={3000}
++                    value={days}
++                    onChange={(event) => setDays(Number(event.target.value) || 400)}
++                  />
++                </label>
++              ) : (
++                <>
++                  <label>
++                    <span className={LABEL_CLASS}>{copy.start}</span>
++                    <input className={INPUT_CLASS} type="date" value={btStart} onChange={(event) => setBtStart(event.target.value)} />
++                  </label>
++                  <label>
++                    <span className={LABEL_CLASS}>{copy.end}</span>
++                    <input className={INPUT_CLASS} type="date" value={btEnd} onChange={(event) => setBtEnd(event.target.value)} />
++                  </label>
++                  <label>
++                    <span className={LABEL_CLASS}>{copy.include}</span>
++                    <select className={INPUT_CLASS} value={include} onChange={(event) => setInclude(event.target.value as 'both' | 'analyses' | 'signals')}>
++                      <option value="both">{copy.includeBoth}</option>
++                      <option value="analyses">{copy.includeAnalyses}</option>
++                      <option value="signals">{copy.includeSignals}</option>
++                    </select>
++                  </label>
++                </>
++              )}
++              <label className="flex items-end gap-2 pb-3 text-sm text-foreground">
++                <input type="checkbox" checked={saveRun} onChange={(event) => setSaveRun(event.target.checked)} />
++                {copy.saveRun}
++              </label>
++              <div className="flex items-end">
++                <Button type="submit" isLoading={btBusy} loadingText={copy.running}>
++                  <BarChart3 className="h-4 w-4" />
++                  {copy.run}
++                </Button>
++              </div>
++            </form>
++            {btError ? <InlineAlert className="mt-4" variant="danger" title={copy.tabs.backtest} message={btError} /> : null}
++          </Card>
++
++          {btResult ? (
++            <>
++              <Card title={copy.metrics} variant="bordered">
++                <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-secondary-text">
++                  <Badge variant="info">{btResult.kind}</Badge>
++                  <span>
++                    {btResult.start} → {btResult.end}
++                  </span>
++                  <span>signals={btResult.signals}</span>
++                  {btResult.run_id ? <span>run={btResult.run_id}</span> : null}
++                </div>
++                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
++                  {Object.keys(METRIC_LABELS).map((key) => {
++                    const value = btResult.metrics[key];
++                    const label = METRIC_LABELS[key][language];
++                    const tone =
++                      key.endsWith('_return') && typeof value === 'number'
++                        ? value >= 0
++                          ? 'text-success'
++                          : 'text-danger'
++                        : key === 'max_drawdown'
++                          ? 'text-danger'
++                          : 'text-foreground';
++                    return (
++                      <div key={key} className="rounded-xl border border-border/60 bg-card/60 px-3 py-2">
++                        <div className="text-xs text-secondary-text">{label}</div>
++                        <div className={`mt-1 text-lg font-semibold ${tone}`}>{formatMetric(key, value)}</div>
++                      </div>
++                    );
++                  })}
++                </div>
++              </Card>
++
++              <Card title={copy.equity} variant="bordered">
++                {chartData.length > 1 ? (
++                  <div className="h-72 w-full">
++                    <ResponsiveContainer width="100%" height="100%">
++                      <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++                        <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++                        <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={48} />
++                        <Tooltip
++                          contentStyle={{
++                            background: 'hsl(var(--card))',
++                            border: '1px solid hsl(var(--border))',
++                            borderRadius: 12,
++                            color: 'hsl(var(--foreground))',
++                          }}
++                        />
++                        <Legend />
++                        <Line type="monotone" dataKey="strategy" name={copy.strategy} stroke="var(--color-cyan)" strokeWidth={2} dot={false} />
++                        {btResult.benchmark && btResult.benchmark.length > 1 ? (
++                          <Line
++                            type="monotone"
++                            dataKey="benchmark"
++                            name={copy.benchmark}
++                            stroke="hsl(var(--muted-foreground))"
++                            strokeDasharray="5 4"
++                            strokeWidth={1.6}
++                            dot={false}
++                            connectNulls
++                          />
++                        ) : null}
++                      </LineChart>
++                    </ResponsiveContainer>
++                  </div>
++                ) : (
++                  <p className="text-sm text-secondary-text">{copy.noData}</p>
++                )}
++              </Card>
++
++              <Card title={copy.trades} variant="bordered">
++                <div className="mb-2 text-xs text-secondary-text">
++                  {btResult.trades.length} · {copy.finalCash} {btResult.final_cash.toFixed(2)} · {copy.positions}{' '}
++                  {Object.keys(btResult.final_positions).length}
++                </div>
++                <div className="max-h-96 overflow-auto">
++                  <table className="w-full">
++                    <thead>
++                      <tr className={TABLE_HEAD_CLASS}>
++                        <th className="py-2 pr-4">Date</th>
++                        <th className="py-2 pr-4">Code</th>
++                        <th className="py-2 pr-4">Side</th>
++                        <th className="py-2 pr-4 text-right">Qty</th>
++                        <th className="py-2 pr-4 text-right">Price</th>
++                        <th className="py-2 pr-4 text-right">Fee</th>
++                        <th className="py-2 pr-4 text-right">P&L</th>
++                        <th className="py-2">Reason</th>
++                      </tr>
++                    </thead>
++                    <tbody>
++                      {btResult.trades.length ? (
++                        btResult.trades.slice(0, 300).map((trade, index) => (
++                          <tr key={`${trade.date}-${trade.code}-${trade.side}-${index}`}>
++                            <td className={TABLE_CELL_CLASS}>{trade.date}</td>
++                            <td className={TABLE_CELL_CLASS}>{trade.code}</td>
++                            <td className={TABLE_CELL_CLASS}>
++                              <Badge variant={trade.side === 'buy' ? 'success' : 'danger'}>{trade.side}</Badge>
++                            </td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>{trade.quantity}</td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>{trade.price.toFixed(2)}</td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>{trade.fee.toFixed(2)}</td>
++                            <td className={`${TABLE_CELL_CLASS} text-right`}>{trade.realized_pnl.toFixed(2)}</td>
++                            <td className={TABLE_CELL_CLASS}>{trade.reason}</td>
++                          </tr>
++                        ))
++                      ) : (
++                        <tr>
++                          <td className="py-3 text-sm text-secondary-text" colSpan={8}>
++                            {copy.noData}
++                          </td>
++                        </tr>
++                      )}
++                    </tbody>
++                  </table>
++                </div>
++              </Card>
++            </>
++          ) : null}
++        </div>
++      ) : null}
++
++      {tab === 'plugins' && status ? (
++        <Card title={copy.pluginList} variant="bordered">
++          {renderPlugins(status.plugins)}
++          {status.plugin_errors.length ? (
++            <InlineAlert
++              className="mt-4"
++              variant="danger"
++              title={copy.pluginErrors}
++              message={status.plugin_errors.join('\n')}
++            />
++          ) : null}
++        </Card>
++      ) : null}
++
++      {tab === 'qmt' ? (
++        <Card title={copy.qmtTitle} variant="bordered">
++          <p className="mb-4 text-sm text-secondary-text">{copy.qmtHint}</p>
++          <Button onClick={() => void handleQmt()} isLoading={qmtBusy} loadingText={copy.qmtChecking}>
++            <ServerCog className="h-4 w-4" />
++            {copy.qmtCheck}
++          </Button>
++          {qmtResult ? (
++            <>
++              <h3 className="mt-5 text-sm font-semibold text-foreground">{copy.qmtResult}</h3>
++              <pre className="mt-2 overflow-auto rounded-xl border border-border/60 bg-base/60 p-4 text-xs text-secondary-text">
++                {qmtResult}
++              </pre>
++            </>
++          ) : null}
++        </Card>
++      ) : null}
++    </AppPage>
++  );
++};
++
++export default PersonalPage;
+diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
+new file mode 100644
+index 0000000..452289c
+--- /dev/null
++++ b/apps/dsa-web/src/types/personal.ts
+@@ -0,0 +1,139 @@
++export interface PersonalCoverageRow {
++  code: string;
++  source: string;
++  rows: number;
++  start_date: string | null;
++  end_date: string | null;
++}
++
++export interface PersonalPlugin {
++  name: string;
++  version: string;
++  type: string;
++  display_name: string;
++  description?: string;
++  permissions?: string[];
++}
++
++export interface PersonalRun {
++  run_id: string;
++  mode: string;
++  start_date: string | null;
++  end_date: string | null;
++  metrics_json: string;
++  created_at: string;
++}
++
++export interface PersonalQualityEvent {
++  id: number;
++  dataset: string;
++  code: string | null;
++  trade_date: string | null;
++  rule: string;
++  severity: string;
++  detail: string;
++  created_at: string;
++}
++
++export interface PersonalUpstreamStatus {
++  available: boolean;
++  has_analysis_history: boolean;
++  has_portfolio: boolean;
++  has_decision_signals: boolean;
++  missing: string[];
++}
++
++export interface PersonalStatus {
++  app: { version: string };
++  settings: {
++    root: string;
++    personal_db: string;
++    upstream_db: string;
++    stock_list: string[];
++    data_source_priority: string[];
++  };
++  upstream: PersonalUpstreamStatus;
++  storage: Record<string, number>;
++  coverage: PersonalCoverageRow[];
++  plugins: PersonalPlugin[];
++  plugin_errors: string[];
++  recent_runs: PersonalRun[];
++  recent_quality: PersonalQualityEvent[];
++  qmt: {
++    bridge_url: string;
++    trading_enabled: boolean;
++    require_confirm: boolean;
++  };
++}
++
++export interface PersonalSyncResult {
++  code: string;
++  source: string | null;
++  rows: number;
++  quality_issues: number;
++  errors: string[];
++}
++
++export interface PersonalSyncResponse {
++  dataset: string;
++  start: string;
++  end: string;
++  results: PersonalSyncResult[];
++}
++
++export interface PersonalEquityPoint {
++  date: string;
++  value: number;
++}
++
++export interface PersonalTrade {
++  date: string;
++  code: string;
++  side: string;
++  quantity: number;
++  price: number;
++  gross_amount: number;
++  fee: number;
++  realized_pnl: number;
++  reason: string;
++}
++
++export interface PersonalBacktestResponse {
++  kind: string;
++  start: string;
++  end: string;
++  signals: number;
++  metrics: Record<string, number | null>;
++  equity: PersonalEquityPoint[];
++  benchmark: PersonalEquityPoint[] | null;
++  trades: PersonalTrade[];
++  final_cash: number;
++  final_positions: Record<string, number>;
++  run_id?: string;
++}
++
++export interface PersonalUpstreamRecent {
++  available: boolean;
++  missing?: string;
++  analyses: Array<{
++    id: number;
++    code: string;
++    name: string | null;
++    advice: string | null;
++    score: number | null;
++    created_at: string | null;
++  }>;
++  signals: Array<{
++    id: number;
++    code: string;
++    action: string;
++    score: number | null;
++    confidence: number | null;
++    created_at: string | null;
++  }>;
++}
++
++export interface PersonalQmtHealth {
++  ok: boolean;
++  detail: unknown;
++}

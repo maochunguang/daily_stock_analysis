@@ -291,6 +291,37 @@ python main.py --webui-only
   </tr>
 </table>
 
+## 🧩 个人扩展层 (Personal Extension)
+
+本 fork 在 DSA 基础上集成了一个**低耦合个人扩展层**，用于 A 股股票/基金的数据质量、成本回测、插件与 QMT 状态管理。
+
+- **入口**：左侧栏「个人扩展」→ [`/personal`](http://127.0.0.1:8000/personal)
+- **API**：`/personal-api/*`（与上游同源，登录开启时受上游认证保护）
+- **启动**：
+
+  ```bash
+  # 需要已安装本仓库依赖的 Python 环境
+  PYTHON_BIN=/path/to/python scripts/start_webui.sh
+  # 或
+  python main.py --webui
+  ```
+
+- **配置**：
+
+  ```bash
+  cp config/personal.example.env config/personal.env
+  # 编辑 config/personal.env（不要提交）
+  ```
+
+- **数据**：`data/personal.db`（个人库，已 gitignore）；上游库仍为 `data/stock_analysis.db`，只读访问。
+- **交易**：默认关闭（`QMT_TRADING_ENABLED=false` + `QMT_REQUIRE_CONFIRM=true`），QMT 桥只读健康检查不会下单。
+- **文档**：
+  - [个人扩展架构](docs/PERSONAL_EXTENSION_ARCHITECTURE.md)
+  - [AI Context](docs/AI_CONTEXT.md)
+  - [变更记录](docs/CHANGELOG_PERSONAL.md)
+  - [Agent 操作手册](PERSONAL_AGENTS.md)
+- **上游同步**：UI 集成补丁在 `patches/0001-personal-web-integration.patch`；同步上游后重新应用并执行 `cd apps/dsa-web && npm run build`。
+
 ## 📄 License
 
 [MIT License](LICENSE) © 2026 ZhuLinsen

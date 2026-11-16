@@ -89,3 +89,10 @@ static/
 /apps/dsa-desktop/node_modules/
 /node_modules/
 docs/specs/
+
+# Personal extension layer
+/data/personal.db
+/data/personal.db-shm
+/data/personal.db-wal
+/config/personal.env
+!config/personal.example.env

@@ -1,0 +1,17 @@
+api_version: "1.0"
+name: obv
+version: "0.1.0"
+type: indicator
+display_name: OBV 能量潮
+description: 计算 OBV、OBV 均线与价格/能量背离
+entry: plugin:OBVIndicator
+requires:
+  personal: ">=0.1.0"
+permissions:
+  - market_data:read
+config_schema:
+  window:
+    type: integer
+    default: 20
+    minimum: 2
+    maximum: 250
