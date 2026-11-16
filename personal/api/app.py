@@ -30,11 +30,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class SyncRequest(BaseModel):
-    dataset: Literal["bars", "adjust"] = "bars"
+    dataset: Literal["bars", "adjust", "calendar", "status"] = "bars"
     source: str = "auto"
     codes: Optional[list[str]] = None
     start: Optional[str] = None
     end: Optional[str] = None
+    cross_check: Optional[bool] = None
 
 
 class DemoRequest(BaseModel):
@@ -47,6 +48,7 @@ class ReplayRequest(BaseModel):
     end: Optional[str] = None
     include: Literal["both", "analyses", "signals"] = "both"
     save: bool = False
+    adjust: Optional[Literal["hfq", "qfq", "none"]] = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -211,20 +213,34 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
     @app.post("/api/data/sync")
     def sync(request: SyncRequest) -> dict[str, Any]:
         codes = request.codes or list(settings.stock_list)
-        if not codes:
+        if not codes and request.dataset != "calendar":
             raise HTTPException(
                 status_code=400,
                 detail="no codes: pass codes or set PERSONAL_STOCK_LIST",
             )
         end = _parse_date(request.end, date.today())
         start = _parse_date(request.start, end - timedelta(days=730))
+        cross_check = (
+            settings.cross_source_check
+            if request.cross_check is None
+            else request.cross_check
+        )
         try:
             sources = build_sources(settings, request.source)
             store = PersonalStore(settings.personal_db)
             try:
-                service = DataSyncService(store, sources)
+                service = DataSyncService(
+                    store,
+                    sources,
+                    cross_check=cross_check,
+                    preferred_sources=settings.data_source_priority,
+                )
                 if request.dataset == "adjust":
                     results = service.sync_adjust_factors(codes, start, end)
+                elif request.dataset == "calendar":
+                    results = [service.sync_calendar(start, end)]
+                elif request.dataset == "status":
+                    results = service.sync_trading_status(codes, start, end)
                 else:
                     results = service.sync_daily_bars(codes, start, end)
             finally:
@@ -295,6 +311,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             end=end,
             initial_cash=settings.backtest_initial_cash,
             benchmark=settings.backtest_benchmark or None,
+            adjust_mode=request.adjust or settings.backtest_adjust_mode,
         )
         try:
             result, signals = replay_upstream(

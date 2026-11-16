@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS adjust_factor (
   PRIMARY KEY (code, ex_date, source)
 );
 
+CREATE TABLE IF NOT EXISTS trading_calendar (
+  trade_date TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS trading_status (
   code TEXT NOT NULL,
   trade_date TEXT NOT NULL,
@@ -257,10 +263,16 @@ class PersonalStore:
                 row["source"]: (int(row["rows"]), row["last_seen"] or "")
                 for row in sources
             }
-            for candidate in preferred_sources or ():
-                if candidate in counts:
-                    chosen = candidate
-                    break
+            preferred = [
+                candidate
+                for candidate in (preferred_sources or ())
+                if candidate in counts
+            ]
+            if preferred:
+                # Prefer the source with the best coverage inside the requested
+                # range; priority order breaks ties. A short priority series
+                # must not shadow a longer fallback series.
+                chosen = max(preferred, key=lambda name: counts[name][0])
             if chosen is None:
                 chosen = max(counts, key=lambda name: counts[name])
 
@@ -277,6 +289,70 @@ class PersonalStore:
             "SELECT MAX(trade_date) AS d FROM daily_bar WHERE code = ?", (code,)
         ).fetchone()
         return date.fromisoformat(row["d"]) if row and row["d"] else None
+
+    def get_bar_dates(
+        self, start: Optional[date] = None, end: Optional[date] = None
+    ) -> list[date]:
+        """Distinct bar dates across all codes/sources (calendar fallback)."""
+
+        sql = "SELECT DISTINCT trade_date FROM daily_bar"
+        where: list[str] = []
+        params: list[Any] = []
+        if start:
+            where.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            where.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY trade_date"
+        return [
+            date.fromisoformat(row["trade_date"])
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    # ------------------------------------------------------------------
+    # Trading calendar
+    # ------------------------------------------------------------------
+    def upsert_trading_calendar(
+        self, dates: Iterable[date], source: str = "derived"
+    ) -> int:
+        now = _now_iso()
+        rows = [(item.isoformat(), source, now) for item in dates]
+        if not rows:
+            return 0
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO trading_calendar (trade_date, source, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                  source=excluded.source, updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def get_trading_dates(
+        self, start: Optional[date] = None, end: Optional[date] = None
+    ) -> list[date]:
+        sql = "SELECT trade_date FROM trading_calendar"
+        where: list[str] = []
+        params: list[Any] = []
+        if start:
+            where.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            where.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY trade_date"
+        return [
+            date.fromisoformat(row["trade_date"])
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
 
     # ------------------------------------------------------------------
     # Adjustment factors
@@ -530,6 +606,7 @@ class PersonalStore:
         tables = (
             "daily_bar",
             "adjust_factor",
+            "trading_calendar",
             "trading_status",
             "fund_nav",
             "etf_snapshot",

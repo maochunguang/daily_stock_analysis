@@ -60,3 +60,46 @@ class BaostockSource:
             return rows
         finally:
             bs.logout()
+
+    def fetch_trade_calendar(self, start: date, end: date) -> list[date]:
+        bs = self._bs()
+        login = bs.login()
+        if getattr(login, "error_code", "0") != "0":
+            raise SourceUnavailable(f"BaoStock login failed: {login.error_msg}")
+        try:
+            result = bs.query_trade_dates(
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+            )
+            if result is None or result.error_code != "0":
+                return []
+            days: list[date] = []
+            while result.next():
+                values = result.get_row_data()
+                if len(values) < 2 or str(values[1]) != "1":
+                    continue
+                days.append(parse_date(values[0]))
+            return days
+        finally:
+            bs.logout()
+
+    def fetch_instrument_name(self, code: str) -> str:
+        bs = self._bs()
+        full = normalize_code(code)
+        body, suffix = full.split(".")
+        if suffix == "BJ":
+            raise SourceUnavailable("BaoStock does not support Beijing Stock Exchange")
+        exchange = "sh" if suffix == "SH" else "sz"
+        login = bs.login()
+        if getattr(login, "error_code", "0") != "0":
+            raise SourceUnavailable(f"BaoStock login failed: {login.error_msg}")
+        try:
+            result = bs.query_stock_basic(code=f"{exchange}.{body}")
+            if result is None or result.error_code != "0":
+                return ""
+            if not result.next():
+                return ""
+            values = result.get_row_data()
+            return str(values[1]).strip() if len(values) > 1 else ""
+        finally:
+            bs.logout()

@@ -84,3 +84,21 @@ def test_upsert_is_idempotent(tmp_path):
         assert bars[0].close == 11.0
     finally:
         store.close()
+
+
+def test_preferred_source_with_better_coverage_wins(tmp_path):
+    from dataclasses import replace
+
+    store = PersonalStore(tmp_path / "personal.db")
+    try:
+        short = [replace(_bar(day), source="tushare") for day in (5, 6)]
+        long = [replace(_bar(day), source="baostock") for day in (5, 6, 7, 8, 9)]
+        store.upsert_bars(short)
+        store.upsert_bars(long)
+        bars = store.get_bars(
+            "600519.SH", preferred_sources=("tushare", "baostock")
+        )
+        assert len(bars) == 5
+        assert {bar.source for bar in bars} == {"baostock"}
+    finally:
+        store.close()

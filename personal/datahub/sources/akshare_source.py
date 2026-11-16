@@ -71,3 +71,33 @@ class AkshareSource:
                 )
             )
         return bars
+
+    def fetch_trade_calendar(self, start: date, end: date) -> list[date]:
+        ak = self._ak()
+        frame = ak.tool_trade_date_hist_sina()
+        if frame is None or frame.empty:
+            return []
+        column = "trade_date" if "trade_date" in frame.columns else frame.columns[0]
+        days: list[date] = []
+        for value in frame[column]:
+            try:
+                day = parse_date(value)
+            except ValueError:
+                continue
+            if start <= day <= end:
+                days.append(day)
+        return sorted(set(days))
+
+    def fetch_instrument_name(self, code: str) -> str:
+        ak = self._ak()
+        full = normalize_code(code)
+        if is_etf_code(full):
+            return ""
+        body = full.split(".")[0]
+        frame = ak.stock_individual_info_em(symbol=body)
+        if frame is None or frame.empty:
+            return ""
+        for _, row in frame.iterrows():
+            if str(row.get("item")) == "股票简称":
+                return str(row.get("value") or "").strip()
+        return ""

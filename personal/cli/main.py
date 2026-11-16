@@ -38,10 +38,27 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=("auto", "synthetic", "tushare", "baostock", "akshare"),
     )
-    sync.add_argument("--dataset", default="bars", choices=("bars", "adjust"))
+    sync.add_argument(
+        "--dataset",
+        default="bars",
+        choices=("bars", "adjust", "calendar", "status"),
+    )
     sync.add_argument("--code", action="append", default=[])
     sync.add_argument("--start", default="")
     sync.add_argument("--end", default="")
+    sync.add_argument(
+        "--cross-check",
+        dest="cross_check",
+        action="store_true",
+        default=None,
+        help="compare the primary source with a second source",
+    )
+    sync.add_argument(
+        "--no-cross-check",
+        dest="cross_check",
+        action="store_false",
+        help="disable cross-source validation",
+    )
 
     replay = subparsers.add_parser(
         "replay", help="replay upstream AI advice as a portfolio backtest"
@@ -107,6 +124,8 @@ def _info(settings) -> int:
     print(f"personal db: {settings.personal_db}")
     print(f"stock list: {', '.join(settings.stock_list) or '<empty>'}")
     print(f"data source priority: {', '.join(settings.data_source_priority)}")
+    print(f"backtest adjust: {settings.backtest_adjust_mode}")
+    print(f"cross-source check: {settings.cross_source_check}")
     capabilities = detect(settings.upstream_db)
     print(f"upstream available: {capabilities.available}")
     print(f"analysis_history: {capabilities.has_analysis_history}")
@@ -123,7 +142,7 @@ def _info(settings) -> int:
 
 def _sync(settings, args) -> int:
     codes = list(args.code) or list(settings.stock_list)
-    if not codes:
+    if not codes and args.dataset != "calendar":
         print("no codes: pass --code or set PERSONAL_STOCK_LIST")
         return 2
     end = date.fromisoformat(args.end) if args.end else date.today()
@@ -134,11 +153,25 @@ def _sync(settings, args) -> int:
         print(f"cannot build data sources: {exc}")
         return 2
 
+    cross_check = (
+        settings.cross_source_check
+        if args.cross_check is None
+        else bool(args.cross_check)
+    )
     store = PersonalStore(settings.personal_db)
     try:
-        service = DataSyncService(store, sources)
+        service = DataSyncService(
+            store,
+            sources,
+            cross_check=cross_check,
+            preferred_sources=settings.data_source_priority,
+        )
         if args.dataset == "adjust":
             results = service.sync_adjust_factors(codes, start, end)
+        elif args.dataset == "calendar":
+            results = [service.sync_calendar(start, end)]
+        elif args.dataset == "status":
+            results = service.sync_trading_status(codes, start, end)
         else:
             results = service.sync_daily_bars(codes, start, end)
     finally:
@@ -148,9 +181,17 @@ def _sync(settings, args) -> int:
     for result in results:
         if result.rows:
             ok += 1
+            extras = []
+            if result.cross_source_issues:
+                extras.append(f"{result.cross_source_issues} cross-source diffs")
+            if result.missing_days:
+                extras.append(f"{result.missing_days} missing days")
+            if result.suspended_days:
+                extras.append(f"{result.suspended_days} suspended days")
+            suffix = f", {', '.join(extras)}" if extras else ""
             print(
                 f"{result.code}: {result.rows} {args.dataset} rows from "
-                f"{result.source} ({result.quality_issues} quality issues)"
+                f"{result.source} ({result.quality_issues} quality issues{suffix})"
             )
         else:
             print(f"{result.code}: FAILED")
@@ -174,6 +215,7 @@ def _replay(settings, args) -> int:
         end=end,
         initial_cash=settings.backtest_initial_cash,
         benchmark=settings.backtest_benchmark or None,
+        adjust_mode=settings.backtest_adjust_mode,
     )
     try:
         result, signals = replay_upstream(

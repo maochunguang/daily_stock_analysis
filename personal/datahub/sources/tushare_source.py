@@ -140,3 +140,31 @@ class TushareSource:
             )
             for row in sorted(rows, key=lambda item: item["trade_date"])
         ]
+
+    def fetch_trade_calendar(self, start: date, end: date) -> list[date]:
+        rows = self._call(
+            "trade_cal",
+            {
+                "exchange": "SSE",
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+            "cal_date,is_open",
+        )
+        return [
+            parse_date(row["cal_date"])
+            for row in rows
+            if str(row.get("is_open")) == "1"
+        ]
+
+    def fetch_instrument_name(self, code: str) -> str:
+        full = normalize_code(code)
+        body, suffix = full.split(".")
+        rows = self._call(
+            "stock_basic",
+            {"ts_code": f"{body}.{suffix}"},
+            "ts_code,name",
+        )
+        if not rows:
+            return ""
+        return str(rows[0].get("name") or "").strip()

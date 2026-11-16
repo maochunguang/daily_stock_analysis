@@ -72,10 +72,10 @@ index c3a1338..1bd1728 100644
    { path: '/settings', element: <SettingsPage /> },
 diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
 new file mode 100644
-index 0000000..b64e9c0
+index 0000000..0c8ba99
 --- /dev/null
 +++ b/apps/dsa-web/src/api/personal.ts
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,81 @@
 +import type {
 +  PersonalBacktestResponse,
 +  PersonalPlugin,
@@ -116,11 +116,12 @@ index 0000000..b64e9c0
 +}
 +
 +export interface PersonalSyncRequest {
-+  dataset: 'bars' | 'adjust';
++  dataset: 'bars' | 'adjust' | 'calendar' | 'status';
 +  source: string;
 +  codes: string[] | null;
 +  start: string | null;
 +  end: string | null;
++  cross_check?: boolean | null;
 +}
 +
 +export interface PersonalDemoRequest {
@@ -227,10 +228,10 @@ index 7a43dc5..d4d53e6 100644
    'layout.route.decisionSignals.description': 'AI recommendations, risks, and watch conditions',
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
-index 0000000..a053994
+index 0000000..a7d937c
 --- /dev/null
 +++ b/apps/dsa-web/src/pages/PersonalPage.tsx
-@@ -0,0 +1,979 @@
+@@ -0,0 +1,999 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useMemo, useState } from 'react';
 +import {
@@ -322,6 +323,9 @@ index 0000000..a053994
 +    syncResult: '同步结果',
 +    datasetBars: '日线 Bars',
 +    datasetAdjust: '复权因子 Adjust',
++    datasetCalendar: '交易日历 Calendar',
++    datasetStatus: '交易状态 Status',
++    crossCheck: '跨源校验',
 +    sourceAuto: 'auto（优先级 fallback）',
 +    sourceSynthetic: 'synthetic（离线测试）',
 +    sourceTushare: 'tushare',
@@ -396,6 +400,9 @@ index 0000000..a053994
 +    syncResult: 'Sync result',
 +    datasetBars: 'Daily bars',
 +    datasetAdjust: 'Adjustment factors',
++    datasetCalendar: 'Trading calendar',
++    datasetStatus: 'Trading status',
++    crossCheck: 'Cross-source check',
 +    sourceAuto: 'auto (priority fallback)',
 +    sourceSynthetic: 'synthetic (offline test)',
 +    sourceTushare: 'tushare',
@@ -486,11 +493,12 @@ index 0000000..a053994
 +  const [loading, setLoading] = useState(true);
 +  const [error, setError] = useState('');
 +
-+  const [syncDataset, setSyncDataset] = useState<'bars' | 'adjust'>('bars');
++  const [syncDataset, setSyncDataset] = useState<'bars' | 'adjust' | 'calendar' | 'status'>('bars');
 +  const [syncSource, setSyncSource] = useState('auto');
 +  const [syncCodes, setSyncCodes] = useState('');
 +  const [syncStart, setSyncStart] = useState(isoDaysAgo(730));
 +  const [syncEnd, setSyncEnd] = useState(isoDaysAgo(0));
++  const [syncCrossCheck, setSyncCrossCheck] = useState(true);
 +  const [syncBusy, setSyncBusy] = useState(false);
 +  const [syncResult, setSyncResult] = useState<PersonalSyncResponse | null>(null);
 +  const [syncError, setSyncError] = useState('');
@@ -568,6 +576,7 @@ index 0000000..a053994
 +          .filter(Boolean),
 +        start: syncStart || null,
 +        end: syncEnd || null,
++        cross_check: syncCrossCheck,
 +      });
 +      setSyncResult(result);
 +      await loadStatus();
@@ -893,9 +902,11 @@ index 0000000..a053994
 +          <form className="grid gap-3 md:grid-cols-3" onSubmit={(event) => void handleSync(event)}>
 +            <label>
 +              <span className={LABEL_CLASS}>{copy.dataset}</span>
-+              <select className={INPUT_CLASS} value={syncDataset} onChange={(event) => setSyncDataset(event.target.value as 'bars' | 'adjust')}>
++              <select className={INPUT_CLASS} value={syncDataset} onChange={(event) => setSyncDataset(event.target.value as 'bars' | 'adjust' | 'calendar' | 'status')}>
 +                <option value="bars">{copy.datasetBars}</option>
 +                <option value="adjust">{copy.datasetAdjust}</option>
++                <option value="calendar">{copy.datasetCalendar}</option>
++                <option value="status">{copy.datasetStatus}</option>
 +              </select>
 +            </label>
 +            <label>
@@ -919,6 +930,10 @@ index 0000000..a053994
 +            <label>
 +              <span className={LABEL_CLASS}>{copy.end}</span>
 +              <input className={INPUT_CLASS} type="date" value={syncEnd} onChange={(event) => setSyncEnd(event.target.value)} />
++            </label>
++            <label className="flex items-end gap-2 pb-3 text-sm text-foreground">
++              <input type="checkbox" checked={syncCrossCheck} onChange={(event) => setSyncCrossCheck(event.target.checked)} />
++              {copy.crossCheck}
 +            </label>
 +            <div className="flex items-end">
 +              <Button type="submit" isLoading={syncBusy} loadingText={copy.syncing}>
@@ -944,6 +959,9 @@ index 0000000..a053994
 +                      <th className="py-2 pr-4">Source</th>
 +                      <th className="py-2 pr-4 text-right">Rows</th>
 +                      <th className="py-2 pr-4">Quality</th>
++                      <th className="py-2 pr-4">Cross</th>
++                      <th className="py-2 pr-4">Missing</th>
++                      <th className="py-2 pr-4">Suspended</th>
 +                      <th className="py-2">Errors</th>
 +                    </tr>
 +                  </thead>
@@ -954,6 +972,9 @@ index 0000000..a053994
 +                        <td className={TABLE_CELL_CLASS}>{result.source ?? '—'}</td>
 +                        <td className={`${TABLE_CELL_CLASS} text-right`}>{result.rows}</td>
 +                        <td className={TABLE_CELL_CLASS}>{result.quality_issues}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.cross_source_issues ?? 0}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.missing_days ?? 0}</td>
++                        <td className={TABLE_CELL_CLASS}>{result.suspended_days ?? 0}</td>
 +                        <td className={TABLE_CELL_CLASS}>{result.errors.join('; ') || '—'}</td>
 +                      </tr>
 +                    ))}
@@ -1212,10 +1233,10 @@ index 0000000..a053994
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..452289c
+index 0000000..3c9601e
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,142 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -1289,6 +1310,9 @@ index 0000000..452289c
 +  source: string | null;
 +  rows: number;
 +  quality_issues: number;
++  cross_source_issues?: number;
++  missing_days?: number;
++  suspended_days?: number;
 +  errors: string[];
 +}
 +

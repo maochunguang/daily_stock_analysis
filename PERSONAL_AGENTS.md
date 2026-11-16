@@ -16,7 +16,8 @@ repository. Read it before changing code.
 2. `docs/AI_CONTEXT.md` — compact machine-readable context.
 3. `docs/CHANGELOG_PERSONAL.md` — what changed, where, and how it was verified.
 4. `docs/USER_GUIDE_PERSONAL.md` — end-user manual for every feature.
-5. `UPSTREAM_VERSION` — pinned upstream commit.
+5. `docs/ROADMAP_PERSONAL.md` — priorities, status and acceptance criteria.
+6. `UPSTREAM_VERSION` — pinned upstream commit.
 
 ## Hard invariants
 
@@ -80,16 +81,20 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q personal scripts qmt-bridge
 
-# CLI
-.venv/bin/dsa-personal info
-.venv/bin/dsa-personal init-db
-.venv/bin/dsa-personal demo --days 400
-.venv/bin/dsa-personal sync --source synthetic --code 600519 \
+# CLI (this fork has no console script; run from the repo root)
+python -m personal.cli.main info
+python -m personal.cli.main init-db
+python -m personal.cli.main demo --days 400
+python -m personal.cli.main sync --source synthetic --code 600519 \
   --start 2026-01-01 --end 2026-03-01
-.venv/bin/dsa-personal sync --source auto --code 600519 \
+python -m personal.cli.main sync --source auto --cross-check --code 600519 \
   --start 2026-01-01 --end 2026-03-01
-.venv/bin/dsa-personal replay --start 2025-01-01 --end 2026-11-12
-.venv/bin/dsa-personal plugins
+python -m personal.cli.main sync --dataset calendar --source baostock \
+  --start 2026-01-01 --end 2026-03-01
+python -m personal.cli.main sync --dataset status --code 600519 \
+  --start 2026-01-01 --end 2026-03-01
+python -m personal.cli.main replay --start 2025-01-01 --end 2026-11-16
+python -m personal.cli.main plugins
 
 # Integrated upstream Web UI (one service, personal page at /personal)
 # Requires an env with requirements.txt installed.

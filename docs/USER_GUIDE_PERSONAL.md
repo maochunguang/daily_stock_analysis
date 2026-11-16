@@ -20,7 +20,7 @@
 | 我想做什么 | 入口 | 本手册章节 |
 |---|---|---|
 | 看个人层状态、数据覆盖、最近回测 | `/personal` → 总览 | §4.1 |
-| 同步日线 / 复权因子 | `/personal` → 数据同步，或 `sync` | §4.2、§5 |
+| 同步日线 / 复权因子 / 交易日历 / 交易状态 | `/personal` → 数据同步，或 `sync` | §4.2、§5 |
 | 用合成数据验证回测流程 | `/personal` → 个人回测 → Demo | §4.3 |
 | 用上游 AI 建议做组合回测 | `/personal` → 个人回测 → Replay | §4.3 |
 | 看已装插件 | `/personal` → 插件，或 `plugins` | §4.4、§8 |
@@ -158,6 +158,8 @@ python -m personal.cli.main info
 | `PERSONAL_PLUGIN_ALLOWLIST` | 空 | 只加载列出的插件名；空表示全部 |
 | `PERSONAL_BACKTEST_INITIAL_CASH` | `1000000` | 回测初始资金 |
 | `PERSONAL_BACKTEST_BENCHMARK` | `000300.SH` | 基准；留空则不算基准/超额 |
+| `PERSONAL_BACKTEST_ADJUST` | `hfq` | 回测复权模式：`hfq` / `qfq` / `none` |
+| `PERSONAL_CROSS_SOURCE_CHECK` | `true` | 同步时是否用第二个数据源交叉校验 |
 | `PERSONAL_LOG_LEVEL` | `INFO` | 日志级别 |
 | `QMT_BRIDGE_URL` | `http://127.0.0.1:8710` | Windows QMT 桥地址 |
 | `QMT_BRIDGE_TOKEN` | 空 | 桥的 Bearer token |
@@ -207,20 +209,28 @@ python -m personal.cli.main info
 
 ### 4.2 数据同步
 
-1. 选「数据集」：`日线 Bars` 或 `复权因子 Adjust`。
+1. 选「数据集」：`日线 Bars`、`复权因子 Adjust`、`交易日历 Calendar` 或
+   `交易状态 Status`。
 2. 选「数据源」：`auto`、`synthetic`、`tushare`、`baostock`、`akshare`。
-3. 填「代码」（逗号分隔）；留空则用 `PERSONAL_STOCK_LIST`。
+3. 填「代码」（逗号分隔）；留空则用 `PERSONAL_STOCK_LIST`（交易日历不需要代码）。
 4. 填开始/结束日期；留空默认最近 **730 天**。
-5. 点「开始同步」，看「同步结果」。
+5. 按需勾选「跨源校验」（默认开启）。
+6. 点「开始同步」，看「同步结果」。
+
+推荐顺序：**交易日历 → 日线 → 复权因子 → 交易状态**。交易状态会用日历判断
+停牌、用日线计算涨跌停；没有日历时会退化为只用已有日线。
 
 结果字段：
 
 | 字段 | 含义 |
 |---|---|
-| `code` | 归一化后的代码 |
-| `source` | 实际成功的数据源；失败为空 |
+| `code` | 归一化后的代码；日历为 `CALENDAR` |
+| `source` | 实际成功的数据源；日历可能是 `derived`（从日线派生） |
 | `rows` | 写入行数 |
-| `quality_issues` | 质检发现的问题数（已写入质量事件） |
+| `quality_issues` | 单源质检问题数（已写入质量事件） |
+| `cross_source_issues` | 与第二数据源的差异数（已写入质量事件） |
+| `missing_days` | 日历中存在但没有日线的天数 |
+| `suspended_days` | 交易状态同步时识别出的停牌天数 |
 | `errors` | 各数据源失败原因（fallback 时会累积） |
 
 数据源怎么选：
@@ -232,8 +242,15 @@ python -m personal.cli.main info
 | 没有 Tushare / 北交所 | `baostock`（不支持北交所） |
 | ETF 日线 | Tushare 走 `fund_daily`；无权限时换 AkShare |
 | 复权因子 | 目前只有 `tushare` 支持 |
+| 交易日历 | BaoStock / AkShare / Tushare 任一可用；都失败时从已有日线派生 |
+| 交易状态 | 由日历 + 日线 + 名称推导；`auto` 会先补日历，再按代码生成 |
 
-常见报错：
+> **跨源校验**：开启后，主源成功后会用第二个可用源抓同一区间做收盘价/成交量比对，
+> 差异写入质量事件。它会让同步变慢、消耗额外请求；只想要速度时可在页面取消勾选，
+> 或设 `PERSONAL_CROSS_SOURCE_CHECK=false`。
+
+> 同步是**追加/覆盖同主键**：同一 `(code, trade_date, source)` 会更新，不会重复。
+> 读取时只选**一个**数据源，不会把不同源的价格混在一起。
 
 | 报错 | 原因 | 处理 |
 |---|---|---|
@@ -272,7 +289,10 @@ python -m personal.cli.main info
 
 - 上游库存在且有分析记录（否则提示「上游数据库不可用」）。
 - 信号涉及的代码已经在个人库有日线（先做数据同步）。全部缺失会报
-  `no local bars for signal codes; run dsa-personal sync first`；部分缺失的代码会被跳过。
+  `no local bars for signal codes; run ... sync first`；部分缺失的代码会被跳过。
+- 回测默认使用**后复权**（`PERSONAL_BACKTEST_ADJUST=hfq`），分红送转不会造成假跌。
+- 停牌/ST/涨跌停优先使用已同步的 `trading_status`；没有同步时按日线和交易日历
+  现场推导，ST 判断依赖能拿到的股票名称。
 
 信号映射规则：
 
@@ -324,7 +344,7 @@ python -m personal.cli.main <command> [options]
 | `init-db` | 创建/初始化个人库 | — |
 | `info` | 显示配置、上游契约、插件状态 | — |
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
-| `sync` | 同步日线或复权因子 | `--dataset bars\|adjust`、`--source`、`--code`（可重复）、`--start`、`--end` |
+| `sync` | 同步日线/复权因子/日历/状态 | `--dataset bars\|adjust\|calendar\|status`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
 | `plugins` | 列出插件和加载错误 | — |
 | `web` | 启动独立控制台 | `--host`、`--port`、`--reload` |
@@ -351,6 +371,12 @@ python -m personal.cli.main sync --source tushare \
 python -m personal.cli.main sync --dataset adjust --source tushare \
   --code 600519 --start 2024-01-01
 
+# 交易日历 + 交易状态（状态会用到日历和日线）
+python -m personal.cli.main sync --dataset calendar --source baostock \
+  --start 2024-01-01 --end 2026-11-16
+python -m personal.cli.main sync --dataset status --code 600519 \
+  --start 2024-01-01 --end 2026-11-16
+
 # 回放上游建议
 python -m personal.cli.main replay --start 2025-01-01 --end 2026-11-16 \
   --include both --save
@@ -374,7 +400,7 @@ python -m personal.cli.main plugins
 | 整手 | 100 股整数倍 |
 | T+1 | 当日买入的股份当日不可卖 |
 | 停牌 | 跳过，不成交 |
-| 涨跌停 | 触及涨停不买、跌停不卖（按当日行情判断） |
+| 涨跌停 | 开盘价触及涨停不买、触及跌停不卖；收盘涨跌停标记只用于展示，避免未来函数 |
 | ST | 默认排除 |
 | 仓位 | 最多 10 个持仓，单票上限 10% |
 | 初始资金 | 默认 1,000,000 |
@@ -417,8 +443,14 @@ python -m personal.cli.main plugins
 - 日线级别、下一日开盘成交，不模拟盘中滑点和排队。
 - 不模拟分红送转的现金流（复权用于价格连续性；红利税函数已提供但未接入事件）。
 - 不模拟融资融券、期权、ETF 申赎。
-- **停牌/ST/涨跌停判断依赖 `trading_status` 表**。该表当前还没有从数据源批量同步；
-  没有状态记录时，引擎按「正常可交易」处理，回测结果会偏乐观。
+- 停牌/ST/涨跌停来自 `trading_status`（可用「交易状态」同步）。没有同步时，
+  回测会按日线 + 交易日历现场推导；但 **ST 判断依赖股票名称**，名称拿不到时按
+  非 ST 处理，涨跌停幅度可能偏宽。
+- 停牌只在「首个日线到最后一个日线」之间识别；末尾的停牌和“还没下载”无法区分，
+  不会生成状态行。
+- 每个代码的首个交易日没有前收盘，无法判断涨跌停。
+- 涨跌停幅度按板块规则估算（主板 10%、创业板/科创板 20%、北交所 30%、主板 ST 5%），
+  不处理交易所临时调整的特殊情形。
 - 合成 Demo 数据是随机生成的，只能验证流程，不能用于策略判断。
 
 ---
@@ -431,6 +463,7 @@ python -m personal.cli.main plugins
 |---|---|---|
 | `daily_bar` | `(code, trade_date, source)` | 原始日线（未复权） |
 | `adjust_factor` | `(code, ex_date, source)` | 累计复权因子 |
+| `trading_calendar` | `trade_date` | 交易日（开市日） |
 | `trading_status` | `(code, trade_date)` | 停牌/ST/涨跌停标记 |
 | `fund_nav` | `(code, nav_date, source)` | 基金净值（Phase 2） |
 | `etf_snapshot` | `(code, trade_date, source)` | ETF 快照（Phase 2） |
@@ -445,6 +478,7 @@ python -m personal.cli.main plugins
 - 前复权：`raw × factor(date) / factor(latest)`
 - 后复权：`raw × factor(date) / factor(first)`
 - 个人库存**原始价**，复权在读取/分析时计算，避免重复入库。
+- 回测默认按**后复权**处理，涨跌停价会同步换算到复权后的价格空间。
 
 ### 7.3 数据质量规则
 
@@ -459,14 +493,22 @@ python -m personal.cli.main plugins
 | `volume_mismatch` | 跨源成交量差异 |
 | `missing_trading_day` | 缺失交易日 |
 
+单源检查在每次日线同步时自动执行；`close_price_mismatch` / `volume_mismatch` 只有在
+开启「跨源校验」且存在第二个可用数据源时才会产生；`missing_trading_day` 需要先有
+交易日历。
+
 ### 7.4 源隔离
 
 同一代码可能从多个源同步过。`get_bars()` 只选**一个**源：
 
-1. 按 `PERSONAL_DATA_SOURCE_PRIORITY` 顺序找第一个有数据的源；
-2. 都没命中时选行数最多的源。
+1. 在 `PERSONAL_DATA_SOURCE_PRIORITY` 列出的源里，选请求区间内**行数最多**的
+   （行数相同时按优先级）；
+2. 没有命中优先级列表时，选全局行数最多的源。
 
-这样可以避免「合成数据和真实数据混在一起」导致回测失真。
+这样既避免混源失真，也避免「优先源只补了几天的数据，把完整的历史序列盖掉」。
+
+> 如果确实要让某个短区间的新源覆盖旧源，先把该区间之外的数据也同步完整，
+> 或调整优先级/删除旧源数据。
 
 ---
 
@@ -635,6 +677,11 @@ docker compose -f docker/docker-compose.yml up -d server
 | Replay 报 `no local bars` | 先同步信号涉及的代码 |
 | 同步全部失败 | 看 `errors`；Tushare 权限/限流、BaoStock 网络、代码是否北交所 |
 | 数据覆盖为空 | 同步是否成功；`PERSONAL_DB` 是否指向同一个库 |
+| 交易日历同步失败 | 换 `baostock`/`akshare`；都失败时会从已有日线派生（source=`derived`） |
+| 交易状态 rows 为 0 | 先同步日线；状态需要本地日线才能推导 |
+| 停牌/涨跌停不生效 | 是否先同步了交易日历和交易状态；无日线的日期会被视为停牌 |
+| 复权后价格和行情软件不同 | 回测默认后复权（hfq），与软件前复权显示不同属正常 |
+| 跨源校验很慢 | 取消勾选或设 `PERSONAL_CROSS_SOURCE_CHECK=false` |
 | 插件不显示 | `plugin.yaml` 是否在 `plugins/<name>/`；`plugins` 命令看错误 |
 | 数据库无法写入 | `data/` 权限；不要用 SMB/NFS；Docker entrypoint 会尝试 chown |
 | 8000 端口冲突 | `API_PORT=8010` 覆盖 |
@@ -674,6 +721,7 @@ docker compose -f docker/docker-compose.yml up -d server
 
 - [ ] 本手册对应章节已更新（新功能加新章节，并在 §0 导航表加一行）。
 - [ ] `docs/CHANGELOG_PERSONAL.md` 新增 `CHG-XXXX`，`Files` 表包含本手册。
+- [ ] 如果是路线图事项，更新 `docs/ROADMAP_PERSONAL.md` 的状态。
 - [ ] `docs/AI_CONTEXT.md` 的入口/命令/API/限制有变化时同步更新。
 - [ ] 命令和字段名与实际代码一致（能从代码里直接搜到）。
 - [ ] 没有写入 token、密码、账号等敏感信息。

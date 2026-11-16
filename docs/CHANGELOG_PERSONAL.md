@@ -769,3 +769,104 @@ PY
 ### Next
 Extend the guide when Phase 2 adds fund NAV analytics, trade journal UI and
 review reports.
+
+## [2026-11-16] CHG-0015 — Adjustment-aware backtest, calendar/status sync, cross-source checks
+
+### Metadata
+- id: CHG-0015
+- date: 2026-11-16
+- status: done
+- area: datahub, backtest, api, ui
+- related: CHG-0002, CHG-0003, CHG-0006, CHG-0014
+- roadmap: RM-01, RM-02, RM-03, RM-04
+
+### Summary
+Closed the four P0 data-correctness gaps from the roadmap. Backtests now apply
+adjustment factors (default hfq) and consume derived suspension/ST/limit status;
+a trading calendar table drives suspension detection and missing-day quality
+events; and sync can compare the primary source with a second source.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/status.py` | New: derive suspension/ST/limit-up/down from bars, calendar, name, factors |
+| `personal/datahub/tradability.py` | Execution checks open vs limit price; close flags no longer block (look-ahead fix) |
+| `personal/datahub/store.py` | `trading_calendar` table + calendar/bar-date methods; stats count |
+| `personal/datahub/sync.py` | Calendar/status sync, missing-day checks, optional cross-source validation |
+| `personal/datahub/sources/tushare_source.py` | `trade_cal`, `stock_basic` name |
+| `personal/datahub/sources/baostock_source.py` | `query_trade_dates`, `query_stock_basic` name |
+| `personal/datahub/sources/akshare_source.py` | trade-date history, instrument name |
+| `personal/backtest/types.py` | `BacktestConfig.adjust_mode` (default `hfq`) |
+| `personal/backtest/engine.py` | Apply adjustment factors to bars before simulation |
+| `personal/backtest/replay.py` | Load factors/status; scale limit prices into adjusted space |
+| `personal/config.py` | `PERSONAL_BACKTEST_ADJUST`, `PERSONAL_CROSS_SOURCE_CHECK` |
+| `personal/cli/main.py` | `--dataset calendar|status`, `--cross-check` / `--no-cross-check` |
+| `personal/api/app.py` | Sync datasets calendar/status + `cross_check`; replay `adjust` |
+| `personal/api/static/*` | Standalone console dataset options + cross-check checkbox |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | Integrated UI dataset options, cross-check, Cross/Missing columns |
+| `apps/dsa-web/src/api/personal.ts`, `types/personal.ts` | New sync fields |
+| `patches/0001-personal-web-integration.patch` | Regenerated for the new sync UI |
+| `config/personal.example.env`, `.env.example`, `docker/docker-compose.yml` | New env defaults |
+| `docs/USER_GUIDE_PERSONAL.md` | Sync workflow, fields, backtest adjustment, limitations, FAQ |
+| `docs/ROADMAP_PERSONAL.md` | New roadmap; RM-01..RM-04 marked done |
+| `docs/AI_CONTEXT.md` | Modules, schema, CLI/API, data-source matrix, CHG-0015 |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+
+### Commands
+```bash
+# tests
+PYTHONPATH="$PWD" ../.venv/bin/python -m pytest -q personal/tests
+
+# real calendar / bars / status
+python -m personal.cli.main sync --dataset calendar --source baostock \
+  --start 2026-01-01 --end 2026-03-31
+python -m personal.cli.main sync --dataset bars --source baostock \
+  --code 600519 --start 2026-01-01 --end 2026-03-31
+python -m personal.cli.main sync --dataset status --code 600519 \
+  --start 2026-01-01 --end 2026-03-31
+
+# real adjustment factors
+python -m personal.cli.main sync --dataset adjust --source tushare \
+  --code 600519 --start 2025-01-01 --end 2026-03-31
+
+# frontend + image
+cd apps/dsa-web && npm run build
+docker compose -f docker/docker-compose.yml build server
+API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+```
+
+### Verification
+- `pytest personal/tests`: **66 passed** (was 54; +12 for adjustment, calendar,
+  status derivation, cross-check, missing days, source coverage, look-ahead
+  regression, API sync).
+- Real BaoStock: calendar `2026-01-01..2026-03-31` → 56 open days; 600519 bars
+  → 56 rows; status → 56 rows (55 with limits, 0 suspended).
+- Real Tushare: 600519 `adj_factor` 2025-01-01..2026-03-31 → 299 rows;
+  `trade_cal` and `stock_basic` also work on the free tier.
+- Adjusted backtest smoke test: 600519 buy/sell with real factors and 1,000,000
+  cash executed 2 trades, hfq prices, return +0.46%.
+- Source selection now prefers the best coverage inside the requested range:
+  a 5-row Tushare top-up no longer shadows a 56-row BaoStock series (regression
+  test added).
+- Frontend `npm run build`: success.
+- Docker image rebuilt; container healthy on 8010; `/personal-api/api/status`
+  shows `trading_calendar=56`, `trading_status=56`, `adjust_factor=299`;
+  `POST /personal-api/api/data/sync` with `dataset=status` returned 56 rows and
+  `dataset=calendar` returned 56 rows from baostock.
+- Browser: `/personal` → 数据同步 shows `交易日历 Calendar`, `交易状态 Status`
+  and a checked `跨源校验` box.
+
+### Notes / Migration
+- Existing personal DBs get the new `trading_calendar` table automatically on
+  open (`CREATE TABLE IF NOT EXISTS`). No manual migration.
+- Default backtest mode is now `hfq`; set `PERSONAL_BACKTEST_ADJUST=none` to
+  reproduce raw-price results.
+- Cross-source checking is on by default and doubles network calls; disable it
+  with `PERSONAL_CROSS_SOURCE_CHECK=false` or the UI checkbox.
+- ST detection needs an instrument name. Tushare `stock_basic` may require
+  points; BaoStock/AkShare are the free fallbacks.
+- Trading status is derived, not provider-native. The first bar of a series has
+  no previous close, so no limit flags.
+
+### Next
+RM-05 scheduled incremental sync and RM-06 dividend/fee completion.

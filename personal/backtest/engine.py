@@ -13,7 +13,8 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import pandas as pd
 
-from ..datahub.models import DailyBar, TradingStatus
+from ..datahub.adjust import adjust_bars
+from ..datahub.models import AdjustFactor, DailyBar, TradingStatus
 from ..datahub.normalize import normalize_code
 from .costs import CostModel
 from .execution import ExecutionSimulator
@@ -29,8 +30,20 @@ def run_backtest(
     *,
     status_by_code: Optional[Mapping[str, Mapping[date, TradingStatus]]] = None,
     benchmark_bars: Optional[Sequence[DailyBar]] = None,
+    adjust_factors_by_code: Optional[
+        Mapping[str, Sequence[AdjustFactor]]
+    ] = None,
 ) -> BacktestResult:
     bars = _prepare_bars(bars_by_code, config)
+    if adjust_factors_by_code and config.adjust_mode not in {"none", ""}:
+        bars = {
+            code: adjust_bars(
+                series,
+                adjust_factors_by_code.get(code, ()),
+                mode=config.adjust_mode,
+            )
+            for code, series in bars.items()
+        }
     by_date = _index_by_date(bars)
     trading_dates = sorted(by_date)
     if not trading_dates:

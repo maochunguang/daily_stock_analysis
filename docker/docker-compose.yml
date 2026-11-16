@@ -47,6 +47,8 @@ x-common: &common
     - PERSONAL_DB=/app/data/personal.db
     - PERSONAL_DATA_DIR=/app/data
     - PERSONAL_PLUGIN_DIRS=/app/plugins
+    - PERSONAL_BACKTEST_ADJUST=hfq
+    - PERSONAL_CROSS_SOURCE_CHECK=true
     # QMT bridge is Windows-only; point this to the Windows QMT machine if used.
     # - QMT_BRIDGE_URL=http://192.168.1.50:8710
     # - QMT_BRIDGE_TOKEN=change-me

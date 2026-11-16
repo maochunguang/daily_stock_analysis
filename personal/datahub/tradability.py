@@ -26,8 +26,8 @@ def can_buy(status: Optional[TradingStatus], price: float) -> bool:
         return True
     if status.is_suspended:
         return False
-    if status.is_limit_up:
-        return False
+    # ``is_limit_up`` describes the close; execution happens at the open, so
+    # use the limit price itself to avoid look-ahead bias.
     if status.limit_up is not None and price >= status.limit_up - PRICE_EPSILON:
         return False
     return True
@@ -38,8 +38,7 @@ def can_sell(status: Optional[TradingStatus], price: float) -> bool:
         return True
     if status.is_suspended:
         return False
-    if status.is_limit_down:
-        return False
+    # Same reasoning as ``can_buy``: compare the open with the limit price.
     if status.limit_down is not None and price <= status.limit_down + PRICE_EPSILON:
         return False
     return True

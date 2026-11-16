@@ -9,7 +9,10 @@ from ..backtest.engine import run_backtest
 from ..backtest.types import BacktestConfig, BacktestResult, Signal
 from ..contracts.models import AnalysisRecord, DecisionSignalRecord
 from ..contracts.upstream_db import UpstreamDB
+from ..datahub.adjust import factor_at
+from ..datahub.models import AdjustFactor, DailyBar, TradingStatus
 from ..datahub.normalize import normalize_code
+from ..datahub.status import derive_trading_statuses, scale_status_limits
 from ..datahub.store import PersonalStore
 
 BUY_KEYWORDS = ("买入", "加仓", "增持", "建仓", "buy", "add", "accumulate")
@@ -143,7 +146,7 @@ def replay_upstream(
             missing.append(code)
     if not bars_by_code:
         raise ValueError(
-            "no local bars for signal codes; run `dsa-personal sync` first "
+            "no local bars for signal codes; run `python -m personal.cli.main sync` first "
             f"(missing: {', '.join(missing)})"
         )
 
@@ -156,10 +159,72 @@ def replay_upstream(
             preferred_sources=preferred_sources,
         )
 
+    factors_by_code: dict[str, list[AdjustFactor]] = {
+        code: store.get_adjust_factors(code) for code in bars_by_code
+    }
+    status_by_code: dict[str, dict[date, TradingStatus]] = {
+        code: _statuses_for(
+            store,
+            code,
+            bars,
+            factors_by_code.get(code, []),
+            config,
+        )
+        for code, bars in bars_by_code.items()
+    }
+
     result = run_backtest(
         bars_by_code,
         signals,
         config,
+        status_by_code=status_by_code,
         benchmark_bars=benchmark_bars or None,
+        adjust_factors_by_code=factors_by_code,
     )
     return result, signals
+
+
+def _statuses_for(
+    store: PersonalStore,
+    code: str,
+    bars: Sequence[DailyBar],
+    factors: Sequence[AdjustFactor],
+    config: BacktestConfig,
+) -> dict[date, TradingStatus]:
+    """Prefer stored status rows, otherwise derive them on the fly.
+
+    Limits are scaled into the same adjusted price space as the bars used by
+    the engine, otherwise a hfq/qfq price would be compared with a raw limit.
+    """
+
+    stored = store.get_trading_statuses(code, config.start, config.end)
+    calendar = store.get_trading_dates(config.start, config.end)
+    derived = {
+        item.trade_date: item
+        for item in derive_trading_statuses(
+            code,
+            bars,
+            calendar,
+            factors=factors,
+        )
+    }
+    statuses = dict(derived)
+    statuses.update(stored)
+
+    if config.adjust_mode in {"none", ""} or not factors or not bars:
+        return statuses
+
+    if config.adjust_mode == "qfq":
+        base = factor_at(factors, bars[-1].trade_date)
+    else:
+        base = factor_at(factors, bars[0].trade_date)
+    if base == 0:
+        return statuses
+
+    return {
+        trade_date: scale_status_limits(
+            status,
+            factor_at(factors, trade_date) / base,
+        )
+        for trade_date, status in statuses.items()
+    }

@@ -38,11 +38,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export interface PersonalSyncRequest {
-  dataset: 'bars' | 'adjust';
+  dataset: 'bars' | 'adjust' | 'calendar' | 'status';
   source: string;
   codes: string[] | null;
   start: string | null;
   end: string | null;
+  cross_check?: boolean | null;
 }
 
 export interface PersonalDemoRequest {

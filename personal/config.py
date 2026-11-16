@@ -110,6 +110,8 @@ class Settings:
     qmt_require_confirm: bool
     backtest_benchmark: str
     backtest_initial_cash: float
+    backtest_adjust_mode: str
+    cross_source_check: bool
     log_level: str
 
 
@@ -133,6 +135,9 @@ def get_settings() -> Settings:
         ).split(",")
         if item.strip()
     )
+    adjust_mode = _env("PERSONAL_BACKTEST_ADJUST", "hfq").lower() or "hfq"
+    if adjust_mode not in {"hfq", "qfq", "none"}:
+        adjust_mode = "hfq"
 
     return Settings(
         root=ROOT,
@@ -158,5 +163,7 @@ def get_settings() -> Settings:
         qmt_require_confirm=_env_bool("QMT_REQUIRE_CONFIRM", True),
         backtest_benchmark=_env("PERSONAL_BACKTEST_BENCHMARK", "000300.SH"),
         backtest_initial_cash=_env_float("PERSONAL_BACKTEST_INITIAL_CASH", 1_000_000.0),
+        backtest_adjust_mode=adjust_mode,
+        cross_source_check=_env_bool("PERSONAL_CROSS_SOURCE_CHECK", True),
         log_level=_env("PERSONAL_LOG_LEVEL", "INFO").upper(),
     )

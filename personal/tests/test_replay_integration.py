@@ -75,9 +75,9 @@ def test_replay_upstream_end_to_end(tmp_path):
     store.upsert_bars(
         [
             _bar(5, 9.0, 9.5),
-            _bar(6, 10.0, 10.5),
-            _bar(7, 11.0, 11.5),
-            _bar(8, 12.0, 12.5),
+            _bar(6, 9.8, 10.2),
+            _bar(7, 10.4, 10.8),
+            _bar(8, 10.9, 11.2),
         ]
     )
     db = UpstreamDB(upstream_path)

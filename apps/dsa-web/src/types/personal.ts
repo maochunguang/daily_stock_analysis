@@ -71,6 +71,9 @@ export interface PersonalSyncResult {
   source: string | null;
   rows: number;
   quality_issues: number;
+  cross_source_issues?: number;
+  missing_days?: number;
+  suspended_days?: number;
   errors: string[];
 }
 

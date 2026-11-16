@@ -5,7 +5,7 @@ import pytest
 from personal.backtest.costs import CostConfig
 from personal.backtest.engine import run_backtest
 from personal.backtest.types import BacktestConfig, Signal
-from personal.datahub.models import DailyBar, TradingStatus
+from personal.datahub.models import AdjustFactor, DailyBar, TradingStatus
 
 
 def _bar(day: int, open_price: float, close: float, code: str = "600519.SH") -> DailyBar:
@@ -63,6 +63,55 @@ def test_signal_replay_buys_next_open_and_sells_next_open():
     assert result.metrics["total_return"] == pytest.approx(0.05)
     assert result.final_cash == pytest.approx(105_000)
     assert result.final_positions == {}
+
+
+def test_adjust_factors_remove_split_distortion():
+    code = "600519.SH"
+    bars = {
+        code: [
+            _bar(2, 100.0, 100.0),
+            _bar(5, 100.0, 100.0),
+            _bar(6, 50.0, 50.0),  # 2-for-1 split overnight
+        ]
+    }
+    factors = [AdjustFactor(code, date(2026, 1, 6), 2.0, source="test")]
+    signals = [
+        Signal(date(2026, 1, 2), code, "buy", reason="entry"),
+        Signal(date(2026, 1, 5), code, "sell", reason="exit"),
+    ]
+    config = BacktestConfig(
+        start=date(2026, 1, 1),
+        end=date(2026, 1, 8),
+        initial_cash=100_000,
+        max_positions=1,
+        max_position_pct=1.0,
+        adjust_mode="hfq",
+        cost=CostConfig(
+            commission_bps=0,
+            min_commission=0,
+            stamp_duty_sell_bps=0,
+            transfer_fee_bps=0,
+            slippage_bps=0,
+        ),
+    )
+
+    adjusted = run_backtest(
+        bars,
+        signals,
+        config,
+        adjust_factors_by_code={code: factors},
+    )
+    buy, sell = adjusted.trades
+    assert buy.price == 100.0
+    assert sell.price == 100.0
+    assert adjusted.metrics["total_return"] == 0.0
+
+    raw = run_backtest(
+        bars,
+        signals,
+        BacktestConfig(**{**config.__dict__, "adjust_mode": "none"}),
+    )
+    assert raw.metrics["total_return"] < -0.4
 
 
 def test_limit_up_blocks_buy():

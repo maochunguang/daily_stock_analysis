@@ -43,3 +43,16 @@ def test_suspension_blocks_both_sides():
 def test_t_plus_one():
     assert not t_plus_one_ok(date(2026, 1, 5), date(2026, 1, 5))
     assert t_plus_one_ok(date(2026, 1, 5), date(2026, 1, 6))
+
+
+def test_close_limit_flag_does_not_block_next_open():
+    # A limit-up close is known only after the close; a normal next open must
+    # remain tradable (no look-ahead).
+    status = TradingStatus(
+        code="600519.SH",
+        trade_date=date(2026, 1, 5),
+        limit_up=11.0,
+        limit_down=9.0,
+        is_limit_up=True,
+    )
+    assert can_buy(status, 10.0)

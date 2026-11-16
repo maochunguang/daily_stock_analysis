@@ -112,3 +112,57 @@ def test_sync_all_sources_fail(tmp_path):
         assert len(results[0].errors) == 2
     finally:
         store.close()
+
+
+def test_cross_check_and_missing_days_are_recorded(tmp_path):
+    from dataclasses import replace
+
+    store = PersonalStore(tmp_path / "personal.db")
+    try:
+        store.upsert_trading_calendar(
+            [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)], "test"
+        )
+        primary_bars = _bars("600519.SH") + [
+            replace(_bars("600519.SH")[0], trade_date=date(2026, 1, 7))
+        ]
+        primary = _FakeSource("primary", bars=primary_bars)
+        secondary_bars = [replace(item, close=12.0) for item in primary_bars]
+        secondary = _FakeSource("secondary", bars=secondary_bars)
+        service = DataSyncService(
+            store,
+            [primary, secondary],
+            cross_check=True,
+        )
+        results = service.sync_daily_bars(
+            ["600519"], date(2026, 1, 1), date(2026, 1, 31)
+        )
+        assert results[0].cross_source_issues == 2
+        assert results[0].missing_days == 1
+        rules = {event["rule"] for event in store.list_quality_events()}
+        assert "close_price_mismatch" in rules
+        assert "missing_trading_day" in rules
+    finally:
+        store.close()
+
+
+def test_cross_check_can_be_disabled(tmp_path):
+    from dataclasses import replace
+
+    store = PersonalStore(tmp_path / "personal.db")
+    try:
+        primary = _FakeSource("primary", bars=_bars("600519.SH"))
+        secondary = _FakeSource(
+            "secondary",
+            bars=[replace(item, close=12.0) for item in _bars("600519.SH")],
+        )
+        service = DataSyncService(store, [primary, secondary], cross_check=False)
+        results = service.sync_daily_bars(
+            ["600519"], date(2026, 1, 1), date(2026, 1, 31)
+        )
+        assert results[0].cross_source_issues == 0
+        assert not any(
+            event["dataset"] == "cross_source"
+            for event in store.list_quality_events()
+        )
+    finally:
+        store.close()

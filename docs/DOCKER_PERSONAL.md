@@ -46,6 +46,8 @@ PERSONAL_UPSTREAM_DB=/app/data/stock_analysis.db
 PERSONAL_DB=/app/data/personal.db
 PERSONAL_DATA_DIR=/app/data
 PERSONAL_PLUGIN_DIRS=/app/plugins
+PERSONAL_BACKTEST_ADJUST=hfq
+PERSONAL_CROSS_SOURCE_CHECK=true
 
 # QMT（NAS 上不可用，指向 Windows QMT 机器；不填则 QMT 页面显示未连接）
 # QMT_BRIDGE_URL=http://192.168.1.50:8710

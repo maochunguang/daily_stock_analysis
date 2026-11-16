@@ -50,6 +50,8 @@ class BacktestConfig:
     lot_size: int = 100
     exclude_st: bool = True
     exclude_suspended: bool = True
+    # Price adjustment applied to bars before simulation: hfq / qfq / none.
+    adjust_mode: str = "hfq"
 
 
 @dataclass

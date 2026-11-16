@@ -89,6 +89,9 @@ const COPY = {
     syncResult: '同步结果',
     datasetBars: '日线 Bars',
     datasetAdjust: '复权因子 Adjust',
+    datasetCalendar: '交易日历 Calendar',
+    datasetStatus: '交易状态 Status',
+    crossCheck: '跨源校验',
     sourceAuto: 'auto（优先级 fallback）',
     sourceSynthetic: 'synthetic（离线测试）',
     sourceTushare: 'tushare',
@@ -163,6 +166,9 @@ const COPY = {
     syncResult: 'Sync result',
     datasetBars: 'Daily bars',
     datasetAdjust: 'Adjustment factors',
+    datasetCalendar: 'Trading calendar',
+    datasetStatus: 'Trading status',
+    crossCheck: 'Cross-source check',
     sourceAuto: 'auto (priority fallback)',
     sourceSynthetic: 'synthetic (offline test)',
     sourceTushare: 'tushare',
@@ -253,11 +259,12 @@ const PersonalPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [syncDataset, setSyncDataset] = useState<'bars' | 'adjust'>('bars');
+  const [syncDataset, setSyncDataset] = useState<'bars' | 'adjust' | 'calendar' | 'status'>('bars');
   const [syncSource, setSyncSource] = useState('auto');
   const [syncCodes, setSyncCodes] = useState('');
   const [syncStart, setSyncStart] = useState(isoDaysAgo(730));
   const [syncEnd, setSyncEnd] = useState(isoDaysAgo(0));
+  const [syncCrossCheck, setSyncCrossCheck] = useState(true);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncResult, setSyncResult] = useState<PersonalSyncResponse | null>(null);
   const [syncError, setSyncError] = useState('');
@@ -335,6 +342,7 @@ const PersonalPage: React.FC = () => {
           .filter(Boolean),
         start: syncStart || null,
         end: syncEnd || null,
+        cross_check: syncCrossCheck,
       });
       setSyncResult(result);
       await loadStatus();
@@ -660,9 +668,11 @@ const PersonalPage: React.FC = () => {
           <form className="grid gap-3 md:grid-cols-3" onSubmit={(event) => void handleSync(event)}>
             <label>
               <span className={LABEL_CLASS}>{copy.dataset}</span>
-              <select className={INPUT_CLASS} value={syncDataset} onChange={(event) => setSyncDataset(event.target.value as 'bars' | 'adjust')}>
+              <select className={INPUT_CLASS} value={syncDataset} onChange={(event) => setSyncDataset(event.target.value as 'bars' | 'adjust' | 'calendar' | 'status')}>
                 <option value="bars">{copy.datasetBars}</option>
                 <option value="adjust">{copy.datasetAdjust}</option>
+                <option value="calendar">{copy.datasetCalendar}</option>
+                <option value="status">{copy.datasetStatus}</option>
               </select>
             </label>
             <label>
@@ -686,6 +696,10 @@ const PersonalPage: React.FC = () => {
             <label>
               <span className={LABEL_CLASS}>{copy.end}</span>
               <input className={INPUT_CLASS} type="date" value={syncEnd} onChange={(event) => setSyncEnd(event.target.value)} />
+            </label>
+            <label className="flex items-end gap-2 pb-3 text-sm text-foreground">
+              <input type="checkbox" checked={syncCrossCheck} onChange={(event) => setSyncCrossCheck(event.target.checked)} />
+              {copy.crossCheck}
             </label>
             <div className="flex items-end">
               <Button type="submit" isLoading={syncBusy} loadingText={copy.syncing}>
@@ -711,6 +725,9 @@ const PersonalPage: React.FC = () => {
                       <th className="py-2 pr-4">Source</th>
                       <th className="py-2 pr-4 text-right">Rows</th>
                       <th className="py-2 pr-4">Quality</th>
+                      <th className="py-2 pr-4">Cross</th>
+                      <th className="py-2 pr-4">Missing</th>
+                      <th className="py-2 pr-4">Suspended</th>
                       <th className="py-2">Errors</th>
                     </tr>
                   </thead>
@@ -721,6 +738,9 @@ const PersonalPage: React.FC = () => {
                         <td className={TABLE_CELL_CLASS}>{result.source ?? '—'}</td>
                         <td className={`${TABLE_CELL_CLASS} text-right`}>{result.rows}</td>
                         <td className={TABLE_CELL_CLASS}>{result.quality_issues}</td>
+                        <td className={TABLE_CELL_CLASS}>{result.cross_source_issues ?? 0}</td>
+                        <td className={TABLE_CELL_CLASS}>{result.missing_days ?? 0}</td>
+                        <td className={TABLE_CELL_CLASS}>{result.suspended_days ?? 0}</td>
                         <td className={TABLE_CELL_CLASS}>{result.errors.join('; ') || '—'}</td>
                       </tr>
                     ))}

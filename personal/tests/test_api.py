@@ -102,3 +102,46 @@ def test_can_be_mounted_under_upstream_prefix(tmp_path):
         response = test_client.get("/personal-api/api/status")
         assert response.status_code == 200
         assert response.json()["app"]["version"]
+
+
+def test_calendar_and_status_sync(client):
+    bars = client.post(
+        "/api/data/sync",
+        json={
+            "dataset": "bars",
+            "source": "synthetic",
+            "codes": ["600519"],
+            "start": "2026-01-01",
+            "end": "2026-03-01",
+        },
+    )
+    assert bars.status_code == 200
+
+    calendar = client.post(
+        "/api/data/sync",
+        json={
+            "dataset": "calendar",
+            "source": "synthetic",
+            "start": "2026-01-01",
+            "end": "2026-03-01",
+        },
+    )
+    assert calendar.status_code == 200
+    assert calendar.json()["results"][0]["rows"] > 0
+
+    status = client.post(
+        "/api/data/sync",
+        json={
+            "dataset": "status",
+            "source": "synthetic",
+            "codes": ["600519"],
+            "start": "2026-01-01",
+            "end": "2026-03-01",
+        },
+    )
+    assert status.status_code == 200
+    assert status.json()["results"][0]["rows"] > 0
+
+    stats = client.get("/api/status").json()["storage"]
+    assert stats["trading_calendar"] > 0
+    assert stats["trading_status"] > 0
