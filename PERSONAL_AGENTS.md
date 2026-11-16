@@ -15,7 +15,8 @@ repository. Read it before changing code.
 1. `docs/PERSONAL_EXTENSION_ARCHITECTURE.md` — architecture and boundaries.
 2. `docs/AI_CONTEXT.md` — compact machine-readable context.
 3. `docs/CHANGELOG_PERSONAL.md` — what changed, where, and how it was verified.
-4. `UPSTREAM_VERSION` — pinned upstream commit.
+4. `docs/USER_GUIDE_PERSONAL.md` — end-user manual for every feature.
+5. `UPSTREAM_VERSION` — pinned upstream commit.
 
 ## Hard invariants
 
@@ -38,7 +39,12 @@ repository. Read it before changing code.
    `CHG-XXXX` entry using the fixed template.
 8. **If architecture, contracts, schemas, commands, or limitations change,
    update `docs/AI_CONTEXT.md` too.**
-9. **Keep the personal layer low-coupling.** Prefer adapters, contracts, and
+9. **Every user-facing feature must update `docs/USER_GUIDE_PERSONAL.md`.**
+   Pages, tabs, fields, CLI commands/options, env vars, API routes, data
+   sources, backtest rules, metrics, plugin contracts and QMT endpoints all
+   count. Add the guide update to the changelog `Files` table in the same
+   commit. A feature without a manual entry is incomplete.
+10. **Keep the personal layer low-coupling.** Prefer adapters, contracts, and
    sidecar modules over patching upstream. If a patch is unavoidable, put it in
    `patches/` and document the anchor and upstream version.
 
@@ -60,7 +66,7 @@ repository. Read it before changing code.
 | `config/` | Example config; real `personal.env` is gitignored |
 | `patches/` | Explicit upstream patches; currently the personal Web UI integration |
 | `scripts/` | Upstream sync, contract check, patch apply |
-| `docs/` | Architecture, AI context, changelog, Docker/NAS guide, phase notes |
+| `docs/` | Architecture, AI context, changelog, user guide, Docker/NAS guide, phase notes |
 | `(repo root)` | DSA upstream code (this fork) |
 
 ## Commands
@@ -120,6 +126,7 @@ git apply --check --reverse patches/0001-personal-web-integration.patch
 | New standalone console tab | `personal/api/static/index.html`, `style.css`, `app.js` |
 | New CLI command | `personal/cli/main.py` |
 | QMT endpoint | `qmt-bridge/app.py` + `personal/execution/qmt_client.py` |
+| Any user-facing feature/manual | `docs/USER_GUIDE_PERSONAL.md` (add a §0 nav row + a section) |
 
 ## Upstream UI integration contract
 
@@ -169,6 +176,9 @@ BaoStock is the current free daily-bar fallback. AkShare is planned for funds.
 - Changelog entry template:
   `## [YYYY-MM-DD] CHG-XXXX — Title` with `Metadata`, `Summary`, `Files`,
   `Commands`, `Verification`, `Notes`, `Next`.
+- **User-facing changes require a `docs/USER_GUIDE_PERSONAL.md` update in the
+  same commit.** Add the guide to the changelog `Files` table and describe the
+  new UI/CLI/config behavior there. Manual-only docs do not need a second guide.
 - Keep `docs/AI_CONTEXT.md` factual and path-exact. Prefer tables and short
   bullets over prose.
 - Do not include secrets or full account ids.

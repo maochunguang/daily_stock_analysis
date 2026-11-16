@@ -316,6 +316,7 @@ python main.py --webui-only
 - **数据**：`data/personal.db`（个人库，已 gitignore）；上游库仍为 `data/stock_analysis.db`，只读访问。
 - **交易**：默认关闭（`QMT_TRADING_ENABLED=false` + `QMT_REQUIRE_CONFIRM=true`），QMT 桥只读健康检查不会下单。
 - **文档**：
+  - [使用手册](docs/USER_GUIDE_PERSONAL.md)
   - [个人扩展架构](docs/PERSONAL_EXTENSION_ARCHITECTURE.md)
   - [AI Context](docs/AI_CONTEXT.md)
   - [变更记录](docs/CHANGELOG_PERSONAL.md)

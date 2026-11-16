@@ -25,6 +25,7 @@
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
 | `ui_patch` | `patches/0001-personal-web-integration.patch` |
 | `docker_doc` | `docs/DOCKER_PERSONAL.md` |
+| `user_guide` | `docs/USER_GUIDE_PERSONAL.md` (required for every user-facing feature) |
 
 ## Purpose and boundary
 
@@ -231,10 +232,13 @@ config_schema:
 - Integrated UI requires the upstream Python environment plus
   `cd apps/dsa-web && npm run build`; the patch must be re-applied
   after upstream sync.
-- Docker image includes `personal/`, `config/`, `plugins/`; build it on the
-  target NAS. QMT bridge is Windows-only and cannot run in the container.
-- Docker/Compose was not available on the development host, so the image was
-  not built locally; `docs/DOCKER_PERSONAL.md` records the deployment checks.
+- Docker image includes `personal/`, `config/`, `plugins/`; QMT bridge is
+  Windows-only and cannot run in the container. Verified on macOS arm64
+  (Docker Desktop 29.9.3, Compose v5.7.0): build, `/personal`, personal APIs,
+  demo backtest and persistence across restart all pass. See
+  `docs/DOCKER_PERSONAL.md` §10.
+- Upstream DB `data/stock_analysis.db` is created only after the first upstream
+  analysis; before that the personal page shows “上游 DSA 未生成”.
 
 ## Changelog index
 
@@ -252,4 +256,5 @@ config_schema:
 | `CHG-0010` | Integrated upstream Web UI (`/personal`) + `/personal-api` mount |
 | `CHG-0011` | Rebase onto upstream `c820915` + self-contained fork |
 | `CHG-0012` | Docker/NAS deployment support |
-| `CHG-0011` | Rebase onto upstream `c820915` + self-contained fork |
+| `CHG-0013` | Docker runtime verification on macOS arm64 |
+| `CHG-0014` | Personal user guide + mandatory manual rule |

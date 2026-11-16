@@ -1,5 +1,7 @@
 # Docker / NAS 部署（个人扩展层）
 
+> 功能怎么用看 [个人扩展使用手册](USER_GUIDE_PERSONAL.md)；本文只讲部署。
+
 本 fork 的个人扩展层已经打进 DSA 镜像：Web 页面在 `/personal`，个人 API 在
 `/personal-api/*`。Docker 构建使用仓库根目录作为 context，前端在镜像构建阶段
 由 `apps/dsa-web` 自动打包，不需要在 NAS 上装 Node。
@@ -72,7 +74,13 @@ docker compose -f docker/docker-compose.yml logs -f server
 - 个人 API 健康检查：[http://NAS_IP:8000/personal-api/api/health](http://NAS_IP:8000/personal-api/api/health)
 - 上游 API 文档：[http://NAS_IP:8000/docs](http://NAS_IP:8000/docs)
 
-端口由 `.env` 的 `API_PORT` 控制（默认 8000）。
+端口由 `.env` 的 `API_PORT` 控制（默认 8000）。如果宿主机 8000 已被其他服务占用，
+用环境变量覆盖即可（Compose 的 shell 环境变量优先级高于 `.env`）：
+
+```bash
+API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+# 访问 http://NAS_IP:8010/personal
+```
 
 ## 4. 数据持久化
 
@@ -154,6 +162,8 @@ cd apps/dsa-web && npm run build
 | 个人库丢失 | 确认 `PERSONAL_DB=/app/data/personal.db` 且 `./data` 已挂载 |
 | QMT 页面显示未连接 | NAS 容器无法运行 Windows QMT；配置 `QMT_BRIDGE_URL` 指向 Windows 机器 |
 | ARM64 构建失败 | 检查基础镜像是否支持该架构；优先在 NAS 本机构建 |
+| 启动时报端口被占用 | 宿主机 8000 被其他进程占用；用 `API_PORT=8010 docker compose ... up -d server` |
+| 构建很慢（>10 分钟） | `wkhtmltopdf` 的 Qt 依赖较大属正常现象；首次构建后走 Docker 层缓存会快很多 |
 
 ## 9. 最小验证命令
 
@@ -162,3 +172,47 @@ curl -f http://127.0.0.1:8000/api/health
 curl -f http://127.0.0.1:8000/personal-api/api/health
 curl -s http://127.0.0.1:8000/personal-api/api/status | head
 ```
+
+## 10. 本机验证记录（macOS arm64）
+
+2026-11-16 在 Docker Desktop for Mac（linux/aarch64，12 CPU / 8GB）上完成了真实
+构建、启动和页面验证：
+
+```bash
+docker --version                 # 29.9.3
+docker compose version           # v5.7.0
+cp .env.example .env             # 本地测试用，.env 已被 gitignore
+
+docker compose -f docker/docker-compose.yml build server
+# => daily-stock-analysis-server:latest, 2.36GB
+
+API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+docker ps                        # stock-server ... Up (healthy)
+```
+
+验证结果：
+
+| 检查项 | 结果 |
+|---|---|
+| 构建时 `RUN python -c "import personal.api.app"` | ✅ |
+| 启动日志 `Personal extension API mounted at /personal-api` | ✅ |
+| `GET /api/health` | ✅ 200 |
+| `GET /personal-api/api/health` | ✅ `{"ok":true,"version":"0.1.0"}` |
+| `GET /personal-api/api/status` | ✅ 返回 `/app/data/personal.db`、`/app/data/stock_analysis.db` |
+| `GET /personal` | ✅ 200，返回 SPA |
+| 浏览器打开 `/personal` | ✅ 上游左侧栏含「个人扩展」，总览/回测/插件标签正常 |
+| 页面内运行 Demo 回测 | ✅ 指标、净值曲线、45 条交易明细正常渲染 |
+| ARM64 NumPy/pandas | ✅ 无 OpenBLAS SIGILL |
+| 保存回测后 `docker restart` | ✅ `demo-b7668fe7044f` 仍可查询 |
+| 插件加载 | ✅ `obv` 1 个，无错误 |
+| 容器日志 | ✅ 无 traceback/mount 失败 |
+
+说明：
+
+- 容器内数据库路径是 `/app/data/*.db`，对应宿主机 `./data/*.db`（bind mount）。
+- 首次构建约 10 分钟，主要耗时在 `wkhtmltopdf` 的 Qt 依赖和 pip 安装；后续改动
+  只要不触碰这些层，会走缓存。
+- 测试机上宿主机 8000 被其他服务占用，所以用 `API_PORT=8010` 验证；NAS 上按实际
+  端口调整即可。
+- 上游库 `stock_analysis.db` 在第一次上游分析前不存在，页面显示「上游 DSA 未生成」
+  属于预期行为。

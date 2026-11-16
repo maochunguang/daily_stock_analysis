@@ -631,3 +631,141 @@ docker compose -f docker/docker-compose.yml up -d server
 
 ### Next
 Build the image on the target NAS and run the browser smoke test.
+
+## [2026-11-16] CHG-0013 — Docker runtime verification on macOS arm64
+
+### Metadata
+- id: CHG-0013
+- date: 2026-11-16
+- status: done
+- area: docker, deployment, verification
+- related: CHG-0012
+
+### Summary
+Built and ran the integrated image with Docker Desktop for Mac (Apple Silicon),
+then verified the upstream API, the personal API mount, the `/personal` page in
+a real browser, a demo backtest through the UI, and persistence across a
+container restart. No code changes were needed; the image and Compose setup
+worked as designed. Documentation now records the actual build/run results and
+the host-port conflict workaround.
+
+### Files
+| Path | Change |
+|---|---|
+| `docs/DOCKER_PERSONAL.md` | Add macOS arm64 verification record; `API_PORT` override; port/build-time troubleshooting rows |
+| `docs/AI_CONTEXT.md` | Replace "Docker not built locally" limitation with verified status; add CHG-0013 |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+
+### Commands
+```bash
+docker --version                       # 29.9.3
+docker compose version                 # v5.7.0
+cp .env.example .env                   # local only, gitignored
+
+docker compose -f docker/docker-compose.yml build server
+API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+
+curl -f http://127.0.0.1:8010/api/health
+curl -f http://127.0.0.1:8010/personal-api/api/health
+curl -f http://127.0.0.1:8010/personal-api/api/status
+curl -f http://127.0.0.1:8010/personal
+```
+
+### Verification
+- Build succeeded on `linux/aarch64`; image `daily-stock-analysis-server:latest`
+  is 2.36GB; build-time `RUN python -c "import personal.api.app"` passed.
+- Container `stock-server` reported `Up (healthy)`.
+- Startup log contains `Personal extension API mounted at /personal-api`.
+- Endpoints: `/api/health` 200; `/personal-api/api/health` 200 with
+  `{"ok":true,"version":"0.1.0"}`; `/personal-api/api/status` 200 with
+  `/app/data/personal.db`; `/personal` 200 (SPA).
+- Browser: upstream sidebar shows `个人扩展`; overview cards, 数据覆盖,
+  最近回测, 数据质量 render; 个人回测 tab ran the demo (45 trades, metrics and
+  equity curve rendered); 插件 tab lists `obv`.
+- `POST /personal-api/api/backtest/demo {"save":true}` created
+  `demo-b7668fe7044f`; after `docker restart stock-server` it was still returned
+  by `GET /personal-api/api/backtest/runs`, proving bind-mount persistence.
+- NumPy/pandas executed in the ARM64 container without OpenBLAS SIGILL.
+- Container logs contain no traceback or mount failure.
+
+### Notes / Migration
+- Host port 8000 was occupied by an unrelated local service; Compose's
+  `API_PORT` shell override (`API_PORT=8010`) was used. On the NAS use any free
+  port.
+- First build takes about 10 minutes (Qt dependencies for `wkhtmltopdf` plus pip);
+  subsequent builds reuse cache.
+- `data/stock_analysis.db` does not exist until the first upstream analysis, so
+  the personal page correctly shows "上游 DSA 未生成".
+- `.env` used for the test is gitignored and contains no real secrets.
+
+### Next
+Build on the target NAS and repeat the minimal checks in
+`docs/DOCKER_PERSONAL.md` §9–§10.
+
+## [2026-11-16] CHG-0014 — Personal user guide and mandatory manual rule
+
+### Metadata
+- id: CHG-0014
+- date: 2026-11-16
+- status: done
+- area: docs, usability
+- related: CHG-0008, CHG-0010, CHG-0012, CHG-0013
+
+### Summary
+Added `docs/USER_GUIDE_PERSONAL.md`, an end-user manual covering the integrated
+`/personal` page, the standalone console, CLI commands, configuration, data
+sources, backtest rules and metrics, plugin usage/development, QMT, Docker/NAS,
+backup, upgrade and troubleshooting. Also made user-guide updates a hard
+requirement for every future user-facing feature, in both agent manuals and the
+changelog documentation rules.
+
+### Files
+| Path | Change |
+|---|---|
+| `docs/USER_GUIDE_PERSONAL.md` | New user manual (13 sections, page + CLI + config + rules + FAQ) |
+| `PERSONAL_AGENTS.md` | Read-first list, hard invariant 9, feature table, doc rules |
+| `docs/AI_CONTEXT.md` | Add `user_guide` pointer and CHG-0014 |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+| `README.md` | Link the user guide in the personal docs list |
+
+### Commands
+```bash
+# Validate relative links in the guide
+python3 - <<'PY'
+import re, pathlib
+p = pathlib.Path('docs/USER_GUIDE_PERSONAL.md')
+text = p.read_text()
+for m in re.finditer(r'\[[^\]]+\]\(([^)]+)\)', text):
+    target = m.group(1)
+    if not target.startswith(('http://', 'https://', '#')):
+        assert (p.parent / target.split('#')[0]).exists(), target
+print('ok')
+PY
+```
+
+### Verification
+- Relative-link check: 5 links, 0 missing.
+- Guide content cross-checked against the implementation:
+  `personal/cli/main.py` (commands/options/defaults),
+  `personal/config.py` (env vars/defaults/precedence),
+  `personal/api/app.py` (routes and request bodies),
+  `personal/datahub/sync.py` (source fallback, 730-day default),
+  `personal/backtest/costs.py` (fees), `personal/backtest/metrics.py`
+  (metric formulas), `personal/backtest/replay.py` (advice mapping),
+  `personal/plugins/*` (manifest/protocol/loader), and
+  `apps/dsa-web/src/pages/PersonalPage.tsx` (tabs/labels).
+- No Python code changed; existing 54 tests and Docker verification from
+  CHG-0012/CHG-0013 remain valid.
+
+### Notes / Migration
+- The guide is the single human-facing reference; `AI_CONTEXT.md` stays the
+  agent-facing index.
+- `PERSONAL_AGENTS.md` invariant 9 now requires a guide update in the same
+  commit as any user-facing change, including the guide in the changelog
+  `Files` table.
+- Commands use `python -m personal.cli.main` because the self-contained fork
+  does not define the `dsa-personal` console script in its `pyproject.toml`.
+
+### Next
+Extend the guide when Phase 2 adds fund NAV analytics, trade journal UI and
+review reports.
