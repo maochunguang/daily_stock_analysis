@@ -26,6 +26,8 @@ x-common: &common
     - ../logs:/app/logs
     - ../reports:/app/reports
     - ../strategies:/app/strategies:ro
+    # Optional: hot-reload personal plugins without rebuilding the image.
+    # - ../plugins:/app/plugins:ro
     # Longbridge OAuth token cache persistence; entrypoint repairs container-side ownership for dsa user.
     # Create ../longbridge_tokens on the host before copying an authorized token cache into it.
     - ../longbridge_tokens:/home/dsa/.longbridge
@@ -38,6 +40,19 @@ x-common: &common
     # Web/API service bind address (must be 0.0.0.0 inside container)
     - WEBUI_HOST=0.0.0.0
     # API_PORT 从 .env 文件读取，无需在此硬编码
+
+    # Personal extension layer (integrated page: /personal, API: /personal-api)
+    - PERSONAL_API_ENABLED=true
+    - PERSONAL_UPSTREAM_DB=/app/data/stock_analysis.db
+    - PERSONAL_DB=/app/data/personal.db
+    - PERSONAL_DATA_DIR=/app/data
+    - PERSONAL_PLUGIN_DIRS=/app/plugins
+    # QMT bridge is Windows-only; point this to the Windows QMT machine if used.
+    # - QMT_BRIDGE_URL=http://192.168.1.50:8710
+    # - QMT_BRIDGE_TOKEN=change-me
+    # Trading is disabled by default.
+    # - QMT_TRADING_ENABLED=false
+    # - QMT_REQUIRE_CONFIRM=true
 
     # 代理设置（如果需要）
     # - http_proxy=http://host.docker.internal:10809

@@ -57,8 +57,14 @@ COPY data_provider/ ./data_provider/
 COPY bot/ ./bot/
 COPY src/ ./src/
 COPY strategies/ ./strategies/
+COPY personal/ ./personal/
+COPY config/ ./config/
+COPY plugins/ ./plugins/
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Fail the build early if the personal extension layer cannot import.
+RUN python -c "import personal.api.app"
 
 # Verify globally bundled runtime dependencies without leaving SDK logs in the image.
 # Guard OpenBLAS core dispatch on ARM64 hosts (e.g. Apple Silicon Linux VMs exposing

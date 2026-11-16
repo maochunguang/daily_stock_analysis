@@ -24,6 +24,7 @@
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
 | `ui_patch` | `patches/0001-personal-web-integration.patch` |
+| `docker_doc` | `docs/DOCKER_PERSONAL.md` |
 
 ## Purpose and boundary
 
@@ -230,6 +231,10 @@ config_schema:
 - Integrated UI requires the upstream Python environment plus
   `cd apps/dsa-web && npm run build`; the patch must be re-applied
   after upstream sync.
+- Docker image includes `personal/`, `config/`, `plugins/`; build it on the
+  target NAS. QMT bridge is Windows-only and cannot run in the container.
+- Docker/Compose was not available on the development host, so the image was
+  not built locally; `docs/DOCKER_PERSONAL.md` records the deployment checks.
 
 ## Changelog index
 
@@ -245,4 +250,6 @@ config_schema:
 | `CHG-0008` | Local Web console |
 | `CHG-0009` | Agent documentation and changelog standard |
 | `CHG-0010` | Integrated upstream Web UI (`/personal`) + `/personal-api` mount |
+| `CHG-0011` | Rebase onto upstream `c820915` + self-contained fork |
+| `CHG-0012` | Docker/NAS deployment support |
 | `CHG-0011` | Rebase onto upstream `c820915` + self-contained fork |

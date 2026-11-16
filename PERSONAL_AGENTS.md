@@ -60,7 +60,7 @@ repository. Read it before changing code.
 | `config/` | Example config; real `personal.env` is gitignored |
 | `patches/` | Explicit upstream patches; currently the personal Web UI integration |
 | `scripts/` | Upstream sync, contract check, patch apply |
-| `docs/` | Architecture, AI context, changelog, phase notes |
+| `docs/` | Architecture, AI context, changelog, Docker/NAS guide, phase notes |
 | `(repo root)` | DSA upstream code (this fork) |
 
 ## Commands
@@ -92,6 +92,10 @@ PYTHON_BIN=/path/to/upstream-env/bin/python scripts/start_webui.sh
 
 # Standalone personal console (still available)
 .venv/bin/dsa-personal web --host 127.0.0.1 --port 8765
+
+# Docker / NAS (integrated image; page at /personal)
+docker compose -f docker/docker-compose.yml build server
+docker compose -f docker/docker-compose.yml up -d server
 
 # Rebuild upstream frontend after touching apps/dsa-web/src
 cd apps/dsa-web && npm run build

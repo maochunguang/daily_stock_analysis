@@ -320,6 +320,14 @@ python main.py --webui-only
   - [AI Context](docs/AI_CONTEXT.md)
   - [变更记录](docs/CHANGELOG_PERSONAL.md)
   - [Agent 操作手册](PERSONAL_AGENTS.md)
+  - [Docker / NAS 部署](docs/DOCKER_PERSONAL.md)
+- **Docker**：
+
+  ```bash
+  docker compose -f docker/docker-compose.yml up -d server
+  # http://NAS_IP:8000/personal
+  ```
+
 - **上游同步**：UI 集成补丁在 `patches/0001-personal-web-integration.patch`；同步上游后重新应用并执行 `cd apps/dsa-web && npm run build`。
 
 ## 📄 License

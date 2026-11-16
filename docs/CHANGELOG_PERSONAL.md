@@ -577,3 +577,57 @@ git push fork main
 
 ### Next
 Phase 2: fund analytics and trade journal tabs in the integrated page.
+
+---
+
+## [2026-11-16] CHG-0012 — Docker and NAS deployment support
+
+### Metadata
+- id: CHG-0012
+- date: 2026-11-16
+- status: done
+- area: docker, deployment
+- related: CHG-0010, CHG-0011
+
+### Summary
+Made the integrated personal layer available in the upstream Docker image. The
+Dockerfile now copies `personal/`, `config/` and `plugins/`, and smoke-imports
+the personal API at build time. Compose sets personal paths/env defaults and
+documents the optional plugin mount. Added a NAS deployment guide with SQLite,
+ARM64, auth, QMT and troubleshooting notes.
+
+### Files
+| Path | Change |
+|---|---|
+| `docker/Dockerfile` | Copy personal/config/plugins; `import personal.api.app` build check |
+| `docker/docker-compose.yml` | Personal env defaults; optional plugin hot-reload mount |
+| `docs/DOCKER_PERSONAL.md` | NAS/Docker deployment guide |
+| `README.md` | Link to Docker guide |
+| `docs/AI_CONTEXT.md` | Docker entry/notes |
+| `PERSONAL_AGENTS.md` | Docker build/up commands |
+
+### Commands
+```bash
+docker compose -f docker/docker-compose.yml build server
+docker compose -f docker/docker-compose.yml up -d server
+```
+
+### Verification
+- Docker/Compose is not installed on the current macOS host, so the image was
+  not built locally; the Compose YAML and Dockerfile COPY sources were checked
+  statically.
+- Personal API import path was already verified with `pytest` (54 passed) and
+  the mounted-prefix test.
+- On the NAS, build then check:
+  `curl -f http://NAS_IP:8000/personal-api/api/health`.
+
+### Notes / Migration
+- `QMT` bridge cannot run in the NAS container (Windows-only); point
+  `QMT_BRIDGE_URL` to a Windows machine or leave it unset.
+- Keep `data/` on a local NAS volume or Docker volume; avoid SMB/NFS for SQLite.
+- `PERSONAL_API_ENABLED=false` disables the personal API mount.
+- Personal DB `data/personal.db` and upstream DB `data/stock_analysis.db` are
+  both persisted under `/app/data`.
+
+### Next
+Build the image on the target NAS and run the browser smoke test.
