@@ -39,7 +39,10 @@ class SyncRequest(BaseModel):
 
 
 class MarketSyncRequest(BaseModel):
-    dataset: Literal["futures", "margin"] = "futures"
+    dataset: Literal[
+        "futures", "margin", "turnover", "zt", "pcr", "cffex_rank",
+        "sector", "etf_share", "bond", "release",
+    ] = "futures"
     start: Optional[str] = None
     end: Optional[str] = None
 
@@ -356,18 +359,35 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
     @app.post("/api/market/sync")
     def market_sync(request: MarketSyncRequest) -> dict[str, Any]:
         from personal.datahub.market import (
+            sync_bond_yield,
+            sync_etf_share,
+            sync_futures_rank,
             sync_index_futures,
+            sync_limit_up,
             sync_margin_balance,
+            sync_option_pcr,
+            sync_restricted_release,
+            sync_sector_amount,
+            sync_turnover,
         )
 
         end = _parse_date(request.end, date.today())
         start = _parse_date(request.start, end - timedelta(days=10))
+        dispatch = {
+            "futures": lambda store: sync_index_futures(store, start=start, end=end),
+            "margin": lambda store: sync_margin_balance(store, start=start, end=end),
+            "turnover": lambda store: sync_turnover(store, start=start, end=end),
+            "zt": lambda store: sync_limit_up(store, start=start, end=end),
+            "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
+            "cffex_rank": lambda store: sync_futures_rank(store, start=start, end=end),
+            "sector": lambda store: sync_sector_amount(store, trade_date=end),
+            "etf_share": lambda store: sync_etf_share(store, trade_date=end),
+            "bond": lambda store: sync_bond_yield(store),
+            "release": lambda store: sync_restricted_release(store, start=start, end=end),
+        }
         store = PersonalStore(settings.personal_db)
         try:
-            if request.dataset == "futures":
-                result = sync_index_futures(store, start=start, end=end)
-            else:
-                result = sync_margin_balance(store, start=start, end=end)
+            result = dispatch[request.dataset](store)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
@@ -375,6 +395,196 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         finally:
             store.close()
         return _json_safe(result.as_dict())
+
+    @app.get("/api/market/limitup")
+    def market_limitup(days: int = Query(default=20, ge=1, le=500)) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_limit_up_stats(limit=days)
+        finally:
+            store.close()
+        return {
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "zt_count": row.zt_count,
+                    "first_board": row.first_board,
+                    "streak_ge2": row.streak_ge2,
+                    "max_streak": row.max_streak,
+                    "zb_count": row.zb_count,
+                    "zb_rate": row.zb_rate,
+                    "prev_zt_mean": row.prev_zt_mean,
+                    "prev_zt_up_ratio": row.prev_zt_up_ratio,
+                }
+                for row in rows
+            ]
+        }
+
+    @app.get("/api/market/pcr")
+    def market_pcr(
+        days: int = Query(default=20, ge=1, le=500),
+        underlying: str = Query(default="50ETF"),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_option_pcr(limit=days, underlying=underlying)
+        finally:
+            store.close()
+        return {
+            "underlying": underlying,
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "call_vol": row.call_vol,
+                    "put_vol": row.put_vol,
+                    "pcr_vol": row.pcr_vol,
+                    "call_oi": row.call_oi,
+                    "put_oi": row.put_oi,
+                    "pcr_oi": row.pcr_oi,
+                }
+                for row in rows
+            ],
+        }
+
+    @app.get("/api/market/cffex-rank")
+    def market_cffex_rank(days: int = Query(default=20, ge=1, le=500)) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_futures_rank(limit=days * 4)
+        finally:
+            store.close()
+        return {
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "symbol": row.symbol,
+                    "contracts": row.contracts,
+                    "top20_buy": row.top20_buy,
+                    "top20_sell": row.top20_sell,
+                    "net": row.net,
+                    "net_ratio": row.net_ratio,
+                }
+                for row in rows
+            ]
+        }
+
+    @app.get("/api/market/flows")
+    def market_flows(days: int = Query(default=30, ge=1, le=500)) -> dict[str, Any]:
+        """Turnover + margin-buy ratio + broad ETF shares (server-side join)."""
+        from personal.datahub.composite import _margin_ratios
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            ratios = _margin_ratios(store, date.today() - timedelta(days=days * 2), date.today())
+            ratios = ratios[-days:]
+            turnover_rows = store.get_market_turnover(limit=days)
+            etf_rows = store.get_etf_share(limit=days * len(
+                ("510050", "510300", "510500", "512100", "159915", "588000", "159949")
+            ))
+        finally:
+            store.close()
+        return {
+            "margin_ratio": [
+                {"trade_date": day.isoformat(), "ratio_pct": value}
+                for day, value in ratios
+            ],
+            "turnover": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "total_amount_yi": round(row.total_amount / 1e8, 1) if row.total_amount else None,
+                }
+                for row in turnover_rows
+            ],
+            "etf_share": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "code": row.code,
+                    "name": row.name,
+                    "share_yi": row.share_yi,
+                }
+                for row in etf_rows
+            ],
+        }
+
+    @app.get("/api/market/crowding")
+    def market_crowding(days: int = Query(default=30, ge=1, le=500)) -> dict[str, Any]:
+        """Industry-turnover share with 250-day percentile per board."""
+        from collections import defaultdict
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_sector_amounts(limit=days * 100)
+        finally:
+            store.close()
+        history: dict[str, list[float]] = defaultdict(list)
+        for row in rows:
+            if row.share_pct is not None:
+                history[row.board].append(row.share_pct)
+        latest_day = max((row.trade_date for row in rows), default=None)
+        latest = [
+            row for row in rows
+            if latest_day is not None and row.trade_date == latest_day and row.share_pct
+        ]
+        latest.sort(key=lambda row: row.share_pct or 0, reverse=True)
+        from personal.datahub.composite import percentile_rank
+
+        return {
+            "trade_date": latest_day.isoformat() if latest_day else None,
+            "rows": [
+                {
+                    "board": row.board,
+                    "amount_yi": row.amount_yi,
+                    "share_pct": row.share_pct,
+                    "pct_chg": row.pct_chg,
+                    "share_pctile": percentile_rank(history[row.board], row.share_pct),
+                    "samples": len(history[row.board]),
+                }
+                for row in latest[:15]
+            ],
+        }
+
+    @app.get("/api/market/macro")
+    def market_macro(days: int = Query(default=120, ge=1, le=2000)) -> dict[str, Any]:
+        """CN/US yield spreads + upcoming restricted-release calendar."""
+        store = PersonalStore(settings.personal_db)
+        try:
+            bonds = store.get_bond_yield(limit=days)
+            releases = store.get_restricted_release(
+                start=date.today(), end=date.today() + timedelta(days=60)
+            )
+        finally:
+            store.close()
+        return {
+            "bond_yield": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "cn_10y": row.cn_10y,
+                    "us_10y": row.us_10y,
+                    "spread_10y": row.spread_10y,
+                    "spread_2y": row.spread_2y,
+                }
+                for row in bonds
+            ],
+            "release": [
+                {
+                    "release_date": row.release_date.isoformat(),
+                    "company_count": row.company_count,
+                    "market_value_yi": row.market_value_yi,
+                }
+                for row in releases
+            ],
+        }
+
+    @app.get("/api/market/composite")
+    def market_composite() -> dict[str, Any]:
+        from personal.datahub.composite import composite_score
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            payload = composite_score(store)
+        finally:
+            store.close()
+        return _json_safe(payload.as_dict())
 
     @app.get("/api/backtest/runs")
     def runs() -> dict[str, Any]:

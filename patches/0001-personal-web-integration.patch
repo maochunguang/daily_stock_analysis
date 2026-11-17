@@ -72,16 +72,23 @@ index c3a1338..1bd1728 100644
    { path: '/settings', element: <SettingsPage /> },
 diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
 new file mode 100644
-index 0000000..f8d5b40
+index 0000000..08e3630
 --- /dev/null
 +++ b/apps/dsa-web/src/api/personal.ts
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,132 @@
 +import type {
 +  PersonalBacktestResponse,
 +  PersonalBreadthRow,
++  PersonalCompositeResponse,
++  PersonalCrowdingResponse,
++  PersonalFlowsResponse,
++  PersonalFuturesRankRow,
 +  PersonalFuturesRow,
++  PersonalLimitUpRow,
++  PersonalMacroResponse,
 +  PersonalMarginRow,
 +  PersonalMarketSyncResponse,
++  PersonalPcrRow,
 +  PersonalPlugin,
 +  PersonalQmtHealth,
 +  PersonalStatus,
@@ -141,7 +148,17 @@ index 0000000..f8d5b40
 +}
 +
 +export interface PersonalMarketSyncRequest {
-+  dataset: 'futures' | 'margin';
++  dataset:
++    | 'futures'
++    | 'margin'
++    | 'turnover'
++    | 'zt'
++    | 'pcr'
++    | 'cffex_rank'
++    | 'sector'
++    | 'etf_share'
++    | 'bond'
++    | 'release';
 +  start: string | null;
 +  end: string | null;
 +}
@@ -172,6 +189,19 @@ index 0000000..f8d5b40
 +    request<{ rows: PersonalFuturesRow[] }>(`/market/futures?days=${days}`),
 +  margin: (days = 30) =>
 +    request<{ rows: PersonalMarginRow[] }>(`/market/margin?days=${days}`),
++  limitup: (days = 20) =>
++    request<{ rows: PersonalLimitUpRow[] }>(`/market/limitup?days=${days}`),
++  pcr: (days = 20) =>
++    request<{ underlying: string; rows: PersonalPcrRow[] }>(`/market/pcr?days=${days}`),
++  cffexRank: (days = 20) =>
++    request<{ rows: PersonalFuturesRankRow[] }>(`/market/cffex-rank?days=${days}`),
++  flows: (days = 30) =>
++    request<PersonalFlowsResponse>(`/market/flows?days=${days}`),
++  crowding: (days = 30) =>
++    request<PersonalCrowdingResponse>(`/market/crowding?days=${days}`),
++  macro: (days = 120) =>
++    request<PersonalMacroResponse>(`/market/macro?days=${days}`),
++  composite: () => request<PersonalCompositeResponse>('/market/composite'),
 +  marketSync: (body: PersonalMarketSyncRequest) =>
 +    request<PersonalMarketSyncResponse>('/market/sync', {
 +      method: 'POST',
@@ -211,10 +241,10 @@ index 1fad650..f8b9957 100644
    { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
 diff --git a/apps/dsa-web/src/components/personal/ReviewCards.tsx b/apps/dsa-web/src/components/personal/ReviewCards.tsx
 new file mode 100644
-index 0000000..c8a3e53
+index 0000000..3842a45
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/ReviewCards.tsx
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,1217 @@
 +import type React from 'react';
 +import { Landmark, RefreshCw, TrendingDown } from 'lucide-react';
 +import {
@@ -231,8 +261,15 @@ index 0000000..c8a3e53
 +import { useUiLanguage } from '../../contexts/UiLanguageContext';
 +import type {
 +  PersonalBreadthRow,
++  PersonalCompositeResponse,
++  PersonalCrowdingResponse,
++  PersonalFlowsResponse,
++  PersonalFuturesRankRow,
 +  PersonalFuturesRow,
++  PersonalLimitUpRow,
++  PersonalMacroResponse,
 +  PersonalMarginRow,
++  PersonalPcrRow,
 +} from '../../types/personal';
 +
 +/**
@@ -276,9 +313,61 @@ index 0000000..c8a3e53
 +    breadthHint: '数据来自 easy-daily-trading 快照，更新：那边运行 tools/arms_index.py 后执行 import-arms',
 +    futuresHint: '贴水（基差为负）= 对冲/做空压力大；持仓量上升 = 空头建仓',
 +    marginHint: '板块行仅统计股票标的，与沪/深市汇总的差值≈ETF/债券/可转债口径',
-+    moreList: '股指期货会员持仓龙虎榜 · ETF 资金流 · 行业融资余额分布',
++    moreList: '北向资金活跃度 · 新基金发行 · 龙虎榜机构席位（事件型）',
 +    noData: '暂无数据，先同步数据集',
 +    unitYi: '亿',
++    limitupTitle: '涨停梯队与亏钱效应',
++    ztCount: '涨停',
++    firstBoard: '首板',
++    streakGe2: '2板+',
++    maxStreak: '最高连板',
++    zbCount: '炸板',
++    zbRate: '炸板率',
++    prevZtMean: '昨涨停今收益',
++    prevZtUpRatio: '昨日涨停今日上涨占比',
++    limitupHint: '炸板率>40% 或 昨涨停今收益深负 = 亏钱效应扩散；连板高度抬升 = 题材进入加速段',
++    rankTitle: '期指会员持仓（前20）',
++    top20Buy: '前20持买单量',
++    top20Sell: '前20持卖单量',
++    net: '净空头',
++    netRatio: '净空占比',
++    rankHint: '逆向指标：净空占比高分位 = 对冲拥挤，极端时反而接近阶段底；配合基差卡看"谁在做空"',
++    pcrTitle: '期权 PCR（50ETF）',
++    pcrVol: '成交量PCR',
++    pcrOi: '持仓量PCR',
++    callVol: '认购成交',
++    putVol: '认沽成交',
++    pcrHint: '逆向指标：PCR 高分位 = 恐慌定价，历史上常见阶段底；成交量口径（Tushare opt_daily）',
++    flowsTitle: '资金面（两融占比 / ETF 份额 / 成交额）',
++    marginRatio: '两融交易占比',
++    marginRatioHint: '融资买入额 ÷ 全市场成交额；>10% 过热 / <7% 冰点',
++    turnoverAmount: '全市场成交额',
++    etfShare: 'ETF 份额',
++    shareUnit: '亿份',
++    flowsHint: 'ETF 份额暴增 = 宽基托底资金进场（份额序列自建，从启用日起积累）',
++    crowdingTitle: '行业拥挤度',
++    amountYi: '成交额',
++    sharePct: '成交占比',
++    sharePctile: '占比分位',
++    crowdingHint: '板块成交占比 250 日分位 >90% = 拥挤警戒；样本随每日快照积累',
++    macroTitle: '宏观锚（中美利差 / 解禁日历）',
++    spread10y: '中美10Y利差',
++    spread2y: '中美2Y利差',
++    releaseCalendar: '未来60天解禁',
++    releaseDate: '解禁日',
++    releaseCount: '家数',
++    releaseValue: '解禁市值',
++    macroHint: '利差走阔压制风险偏好；解禁高峰注意持仓股供给冲击（月级别）',
++    compositeTitle: '市场综合状态',
++    scoreLabel: '综合分',
++    kindPro: '顺势',
++    kindContrarian: '逆向',
++    pctile: '分位',
++    samples: '样本',
++    compositeHint: '各指标转为约一年滚动分位后平均（样本<20 自动跳过）；顺势高分位=过热，逆向高分位=恐慌',
++    metricLabel: '指标',
++    kindLabel: '类型',
++    pending: '等待回填',
 +  },
 +  en: {
 +    breadthTitle: 'Market breadth (TRIN)',
@@ -315,9 +404,61 @@ index 0000000..c8a3e53
 +    breadthHint: 'Snapshots from easy-daily-trading; refresh by running tools/arms_index.py there, then import-arms',
 +    futuresHint: 'Discount (negative basis) = heavy hedging/short pressure; rising OI = shorts building',
 +    marginHint: 'Board rows count stock instruments only; gap vs market summary ≈ ETF/bond scope',
-+    moreList: 'Member position rankings · ETF flows · Margin by industry',
++    moreList: 'Northbound activity · New fund issuance · Institution seats (event-driven)',
 +    noData: 'No data yet — sync the dataset first',
 +    unitYi: '×1e8 CNY',
++    limitupTitle: 'Limit-up ladder',
++    ztCount: 'Limit-up',
++    firstBoard: 'First board',
++    streakGe2: '2+ boards',
++    maxStreak: 'Max streak',
++    zbCount: 'Broken',
++    zbRate: 'Break rate',
++    prevZtMean: 'Prev limit-up carry',
++    prevZtUpRatio: 'Prev limit-up gainers',
++    limitupHint: 'Break rate >40% or deep negative carry = losing effect; rising streaks = theme acceleration',
++    rankTitle: 'CFFEX member positions (top-20)',
++    top20Buy: 'Top-20 long OI',
++    top20Sell: 'Top-20 short OI',
++    net: 'Net short',
++    netRatio: 'Net short %',
++    rankHint: 'Contrarian: extreme net-short percentile = crowded hedge, often near lows; read with the basis card',
++    pcrTitle: 'Option PCR (50ETF)',
++    pcrVol: 'Volume PCR',
++    pcrOi: 'OI PCR',
++    callVol: 'Call vol',
++    putVol: 'Put vol',
++    pcrHint: 'Contrarian: high PCR percentile = panic pricing, historically near lows; volume basis (Tushare opt_daily)',
++    flowsTitle: 'Funds (margin ratio / ETF shares / turnover)',
++    marginRatio: 'Margin trading ratio',
++    marginRatioHint: 'Margin buy ÷ market turnover; >10% overheated / <7% frozen',
++    turnoverAmount: 'Market turnover',
++    etfShare: 'ETF shares',
++    shareUnit: '×1e8 units',
++    flowsHint: 'Broad-ETF share spikes = national-team support (series accumulates from adoption)',
++    crowdingTitle: 'Sector crowding',
++    amountYi: 'Turnover',
++    sharePct: 'Share %',
++    sharePctile: 'Percentile',
++    crowdingHint: 'Board turnover share 250-day percentile >90% = crowded; samples accumulate daily',
++    macroTitle: 'Macro anchors (CN-US spread / release calendar)',
++    spread10y: 'CN-US 10Y spread',
++    spread2y: 'CN-US 2Y spread',
++    releaseCalendar: 'Releases next 60d',
++    releaseDate: 'Date',
++    releaseCount: 'Companies',
++    releaseValue: 'MV released',
++    macroHint: 'Widening spread weighs on risk appetite; release peaks are monthly supply shocks',
++    compositeTitle: 'Composite market state',
++    scoreLabel: 'Score',
++    kindPro: 'Pro-cyclical',
++    kindContrarian: 'Contrarian',
++    pctile: 'Pctile',
++    samples: 'Samples',
++    compositeHint: 'Each metric mapped to ~1-year rolling percentile then averaged (<20 samples skipped)',
++    metricLabel: 'Metric',
++    kindLabel: 'Kind',
++    pending: 'backfilling',
 +  },
 +} as const;
 +
@@ -332,6 +473,13 @@ index 0000000..c8a3e53
 +  breadth: PersonalBreadthRow[];
 +  futures: PersonalFuturesRow[];
 +  margin: PersonalMarginRow[];
++  limitUp: PersonalLimitUpRow[];
++  pcr: PersonalPcrRow[];
++  rank: PersonalFuturesRankRow[];
++  flows: PersonalFlowsResponse | null;
++  crowding: PersonalCrowdingResponse | null;
++  macro: PersonalMacroResponse | null;
++  composite: PersonalCompositeResponse | null;
 +  busy: boolean;
 +  onRefreshMarket: (dataset: 'futures' | 'margin') => void;
 +}
@@ -751,18 +899,575 @@ index 0000000..c8a3e53
 +  );
 +};
 +
++/* ------------------------------------------------------------------ */
++/* 涨停梯队与亏钱效应                                                    */
++/* ------------------------------------------------------------------ */
++
++export const LimitUpCard: ReviewCardComponent = ({ limitUp }) => {
++  const copy = useReviewCopy();
++  const latest = limitUp.length ? limitUp[limitUp.length - 1] : null;
++  const chartData = limitUp.slice(-30).map((row) => ({
++    date: row.trade_date.slice(5),
++    zt: row.zt_count,
++    carry: row.prev_zt_mean,
++  }));
++
++  if (!latest) {
++    return (
++      <Card title={copy.limitupTitle} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++        <p className="mt-2 text-xs text-muted-text">{copy.limitupHint}</p>
++      </Card>
++    );
++  }
++
++  return (
++    <Card title={copy.limitupTitle} variant="bordered">
++      <div className="flex flex-wrap items-center gap-4">
++        <div>
++          <div className="text-3xl font-semibold text-foreground">{latest.zt_count}</div>
++          <div className="mt-1 text-xs text-secondary-text">{copy.ztCount}</div>
++        </div>
++        <div className="text-sm text-secondary-text">
++          {copy.firstBoard} {latest.first_board} · {copy.streakGe2} {latest.streak_ge2} · {copy.maxStreak}{' '}
++          <span className="font-semibold text-foreground">{latest.max_streak}</span>
++        </div>
++        <div className="text-sm text-secondary-text">
++          {copy.zbRate}{' '}
++          {latest.zb_rate !== null ? (
++            <Badge variant={latest.zb_rate >= 0.4 ? 'danger' : 'success'}>
++              {(latest.zb_rate * 100).toFixed(0)}%
++            </Badge>
++          ) : (
++            '—'
++          )}
++        </div>
++        <div className="text-sm text-secondary-text">
++          {copy.prevZtMean}{' '}
++          <span
++            className={
++              latest.prev_zt_mean !== null && latest.prev_zt_mean < 0
++                ? 'text-emerald-600'
++                : 'text-rose-600'
++            }
++          >
++            {signed(latest.prev_zt_mean, 2, '%')}
++          </span>
++          {latest.prev_zt_up_ratio !== null ? `（${latest.prev_zt_up_ratio.toFixed(0)}% ${copy.prevZtUpRatio}）` : ''}
++        </div>
++      </div>
++
++      {chartData.length > 1 ? (
++        <div className="mt-3 h-40 w-full">
++          <ResponsiveContainer width="100%" height="100%">
++            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++              <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++              <YAxis yAxisId="l" tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={36} />
++              <YAxis yAxisId="r" orientation="right" tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={40} unit="%" />
++              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++              <Legend />
++              <Line yAxisId="l" type="monotone" dataKey="zt" name={copy.ztCount} stroke="var(--color-cyan)" strokeWidth={2} dot={false} />
++              <Line yAxisId="r" type="monotone" dataKey="carry" name={copy.prevZtMean} stroke="#f59e0b" strokeWidth={1.6} dot={false} connectNulls />
++            </LineChart>
++          </ResponsiveContainer>
++        </div>
++      ) : (
++        <p className="mt-3 text-sm text-secondary-text">{copy.noData}</p>
++      )}
++
++      <p className="mt-3 text-xs text-muted-text">{copy.limitupHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 期指会员持仓（前 20）                                                 */
++/* ------------------------------------------------------------------ */
++
++export const FuturesRankCard: ReviewCardComponent = ({ rank }) => {
++  const copy = useReviewCopy();
++  const symbols = ['IF', 'IH', 'IC', 'IM'];
++  const latestBySymbol = new Map<string, PersonalFuturesRankRow>();
++  for (const row of rank) {
++    latestBySymbol.set(row.symbol, row);
++  }
++  const chartData = (() => {
++    const byDate = new Map<string, Record<string, number | null>>();
++    for (const row of rank.slice(-120)) {
++      if (row.net_ratio === null) continue;
++      const key = row.trade_date.slice(5);
++      const entry = byDate.get(key) ?? {};
++      entry[row.symbol] = row.net_ratio;
++      byDate.set(key, entry);
++    }
++    return Array.from(byDate.entries())
++      .sort((a, b) => a[0].localeCompare(b[0]))
++      .map(([date, values]) => ({ date, ...values }));
++  })();
++  const SERIES_COLORS: Record<string, string> = {
++    IF: 'var(--color-cyan)', IH: '#f59e0b', IC: '#8b5cf6', IM: '#10b981',
++  };
++
++  return (
++    <Card title={copy.rankTitle} variant="bordered">
++      <div className="overflow-x-auto">
++        <table className="w-full">
++          <thead>
++            <tr className={TABLE_HEAD_CLASS}>
++              <th className="py-2 pr-4">{copy.contract}</th>
++              <th className="py-2 pr-4 text-right">{copy.top20Buy}</th>
++              <th className="py-2 pr-4 text-right">{copy.top20Sell}</th>
++              <th className="py-2 pr-4 text-right">{copy.net}</th>
++              <th className="py-2 text-right">{copy.netRatio}</th>
++            </tr>
++          </thead>
++          <tbody>
++            {symbols.map((symbol) => {
++              const row = latestBySymbol.get(symbol);
++              return (
++                <tr key={symbol}>
++                  <td className={TABLE_CELL_CLASS}>{symbol} · {FUTURES_SYMBOL_LABELS[symbol]}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{row?.top20_buy?.toLocaleString() ?? '—'}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{row?.top20_sell?.toLocaleString() ?? '—'}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{signed(row?.net, 0)}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>
++                    <span className={row?.net_ratio !== null && row?.net_ratio !== undefined && row.net_ratio > 0 ? 'text-rose-600' : 'text-emerald-600'}>
++                      {signed(row?.net_ratio !== undefined && row?.net_ratio !== null ? row.net_ratio * 100 : null, 2, '%')}
++                    </span>
++                  </td>
++                </tr>
++              );
++            })}
++          </tbody>
++        </table>
++      </div>
++
++      {chartData.length > 1 ? (
++        <div className="mt-3 h-40 w-full">
++          <ResponsiveContainer width="100%" height="100%">
++            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++              <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={52} />
++              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++              <Legend />
++              {symbols.map((symbol) => (
++                <Line
++                  key={symbol}
++                  type="monotone"
++                  dataKey={symbol}
++                  name={`${symbol} ${FUTURES_SYMBOL_LABELS[symbol]}`}
++                  stroke={SERIES_COLORS[symbol]}
++                  strokeWidth={1.6}
++                  dot={false}
++                  connectNulls
++                />
++              ))}
++            </LineChart>
++          </ResponsiveContainer>
++        </div>
++      ) : (
++        <p className="mt-3 text-sm text-secondary-text">{copy.noData}</p>
++      )}
++
++      <p className="mt-3 text-xs text-muted-text">{copy.rankHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 期权 PCR                                                              */
++/* ------------------------------------------------------------------ */
++
++export const PcrCard: ReviewCardComponent = ({ pcr }) => {
++  const copy = useReviewCopy();
++  const latest = pcr.length ? pcr[pcr.length - 1] : null;
++  const chartData = pcr.slice(-30).map((row) => ({
++    date: row.trade_date.slice(5),
++    pcr: row.pcr_vol,
++  }));
++
++  if (!latest) {
++    return (
++      <Card title={copy.pcrTitle} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++        <p className="mt-2 text-xs text-muted-text">{copy.pcrHint}</p>
++      </Card>
++    );
++  }
++
++  return (
++    <Card title={copy.pcrTitle} variant="bordered">
++      <div className="flex flex-wrap items-center gap-4">
++        <div>
++          <div className="text-3xl font-semibold text-foreground">
++            {latest.pcr_vol?.toFixed(3) ?? '—'}
++          </div>
++          <div className="mt-1 text-xs text-secondary-text">{copy.pcrVol}</div>
++        </div>
++        <div className="text-sm text-secondary-text">
++          {copy.pcrOi} {latest.pcr_oi?.toFixed(3) ?? '—'}
++        </div>
++        <div className="text-sm text-secondary-text">
++          {copy.callVol} {(latest.call_vol ?? 0).toLocaleString()} · {copy.putVol} {(latest.put_vol ?? 0).toLocaleString()}
++        </div>
++      </div>
++
++      {chartData.length > 1 ? (
++        <div className="mt-3 h-40 w-full">
++          <ResponsiveContainer width="100%" height="100%">
++            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++              <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={44} />
++              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++              <Line type="monotone" dataKey="pcr" name={copy.pcrVol} stroke="var(--color-cyan)" strokeWidth={2} dot={false} connectNulls />
++            </LineChart>
++          </ResponsiveContainer>
++        </div>
++      ) : (
++        <p className="mt-3 text-sm text-secondary-text">{copy.noData}</p>
++      )}
++
++      <p className="mt-3 text-xs text-muted-text">{copy.pcrHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 资金面（两融占比 / ETF 份额 / 成交额）                                 */
++/* ------------------------------------------------------------------ */
++
++function signedRatio(value: number): string {
++  return `${value > 0 ? '+' : ''}${value.toFixed(1)}`;
++}
++
++export const FlowsCard: ReviewCardComponent = ({ flows }) => {
++  const copy = useReviewCopy();
++  if (!flows || (flows.margin_ratio.length === 0 && flows.etf_share.length === 0)) {
++    return (
++      <Card title={copy.flowsTitle} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++        <p className="mt-2 text-xs text-muted-text">{copy.flowsHint}</p>
++      </Card>
++    );
++  }
++  const ratioLatest = flows.margin_ratio.length ? flows.margin_ratio[flows.margin_ratio.length - 1] : null;
++  const chartData = flows.margin_ratio.slice(-30).map((row) => ({
++    date: row.trade_date.slice(5),
++    ratio: row.ratio_pct,
++  }));
++  const byDate = new Map<string, PersonalFlowsResponse['etf_share']>();
++  for (const row of flows.etf_share) {
++    const list = byDate.get(row.trade_date) ?? [];
++    list.push(row);
++    byDate.set(row.trade_date, list);
++  }
++  const dates = Array.from(byDate.keys()).sort();
++  const etfLatest = dates.length ? byDate.get(dates[dates.length - 1]) ?? [] : [];
++  const etfPrev = dates.length > 1 ? byDate.get(dates[dates.length - 2]) ?? [] : [];
++  const prevByCode = new Map(etfPrev.map((row) => [row.code, row.share_yi]));
++
++  return (
++    <Card title={copy.flowsTitle} variant="bordered">
++      <div className="flex flex-wrap items-center gap-4">
++        <div>
++          <div className="text-3xl font-semibold text-foreground">
++            {ratioLatest ? `${ratioLatest.ratio_pct.toFixed(2)}%` : '—'}
++          </div>
++          <div className="mt-1 text-xs text-secondary-text">{copy.marginRatio}</div>
++        </div>
++        {ratioLatest ? (
++          <Badge variant={ratioLatest.ratio_pct >= 10 ? 'danger' : ratioLatest.ratio_pct <= 7 ? 'success' : 'info'}>
++            {ratioLatest.ratio_pct >= 10 ? '过热' : ratioLatest.ratio_pct <= 7 ? '冰点' : '中性'}
++          </Badge>
++        ) : null}
++      </div>
++      <p className="mt-2 text-xs text-muted-text">{copy.marginRatioHint}</p>
++
++      {chartData.length > 1 ? (
++        <div className="mt-3 h-36 w-full">
++          <ResponsiveContainer width="100%" height="100%">
++            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++              <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={44} unit="%" />
++              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++              <Line type="monotone" dataKey="ratio" name={copy.marginRatio} stroke="var(--color-cyan)" strokeWidth={2} dot={false} connectNulls />
++            </LineChart>
++          </ResponsiveContainer>
++        </div>
++      ) : null}
++
++      {etfLatest.length ? (
++        <div className="mt-3 overflow-x-auto">
++          <table className="w-full">
++            <thead>
++              <tr className={TABLE_HEAD_CLASS}>
++                <th className="py-2 pr-4">{copy.etfShare}</th>
++                <th className="py-2 pr-4 text-right">{copy.shareUnit}</th>
++                <th className="py-2 text-right">{copy.day}</th>
++              </tr>
++            </thead>
++            <tbody>
++              {etfLatest.map((row) => {
++                const prev = prevByCode.get(row.code);
++                const chg =
++                  row.share_yi !== null && prev !== null && prev !== undefined
++                    ? row.share_yi - prev
++                    : null;
++                return (
++                  <tr key={row.code}>
++                    <td className={TABLE_CELL_CLASS}>{row.name || row.code}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.share_yi?.toFixed(1) ?? '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      <span
++                        className={
++                          chg !== null && chg > 0
++                            ? 'text-rose-600'
++                            : chg !== null && chg < 0
++                              ? 'text-emerald-600'
++                              : 'text-secondary-text'
++                        }
++                      >
++                        {chg === null ? '—' : signedRatio(chg)}
++                      </span>
++                    </td>
++                  </tr>
++                );
++              })}
++            </tbody>
++          </table>
++        </div>
++      ) : null}
++
++      <p className="mt-3 text-xs text-muted-text">{copy.flowsHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 行业拥挤度                                                            */
++/* ------------------------------------------------------------------ */
++
++export const CrowdingCard: ReviewCardComponent = ({ crowding }) => {
++  const copy = useReviewCopy();
++  if (!crowding || crowding.rows.length === 0) {
++    return (
++      <Card title={copy.crowdingTitle} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++        <p className="mt-2 text-xs text-muted-text">{copy.crowdingHint}</p>
++      </Card>
++    );
++  }
++  return (
++    <Card title={copy.crowdingTitle} variant="bordered">
++      <p className="mb-2 text-xs text-secondary-text">{crowding.trade_date}</p>
++      <div className="overflow-x-auto">
++        <table className="w-full">
++          <thead>
++            <tr className={TABLE_HEAD_CLASS}>
++              <th className="py-2 pr-4">{copy.board}</th>
++              <th className="py-2 pr-4 text-right">{copy.amountYi}</th>
++              <th className="py-2 pr-4 text-right">{copy.sharePct}</th>
++              <th className="py-2 text-right">{copy.sharePctile}</th>
++            </tr>
++          </thead>
++          <tbody>
++            {crowding.rows.map((row) => (
++              <tr key={row.board}>
++                <td className={TABLE_CELL_CLASS}>
++                  <span className={row.pct_chg !== null && row.pct_chg < 0 ? 'text-emerald-600' : 'text-rose-600'}>
++                    {row.board}
++                  </span>
++                </td>
++                <td className={`${TABLE_CELL_CLASS} text-right`}>{row.amount_yi?.toFixed(1) ?? '—'}</td>
++                <td className={`${TABLE_CELL_CLASS} text-right`}>{row.share_pct?.toFixed(2) ?? '—'}%</td>
++                <td className={`${TABLE_CELL_CLASS} text-right`}>
++                  <Badge variant={(row.share_pctile ?? 0) >= 90 ? 'danger' : (row.share_pctile ?? 0) >= 75 ? 'warning' : 'default'}>
++                    {row.share_pctile?.toFixed(0) ?? '—'}%
++                  </Badge>
++                </td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </div>
++      <p className="mt-3 text-xs text-muted-text">{copy.crowdingHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 宏观锚（中美利差 / 解禁日历）                                          */
++/* ------------------------------------------------------------------ */
++
++export const MacroCard: ReviewCardComponent = ({ macro }) => {
++  const copy = useReviewCopy();
++  if (!macro || (macro.bond_yield.length === 0 && macro.release.length === 0)) {
++    return (
++      <Card title={copy.macroTitle} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++      </Card>
++    );
++  }
++  const spread = macro.bond_yield.filter((row) => row.spread_10y !== null);
++  const latestSpread = spread.length ? spread[spread.length - 1] : null;
++  const chartData = spread.slice(-120).map((row) => ({
++    date: row.trade_date.slice(5),
++    spread: row.spread_10y,
++  }));
++
++  return (
++    <Card title={copy.macroTitle} variant="bordered">
++      <div className="flex flex-wrap items-center gap-4">
++        <div>
++          <div className="text-3xl font-semibold text-foreground">
++            {latestSpread ? `${latestSpread.spread_10y?.toFixed(2)}%` : '—'}
++          </div>
++          <div className="mt-1 text-xs text-secondary-text">{copy.spread10y}</div>
++        </div>
++        {latestSpread ? (
++          <div className="text-sm text-secondary-text">
++            {copy.spread2y} {latestSpread.spread_2y?.toFixed(2) ?? '—'}%
++          </div>
++        ) : null}
++      </div>
++
++      {chartData.length > 1 ? (
++        <div className="mt-3 h-36 w-full">
++          <ResponsiveContainer width="100%" height="100%">
++            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++              <XAxis dataKey="date" tick={{ fontSize: 11 }} minTickGap={28} />
++              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={48} unit="%" />
++              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++              <Line type="monotone" dataKey="spread" name={copy.spread10y} stroke="#8b5cf6" strokeWidth={2} dot={false} connectNulls />
++            </LineChart>
++          </ResponsiveContainer>
++        </div>
++      ) : null}
++
++      {macro.release.length ? (
++        <>
++          <h4 className="mt-4 text-sm font-semibold text-foreground">{copy.releaseCalendar}</h4>
++          <div className="mt-2 overflow-x-auto">
++            <table className="w-full">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.releaseDate}</th>
++                  <th className="py-2 pr-4 text-right">{copy.releaseCount}</th>
++                  <th className="py-2 text-right">{copy.releaseValue}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {macro.release.slice(0, 10).map((row) => (
++                  <tr key={row.release_date}>
++                    <td className={TABLE_CELL_CLASS}>{row.release_date}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.company_count}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {row.market_value_yi !== null ? row.market_value_yi.toFixed(1) : '—'}
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        </>
++      ) : null}
++
++      <p className="mt-3 text-xs text-muted-text">{copy.macroHint}</p>
++    </Card>
++  );
++};
++
++/* ------------------------------------------------------------------ */
++/* 综合状态（多指标分位印证）                                             */
++/* ------------------------------------------------------------------ */
++
++export const CompositeCard: ReviewCardComponent = ({ composite }) => {
++  const copy = useReviewCopy();
++  if (!composite) {
++    return (
++      <Card title={copy.compositeTitle} variant="bordered" className="xl:col-span-2">
++        <p className="text-sm text-secondary-text">{copy.pending}</p>
++      </Card>
++    );
++  }
++  return (
++    <Card title={copy.compositeTitle} variant="bordered" className="xl:col-span-2">
++      <div className="flex flex-wrap items-center gap-4">
++        <div>
++          <div className="text-3xl font-semibold text-foreground">
++            {composite.score !== null ? composite.score.toFixed(0) : '—'}
++          </div>
++          <div className="mt-1 text-xs text-secondary-text">{copy.scoreLabel}</div>
++        </div>
++        <Badge
++          variant={
++            composite.score !== null && composite.score >= 75
++              ? 'danger'
++              : composite.score !== null && composite.score <= 25
++                ? 'success'
++                : 'info'
++          }
++        >
++          {composite.state}
++        </Badge>
++      </div>
++
++      <div className="mt-3 overflow-x-auto">
++        <table className="w-full">
++          <thead>
++            <tr className={TABLE_HEAD_CLASS}>
++              <th className="py-2 pr-4">{copy.metricLabel}</th>
++              <th className="py-2 pr-4">{copy.kindLabel}</th>
++              <th className="py-2 pr-4 text-right">{copy.pctile}</th>
++              <th className="py-2 text-right">{copy.samples}</th>
++            </tr>
++          </thead>
++          <tbody>
++            {composite.components.map((component) => (
++              <tr key={component.metric}>
++                <td className={TABLE_CELL_CLASS}>{component.label}</td>
++                <td className={TABLE_CELL_CLASS}>
++                  <Badge variant={component.kind === 'pro' ? 'info' : 'warning'}>
++                    {component.kind === 'pro' ? copy.kindPro : copy.kindContrarian}
++                  </Badge>
++                </td>
++                <td className={`${TABLE_CELL_CLASS} text-right`}>{component.percentile?.toFixed(0) ?? '—'}%</td>
++                <td className={`${TABLE_CELL_CLASS} text-right`}>{component.sample_count}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </div>
++
++      <p className="mt-3 text-xs text-muted-text">{copy.compositeHint}</p>
++    </Card>
++  );
++};
++
 +export const REVIEW_CARDS: ReadonlyArray<ReviewCardSlot> = [
++  { id: 'composite', component: CompositeCard },
 +  { id: 'breadth', component: BreadthCard },
 +  { id: 'futures', component: FuturesCard },
++  { id: 'rank', component: FuturesRankCard },
 +  { id: 'margin', component: MarginCard },
++  { id: 'limitup', component: LimitUpCard },
++  { id: 'pcr', component: PcrCard },
++  { id: 'flows', component: FlowsCard },
++  { id: 'crowding', component: CrowdingCard },
++  { id: 'macro', component: MacroCard },
 +  { id: 'more', component: MoreCard },
 +];
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
-index 0000000..b975b55
+index 0000000..39c60e4
 --- /dev/null
 +++ b/apps/dsa-web/src/pages/PersonalPage.tsx
-@@ -0,0 +1,1139 @@
+@@ -0,0 +1,1185 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useMemo, useState } from 'react';
 +import {
@@ -802,6 +1507,13 @@ index 0000000..b975b55
 +import type {
 +  PersonalBacktestResponse,
 +  PersonalBreadthRow,
++  PersonalCompositeResponse,
++  PersonalCrowdingResponse,
++  PersonalFlowsResponse,
++  PersonalFuturesRankRow,
++  PersonalLimitUpRow,
++  PersonalMacroResponse,
++  PersonalPcrRow,
 +  PersonalFuturesRow,
 +  PersonalMarginRow,
 +  PersonalPlugin,
@@ -1070,6 +1782,13 @@ index 0000000..b975b55
 +  const [reviewBreadth, setReviewBreadth] = useState<PersonalBreadthRow[]>([]);
 +  const [reviewFutures, setReviewFutures] = useState<PersonalFuturesRow[]>([]);
 +  const [reviewMargin, setReviewMargin] = useState<PersonalMarginRow[]>([]);
++  const [reviewLimitUp, setReviewLimitUp] = useState<PersonalLimitUpRow[]>([]);
++  const [reviewPcr, setReviewPcr] = useState<PersonalPcrRow[]>([]);
++  const [reviewRank, setReviewRank] = useState<PersonalFuturesRankRow[]>([]);
++  const [reviewFlows, setReviewFlows] = useState<PersonalFlowsResponse | null>(null);
++  const [reviewCrowding, setReviewCrowding] = useState<PersonalCrowdingResponse | null>(null);
++  const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
++  const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
 +  const [reviewLoaded, setReviewLoaded] = useState(false);
 +  const [reviewBusy, setReviewBusy] = useState(false);
 +  const [reviewError, setReviewError] = useState('');
@@ -1099,14 +1818,39 @@ index 0000000..b975b55
 +    setReviewBusy(true);
 +    setReviewError('');
 +    try {
-+      const [breadthData, futuresData, marginData] = await Promise.all([
++      const [
++        breadthData,
++        futuresData,
++        marginData,
++        limitUpData,
++        pcrData,
++        rankData,
++        flowsData,
++        crowdingData,
++        macroData,
++        compositeData,
++      ] = await Promise.all([
 +        personalApi.breadth(30),
 +        personalApi.futures(30),
 +        personalApi.margin(30),
++        personalApi.limitup(20),
++        personalApi.pcr(20),
++        personalApi.cffexRank(20),
++        personalApi.flows(30),
++        personalApi.crowding(30),
++        personalApi.macro(120),
++        personalApi.composite(),
 +      ]);
 +      setReviewBreadth(breadthData.rows);
 +      setReviewFutures(futuresData.rows);
 +      setReviewMargin(marginData.rows);
++      setReviewLimitUp(limitUpData.rows);
++      setReviewPcr(pcrData.rows);
++      setReviewRank(rankData.rows);
++      setReviewFlows(flowsData);
++      setReviewCrowding(crowdingData);
++      setReviewMacro(macroData);
++      setReviewComposite(compositeData);
 +      setReviewLoaded(true);
 +    } catch (err) {
 +      setReviewError(err instanceof Error ? err.message : String(err));
@@ -1560,6 +2304,13 @@ index 0000000..b975b55
 +                breadth={reviewBreadth}
 +                futures={reviewFutures}
 +                margin={reviewMargin}
++                limitUp={reviewLimitUp}
++                pcr={reviewPcr}
++                rank={reviewRank}
++                flows={reviewFlows}
++                crowding={reviewCrowding}
++                macro={reviewMacro}
++                composite={reviewComposite}
 +                busy={reviewBusy}
 +                onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
 +              />
@@ -1904,10 +2655,10 @@ index 0000000..b975b55
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..c43f780
+index 0000000..b392042
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,292 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -2117,4 +2868,86 @@ index 0000000..c43f780
 +  last_ok_date: string | null;
 +  rows: number;
 +  last_error: string | null;
++}
++
++export interface PersonalLimitUpRow {
++  trade_date: string;
++  zt_count: number;
++  first_board: number;
++  streak_ge2: number;
++  max_streak: number;
++  zb_count: number;
++  zb_rate: number | null;
++  prev_zt_mean: number | null;
++  prev_zt_up_ratio: number | null;
++}
++
++export interface PersonalPcrRow {
++  trade_date: string;
++  call_vol: number | null;
++  put_vol: number | null;
++  pcr_vol: number | null;
++  call_oi: number | null;
++  put_oi: number | null;
++  pcr_oi: number | null;
++}
++
++export interface PersonalFuturesRankRow {
++  trade_date: string;
++  symbol: string;
++  contracts: number;
++  top20_buy: number | null;
++  top20_sell: number | null;
++  net: number | null;
++  net_ratio: number | null;
++}
++
++export interface PersonalFlowsResponse {
++  margin_ratio: Array<{ trade_date: string; ratio_pct: number }>;
++  turnover: Array<{ trade_date: string; total_amount_yi: number | null }>;
++  etf_share: Array<{ trade_date: string; code: string; name: string; share_yi: number | null }>;
++}
++
++export interface PersonalCrowdingRow {
++  board: string;
++  amount_yi: number | null;
++  share_pct: number | null;
++  pct_chg: number | null;
++  share_pctile: number | null;
++  samples: number;
++}
++
++export interface PersonalCrowdingResponse {
++  trade_date: string | null;
++  rows: PersonalCrowdingRow[];
++}
++
++export interface PersonalMacroResponse {
++  bond_yield: Array<{
++    trade_date: string;
++    cn_10y: number | null;
++    us_10y: number | null;
++    spread_10y: number | null;
++    spread_2y: number | null;
++  }>;
++  release: Array<{
++    release_date: string;
++    company_count: number;
++    market_value_yi: number | null;
++  }>;
++}
++
++export interface PersonalCompositeComponent {
++  metric: string;
++  label: string;
++  kind: 'pro' | 'contrarian';
++  value: number | null;
++  percentile: number | null;
++  sample_count: number;
++}
++
++export interface PersonalCompositeResponse {
++  score: number | null;
++  state: string;
++  components: PersonalCompositeComponent[];
 +}

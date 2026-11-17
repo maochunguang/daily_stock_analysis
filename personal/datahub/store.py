@@ -16,13 +16,21 @@ from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from .models import (
     AdjustFactor,
+    BondYield,
     DailyBar,
+    EtfShare,
     EtfSnapshot,
     FundNav,
+    FuturesRank,
     IndexFutures,
+    LimitUpStats,
     MarginBalance,
     MarketBreadth,
+    MarketTurnover,
+    OptionPcr,
     QualityIssue,
+    RestrictedRelease,
+    SectorAmount,
     TradingStatus,
 )
 
@@ -169,6 +177,82 @@ CREATE TABLE IF NOT EXISTS sync_state (
   last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS market_turnover (
+  trade_date TEXT PRIMARY KEY,
+  sse_amount REAL,
+  szse_amount REAL,
+  total_amount REAL
+);
+
+CREATE TABLE IF NOT EXISTS limit_up_stats (
+  trade_date TEXT PRIMARY KEY,
+  zt_count INTEGER NOT NULL DEFAULT 0,
+  first_board INTEGER NOT NULL DEFAULT 0,
+  streak_ge2 INTEGER NOT NULL DEFAULT 0,
+  max_streak INTEGER NOT NULL DEFAULT 0,
+  zb_count INTEGER NOT NULL DEFAULT 0,
+  zb_rate REAL,
+  prev_zt_mean REAL,
+  prev_zt_up_ratio REAL
+);
+
+CREATE TABLE IF NOT EXISTS option_pcr (
+  trade_date TEXT NOT NULL,
+  underlying TEXT NOT NULL,
+  call_vol REAL,
+  put_vol REAL,
+  pcr_vol REAL,
+  call_oi REAL,
+  put_oi REAL,
+  pcr_oi REAL,
+  PRIMARY KEY (trade_date, underlying)
+);
+
+CREATE TABLE IF NOT EXISTS futures_rank (
+  trade_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  contracts INTEGER NOT NULL DEFAULT 0,
+  top20_buy REAL,
+  top20_sell REAL,
+  net REAL,
+  net_ratio REAL,
+  PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS sector_amount (
+  trade_date TEXT NOT NULL,
+  board TEXT NOT NULL,
+  amount_yi REAL,
+  share_pct REAL,
+  pct_chg REAL,
+  PRIMARY KEY (trade_date, board)
+);
+
+CREATE TABLE IF NOT EXISTS etf_share (
+  trade_date TEXT NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT,
+  share_yi REAL,
+  PRIMARY KEY (trade_date, code)
+);
+
+CREATE TABLE IF NOT EXISTS bond_yield (
+  trade_date TEXT PRIMARY KEY,
+  cn_2y REAL,
+  cn_10y REAL,
+  us_2y REAL,
+  us_10y REAL,
+  spread_2y REAL,
+  spread_10y REAL
+);
+
+CREATE TABLE IF NOT EXISTS restricted_summary (
+  release_date TEXT PRIMARY KEY,
+  company_count INTEGER NOT NULL DEFAULT 0,
+  shares REAL,
+  market_value_yi REAL
+);
+
 CREATE TABLE IF NOT EXISTS data_quality_event (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   dataset TEXT NOT NULL,
@@ -223,6 +307,43 @@ CREATE TABLE IF NOT EXISTS trade_journal (
   created_at TEXT NOT NULL
 );
 """
+
+
+_PK_COLUMNS: dict[str, tuple[str, ...]] = {
+    "market_turnover": ("trade_date",),
+    "limit_up_stats": ("trade_date",),
+    "option_pcr": ("trade_date", "underlying"),
+    "futures_rank": ("trade_date", "symbol"),
+    "sector_amount": ("trade_date", "board"),
+    "etf_share": ("trade_date", "code"),
+    "bond_yield": ("trade_date",),
+    "restricted_summary": ("release_date",),
+}
+
+
+def _range_query(
+    table: str,
+    date_column: str,
+    start: Optional[date],
+    end: Optional[date],
+    limit: int,
+    params: list[Any],
+) -> str:
+    conditions = []
+    if start:
+        conditions.append(f"{date_column} >= ?")
+        params.append(start.isoformat())
+    if end:
+        conditions.append(f"{date_column} <= ?")
+        params.append(end.isoformat())
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    if limit and limit > 0:
+        return (
+            f"SELECT * FROM (SELECT * FROM {table}"
+            + where
+            + f" ORDER BY {date_column} DESC LIMIT ?) ORDER BY {date_column}"
+        )
+    return f"SELECT * FROM {table}" + where + f" ORDER BY {date_column}"
 
 
 class PersonalStore:
@@ -793,6 +914,264 @@ class PersonalStore:
         ]
         return result
 
+    # ------------------------------------------------------------------
+    # Market indicators (turnover / limit-up / PCR / rank / crowding / rates)
+    # ------------------------------------------------------------------
+    def _upsert_generic(self, table: str, columns: tuple[str, ...], rows: list[tuple]) -> int:
+        if not rows:
+            return 0
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{col}=excluded.{col}" for col in columns[1:] if col != "updated_at"
+        )
+        with self._transaction() as conn:
+            conn.executemany(
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) "
+                f"ON CONFLICT({', '.join(_PK_COLUMNS[table])}) DO UPDATE SET {updates}",
+                rows,
+            )
+        return len(rows)
+
+    def upsert_market_turnover(self, rows: Iterable[MarketTurnover]) -> int:
+        return self._upsert_generic(
+            "market_turnover",
+            ("trade_date", "sse_amount", "szse_amount", "total_amount"),
+            [row.to_row() for row in rows],
+        )
+
+    def get_market_turnover(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[MarketTurnover]:
+        params: list[Any] = []
+        sql = _range_query("market_turnover", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            MarketTurnover(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                sse_amount=row["sse_amount"],
+                szse_amount=row["szse_amount"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_limit_up_stats(self, rows: Iterable[LimitUpStats]) -> int:
+        return self._upsert_generic(
+            "limit_up_stats",
+            (
+                "trade_date", "zt_count", "first_board", "streak_ge2", "max_streak",
+                "zb_count", "zb_rate", "prev_zt_mean", "prev_zt_up_ratio",
+            ),
+            [row.to_row() for row in rows],
+        )
+
+    def get_limit_up_stats(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int =0
+    ) -> list[LimitUpStats]:
+        params: list[Any] = []
+        sql = _range_query("limit_up_stats", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            LimitUpStats(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                zt_count=row["zt_count"],
+                first_board=row["first_board"],
+                streak_ge2=row["streak_ge2"],
+                max_streak=row["max_streak"],
+                zb_count=row["zb_count"],
+                zb_rate=row["zb_rate"],
+                prev_zt_mean=row["prev_zt_mean"],
+                prev_zt_up_ratio=row["prev_zt_up_ratio"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_option_pcr(self, rows: Iterable[OptionPcr]) -> int:
+        return self._upsert_generic(
+            "option_pcr",
+            (
+                "trade_date", "underlying", "call_vol", "put_vol", "pcr_vol",
+                "call_oi", "put_oi", "pcr_oi",
+            ),
+            [row.to_row() for row in rows],
+        )
+
+    def get_option_pcr(
+        self,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        underlying: Optional[str] = None,
+        limit: int = 0,
+    ) -> list[OptionPcr]:
+        conditions = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if underlying:
+            conditions.append("underlying = ?")
+            params.append(underlying)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM option_pcr"
+                + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = "SELECT * FROM option_pcr" + where + " ORDER BY trade_date"
+        return [
+            OptionPcr(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                underlying=row["underlying"],
+                call_vol=row["call_vol"],
+                put_vol=row["put_vol"],
+                pcr_vol=row["pcr_vol"],
+                call_oi=row["call_oi"],
+                put_oi=row["put_oi"],
+                pcr_oi=row["pcr_oi"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_futures_rank(self, rows: Iterable[FuturesRank]) -> int:
+        return self._upsert_generic(
+            "futures_rank",
+            (
+                "trade_date", "symbol", "contracts", "top20_buy", "top20_sell",
+                "net", "net_ratio",
+            ),
+            [row.to_row() for row in rows],
+        )
+
+    def get_futures_rank(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[FuturesRank]:
+        params: list[Any] = []
+        sql = _range_query("futures_rank", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            FuturesRank(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                symbol=row["symbol"],
+                contracts=row["contracts"],
+                top20_buy=row["top20_buy"],
+                top20_sell=row["top20_sell"],
+                net=row["net"],
+                net_ratio=row["net_ratio"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_sector_amount(self, rows: Iterable[SectorAmount]) -> int:
+        return self._upsert_generic(
+            "sector_amount",
+            ("trade_date", "board", "amount_yi", "share_pct", "pct_chg"),
+            [row.to_row() for row in rows],
+        )
+
+    def get_sector_amounts(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[SectorAmount]:
+        params: list[Any] = []
+        sql = _range_query("sector_amount", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            SectorAmount(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                board=row["board"],
+                amount_yi=row["amount_yi"],
+                share_pct=row["share_pct"],
+                pct_chg=row["pct_chg"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_etf_share(self, rows: Iterable[EtfShare]) -> int:
+        return self._upsert_generic(
+            "etf_share",
+            ("trade_date", "code", "name", "share_yi"),
+            [row.to_row() for row in rows],
+        )
+
+    def get_etf_share(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[EtfShare]:
+        params: list[Any] = []
+        sql = _range_query("etf_share", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            EtfShare(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                code=row["code"],
+                name=row["name"] or "",
+                share_yi=row["share_yi"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_bond_yield(self, rows: Iterable[BondYield]) -> int:
+        return self._upsert_generic(
+            "bond_yield",
+            (
+                "trade_date", "cn_2y", "cn_10y", "us_2y", "us_10y",
+                "spread_2y", "spread_10y",
+            ),
+            [row.to_row() for row in rows],
+        )
+
+    def get_bond_yield(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[BondYield]:
+        params: list[Any] = []
+        sql = _range_query("bond_yield", "trade_date", start, end, limit, params)
+        if limit and limit > 0:
+            params.append(int(limit))
+        return [
+            BondYield(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                cn_2y=row["cn_2y"],
+                cn_10y=row["cn_10y"],
+                us_2y=row["us_2y"],
+                us_10y=row["us_10y"],
+                spread_2y=row["spread_2y"],
+                spread_10y=row["spread_10y"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
+    def upsert_restricted_release(self, rows: Iterable[RestrictedRelease]) -> int:
+        return self._upsert_generic(
+            "restricted_summary",
+            ("release_date", "company_count", "shares", "market_value_yi"),
+            [row.to_row() for row in rows],
+        )
+
+    def get_restricted_release(
+        self, start: Optional[date] = None, end: Optional[date] = None
+    ) -> list[RestrictedRelease]:
+        params: list[Any] = []
+        sql = _range_query(
+            "restricted_summary", "release_date", start, end, 0, params
+        )
+        return [
+            RestrictedRelease(
+                release_date=date.fromisoformat(row["release_date"]),
+                company_count=row["company_count"],
+                shares=row["shares"],
+                market_value_yi=row["market_value_yi"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
     def record_sync_state(
         self,
         dataset: str,
@@ -949,6 +1328,14 @@ class PersonalStore:
             "market_breadth",
             "index_futures",
             "margin_balance",
+            "market_turnover",
+            "limit_up_stats",
+            "option_pcr",
+            "futures_rank",
+            "sector_amount",
+            "etf_share",
+            "bond_yield",
+            "restricted_summary",
             "data_quality_event",
             "backtest_run",
             "trade_journal",

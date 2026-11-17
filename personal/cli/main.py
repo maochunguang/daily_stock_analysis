@@ -41,7 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--dataset",
         default="bars",
-        choices=("bars", "adjust", "calendar", "status", "futures", "margin"),
+        choices=(
+            "bars", "adjust", "calendar", "status", "futures", "margin",
+            "turnover", "zt", "pcr", "cffex_rank", "sector", "etf_share",
+            "bond", "release",
+        ),
     )
     sync.add_argument("--code", action="append", default=[])
     sync.add_argument("--start", default="")
@@ -93,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     schedule.add_argument("--at", default="06:00", help="daily run time HH:MM (default 06:00)")
     schedule.add_argument(
         "--datasets",
-        default="calendar,status,bars,adjust,futures,margin",
+        default="calendar,status,bars,adjust,futures,turnover,margin,cffex_rank,zt,pcr,sector,etf_share,bond,release",
         help="comma-separated dataset list",
     )
     schedule.add_argument(
@@ -181,7 +185,10 @@ def _info(settings) -> int:
 
 
 def _sync(settings, args) -> int:
-    if args.dataset in ("futures", "margin"):
+    if args.dataset in (
+        "futures", "margin", "turnover", "zt", "pcr", "cffex_rank",
+        "sector", "etf_share", "bond", "release",
+    ):
         return _sync_market(settings, args)
     codes = list(args.code) or list(settings.stock_list)
     if not codes and args.dataset != "calendar":
@@ -245,18 +252,39 @@ def _sync(settings, args) -> int:
 
 def _sync_market(settings, args) -> int:
     from personal.datahub.market import (
+        sync_bond_yield,
+        sync_etf_share,
+        sync_futures_rank,
         sync_index_futures,
+        sync_limit_up,
         sync_margin_balance,
+        sync_option_pcr,
+        sync_restricted_release,
+        sync_sector_amount,
+        sync_turnover,
     )
 
     end = date.fromisoformat(args.end) if args.end else date.today()
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=10)
+    dispatch = {
+        "futures": lambda store: sync_index_futures(store, start=start, end=end),
+        "margin": lambda store: sync_margin_balance(store, start=start, end=end),
+        "turnover": lambda store: sync_turnover(store, start=start, end=end),
+        "zt": lambda store: sync_limit_up(store, start=start, end=end),
+        "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
+        "cffex_rank": lambda store: sync_futures_rank(store, start=start, end=end),
+        "sector": lambda store: sync_sector_amount(store, trade_date=end),
+        "etf_share": lambda store: sync_etf_share(store, trade_date=end),
+        "bond": lambda store: sync_bond_yield(store),
+        "release": lambda store: sync_restricted_release(store, start=start, end=end),
+    }
+    handler = dispatch.get(args.dataset)
+    if handler is None:
+        print(f"unknown market dataset: {args.dataset}")
+        return 2
     store = PersonalStore(settings.personal_db)
     try:
-        if args.dataset == "futures":
-            result = sync_index_futures(store, start=start, end=end)
-        else:
-            result = sync_margin_balance(store, start=start, end=end)
+        result = handler(store)
     except Exception as exc:  # noqa: BLE001
         print(f"sync failed: {exc}")
         return 2

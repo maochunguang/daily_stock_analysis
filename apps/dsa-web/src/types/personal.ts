@@ -208,3 +208,85 @@ export interface PersonalSyncState {
   rows: number;
   last_error: string | null;
 }
+
+export interface PersonalLimitUpRow {
+  trade_date: string;
+  zt_count: number;
+  first_board: number;
+  streak_ge2: number;
+  max_streak: number;
+  zb_count: number;
+  zb_rate: number | null;
+  prev_zt_mean: number | null;
+  prev_zt_up_ratio: number | null;
+}
+
+export interface PersonalPcrRow {
+  trade_date: string;
+  call_vol: number | null;
+  put_vol: number | null;
+  pcr_vol: number | null;
+  call_oi: number | null;
+  put_oi: number | null;
+  pcr_oi: number | null;
+}
+
+export interface PersonalFuturesRankRow {
+  trade_date: string;
+  symbol: string;
+  contracts: number;
+  top20_buy: number | null;
+  top20_sell: number | null;
+  net: number | null;
+  net_ratio: number | null;
+}
+
+export interface PersonalFlowsResponse {
+  margin_ratio: Array<{ trade_date: string; ratio_pct: number }>;
+  turnover: Array<{ trade_date: string; total_amount_yi: number | null }>;
+  etf_share: Array<{ trade_date: string; code: string; name: string; share_yi: number | null }>;
+}
+
+export interface PersonalCrowdingRow {
+  board: string;
+  amount_yi: number | null;
+  share_pct: number | null;
+  pct_chg: number | null;
+  share_pctile: number | null;
+  samples: number;
+}
+
+export interface PersonalCrowdingResponse {
+  trade_date: string | null;
+  rows: PersonalCrowdingRow[];
+}
+
+export interface PersonalMacroResponse {
+  bond_yield: Array<{
+    trade_date: string;
+    cn_10y: number | null;
+    us_10y: number | null;
+    spread_10y: number | null;
+    spread_2y: number | null;
+  }>;
+  release: Array<{
+    release_date: string;
+    company_count: number;
+    market_value_yi: number | null;
+  }>;
+}
+
+export interface PersonalCompositeComponent {
+  metric: string;
+  label: string;
+  kind: 'pro' | 'contrarian';
+  value: number | null;
+  percentile: number | null;
+  sample_count: number;
+}
+
+export interface PersonalCompositeResponse {
+  score: number | null;
+  state: string;
+  components: PersonalCompositeComponent[];
+}

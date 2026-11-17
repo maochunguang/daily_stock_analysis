@@ -37,6 +37,13 @@ import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 import type {
   PersonalBacktestResponse,
   PersonalBreadthRow,
+  PersonalCompositeResponse,
+  PersonalCrowdingResponse,
+  PersonalFlowsResponse,
+  PersonalFuturesRankRow,
+  PersonalLimitUpRow,
+  PersonalMacroResponse,
+  PersonalPcrRow,
   PersonalFuturesRow,
   PersonalMarginRow,
   PersonalPlugin,
@@ -305,6 +312,13 @@ const PersonalPage: React.FC = () => {
   const [reviewBreadth, setReviewBreadth] = useState<PersonalBreadthRow[]>([]);
   const [reviewFutures, setReviewFutures] = useState<PersonalFuturesRow[]>([]);
   const [reviewMargin, setReviewMargin] = useState<PersonalMarginRow[]>([]);
+  const [reviewLimitUp, setReviewLimitUp] = useState<PersonalLimitUpRow[]>([]);
+  const [reviewPcr, setReviewPcr] = useState<PersonalPcrRow[]>([]);
+  const [reviewRank, setReviewRank] = useState<PersonalFuturesRankRow[]>([]);
+  const [reviewFlows, setReviewFlows] = useState<PersonalFlowsResponse | null>(null);
+  const [reviewCrowding, setReviewCrowding] = useState<PersonalCrowdingResponse | null>(null);
+  const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
+  const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
   const [reviewLoaded, setReviewLoaded] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState('');
@@ -334,14 +348,39 @@ const PersonalPage: React.FC = () => {
     setReviewBusy(true);
     setReviewError('');
     try {
-      const [breadthData, futuresData, marginData] = await Promise.all([
+      const [
+        breadthData,
+        futuresData,
+        marginData,
+        limitUpData,
+        pcrData,
+        rankData,
+        flowsData,
+        crowdingData,
+        macroData,
+        compositeData,
+      ] = await Promise.all([
         personalApi.breadth(30),
         personalApi.futures(30),
         personalApi.margin(30),
+        personalApi.limitup(20),
+        personalApi.pcr(20),
+        personalApi.cffexRank(20),
+        personalApi.flows(30),
+        personalApi.crowding(30),
+        personalApi.macro(120),
+        personalApi.composite(),
       ]);
       setReviewBreadth(breadthData.rows);
       setReviewFutures(futuresData.rows);
       setReviewMargin(marginData.rows);
+      setReviewLimitUp(limitUpData.rows);
+      setReviewPcr(pcrData.rows);
+      setReviewRank(rankData.rows);
+      setReviewFlows(flowsData);
+      setReviewCrowding(crowdingData);
+      setReviewMacro(macroData);
+      setReviewComposite(compositeData);
       setReviewLoaded(true);
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : String(err));
@@ -795,6 +834,13 @@ const PersonalPage: React.FC = () => {
                 breadth={reviewBreadth}
                 futures={reviewFutures}
                 margin={reviewMargin}
+                limitUp={reviewLimitUp}
+                pcr={reviewPcr}
+                rank={reviewRank}
+                flows={reviewFlows}
+                crowding={reviewCrowding}
+                macro={reviewMacro}
+                composite={reviewComposite}
                 busy={reviewBusy}
                 onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
               />

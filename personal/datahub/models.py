@@ -253,3 +253,178 @@ class QualityIssue:
     code: str | None = None
     trade_date: date | None = None
     detail: str = ""
+
+@dataclass(frozen=True)
+class MarketTurnover:
+    """Exchange daily turnover (股票标的, yuan) — denominator for margin ratio."""
+
+    trade_date: date
+    sse_amount: float | None = None
+    szse_amount: float | None = None
+
+    @property
+    def total_amount(self) -> float | None:
+        if self.sse_amount is None or self.szse_amount is None:
+            return None
+        return self.sse_amount + self.szse_amount
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.sse_amount,
+            self.szse_amount,
+            self.total_amount,
+        )
+
+
+@dataclass(frozen=True)
+class LimitUpStats:
+    """Daily limit-up structure: ladder height, broken boards, carry trade."""
+
+    trade_date: date
+    zt_count: int = 0
+    first_board: int = 0
+    streak_ge2: int = 0
+    max_streak: int = 0
+    zb_count: int = 0
+    zb_rate: float | None = None
+    prev_zt_mean: float | None = None
+    prev_zt_up_ratio: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.zt_count,
+            self.first_board,
+            self.streak_ge2,
+            self.max_streak,
+            self.zb_count,
+            self.zb_rate,
+            self.prev_zt_mean,
+            self.prev_zt_up_ratio,
+        )
+
+
+@dataclass(frozen=True)
+class OptionPcr:
+    """ETF-option put/call aggregates for one underlying (volume + OI)."""
+
+    trade_date: date
+    underlying: str
+    call_vol: float | None = None
+    put_vol: float | None = None
+    pcr_vol: float | None = None
+    call_oi: float | None = None
+    put_oi: float | None = None
+    pcr_oi: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.underlying,
+            self.call_vol,
+            self.put_vol,
+            self.pcr_vol,
+            self.call_oi,
+            self.put_oi,
+            self.pcr_oi,
+        )
+
+
+@dataclass(frozen=True)
+class FuturesRank:
+    """CFFEX top-20 member long/short open interest per product."""
+
+    trade_date: date
+    symbol: str
+    contracts: int = 0
+    top20_buy: float | None = None
+    top20_sell: float | None = None
+    net: float | None = None
+    net_ratio: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.symbol,
+            self.contracts,
+            self.top20_buy,
+            self.top20_sell,
+            self.net,
+            self.net_ratio,
+        )
+
+
+@dataclass(frozen=True)
+class SectorAmount:
+    """One industry board's turnover for crowding percentile."""
+
+    trade_date: date
+    board: str
+    amount_yi: float | None = None
+    share_pct: float | None = None
+    pct_chg: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.board,
+            self.amount_yi,
+            self.share_pct,
+            self.pct_chg,
+        )
+
+
+@dataclass(frozen=True)
+class EtfShare:
+    """Daily snapshot of a broad-base ETF's fund share (亿份)."""
+
+    trade_date: date
+    code: str
+    name: str = ""
+    share_yi: float | None = None
+
+    def to_row(self) -> tuple:
+        return (self.trade_date.isoformat(), self.code, self.name, self.share_yi)
+
+
+@dataclass(frozen=True)
+class BondYield:
+    """CN/US government bond yields (%) and spreads (pct points)."""
+
+    trade_date: date
+    cn_2y: float | None = None
+    cn_10y: float | None = None
+    us_2y: float | None = None
+    us_10y: float | None = None
+    spread_2y: float | None = None
+    spread_10y: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.cn_2y,
+            self.cn_10y,
+            self.us_2y,
+            self.us_10y,
+            self.spread_2y,
+            self.spread_10y,
+        )
+
+
+@dataclass(frozen=True)
+class RestrictedRelease:
+    """Market-level restricted-share release calendar (daily aggregates)."""
+
+    release_date: date
+    company_count: int = 0
+    shares: float | None = None
+    market_value_yi: float | None = None
+
+    def to_row(self) -> tuple:
+        return (
+            self.release_date.isoformat(),
+            self.company_count,
+            self.shares,
+            self.market_value_yi,
+        )

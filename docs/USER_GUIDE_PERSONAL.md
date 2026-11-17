@@ -336,20 +336,61 @@ python -m personal.cli.main info
 
 ### 4.6 深度复盘
 
-`/personal` → **深度复盘** tab，三张卡片式指标（以后新指标直接在卡片注册表里加一项）：
+`/personal` → **深度复盘** tab，11 张卡片（机构式多指标印证；卡片注册表
+`REVIEW_CARDS` 里加一项即新增指标）：
 
-| 卡片 | 内容 | 数据更新方式 |
-|---|---|---|
-| 市场宽度（阿姆氏 TRIN） | 当日 TRIN/分位带/历史分位、涨跌家数、上涨占比、上证指数、判读与背离信号、近 30 日曲线、近 5 日明细 | CLI `import-arms`（§7.5） |
-| 股指期货做空压力 | IF/IH/IC/IM 主力合约收盘、现货、**基差/基差率**、持仓量及变化、近 30 日基差率曲线 | 卡片右上「更新」按钮（拉最近 10 天）或 CLI `sync --dataset futures` |
-| 融资余额 | 两融总计（亿元）+ 5 日变化、沪市/深市、**分板块**（沪主板/科创板/深主板/创业板）余额与融资买入、近 20 日总计曲线 | 卡片右上「更新」按钮或 CLI `sync --dataset margin` |
-| 更多指标（规划中） | 会员持仓龙虎榜、ETF 资金流、行业融资余额等占位 | — |
+| 卡片 | 内容 | 性质 | 数据更新 |
+|---|---|---|---|
+| 市场综合状态 | 各指标一年滚动分位加权 → 0-100 综合分 + 状态灯（冰点/偏冷/中性/偏热/过热），分量表带顺势/逆向标签 | 综合 | 随各指标自动计算 |
+| 市场宽度（TRIN） | 当日 TRIN/分位带、涨跌家数、上证指数、判读与背离、30 日曲线 | 量能 | CLI `import-arms`（§7.5） |
+| 期指做空压力 | IF/IH/IC/IM 基差/基差率/持仓量、30 日基差率曲线 | 定价 | 定时同步 / 「更新」按钮 |
+| 期指会员持仓 | 前 20 会员持买单量/持卖单量/**净空占比**（中金所官方 CSV） | 定价（逆向） | 同上 |
+| 融资余额 | 两融总计 + 5 日变化、沪/深、四板块余额 | 杠杆 | 同上 |
+| 涨停梯队 | 涨停/首板/最高连板、**炸板率**、**昨涨停今收益**（亏钱效应） | 结构 | 同上 |
+| 期权 PCR | 50ETF 认沽/认购成交量 PCR + 持仓量 PCR（Tushare opt_daily） | 定价（逆向） | 同上（限频 1 次/分钟，定时补 3 天） |
+| 资金面 | **两融交易占比**（>10% 过热 / <7% 冰点）、7 只宽基 ETF 份额及日变化、全市场成交额 | 资金 | 同上 |
+| 行业拥挤度 | 成交占比最高的 15 个行业 + 各自 250 日分位（>90% 拥挤警戒） | 结构 | 同上（快照自建积累） |
+| 宏观锚 | 中美 10Y/2Y 利差曲线 + 未来 60 天解禁日历 | 宏观 | 同上（利差含全量历史） |
+| 更多指标（规划中） | 北向活跃度、新基金发行、龙虎榜席位 | — | — |
+
+**使用纪律（机构做法）**：所有指标看分位而非绝对值；逆向指标（PCR/净空占比/
+炸板率）与顺势指标（两融占比/连板高度/上涨占比）分开解读——同为高分位，
+前者常是阶段底信号，后者是过热信号；综合分只是平均而非买卖信号。
 
 说明：
 
 - 基差 = 期货收盘 − 现货收盘，**贴水（负）= 对冲/做空压力大**；基差率 = 基差/现货。
 - 融资余额板块行只统计**股票标的**，与沪/深市汇总的差值≈ETF/债券/可转债口径。
 - 两融数据 **T+1 发布**（11-17 的数据 11-18 早上才有）；板块拆分按交易所每日明细聚合，一次同步最多 120 天。
+
+### 4.7 定时同步（RM-05）
+
+Docker Compose 提供 **personal-sync** 副服务（与 server 共享 `data/personal.db`），
+每天 **06:00**（容器时区 Asia/Shanghai）自动增量同步 14 个数据集：
+
+| 顺序 | 数据集 | 回看窗口 | 说明 |
+|---|---|---|---|
+| 1 | 交易日历 calendar | 前 30 天 ~ 后 60 天 | 状态同步依赖它 |
+| 2 | 交易状态 status | 前 15 天 | 停牌/ST/涨跌停 |
+| 3 | 日线 bars | 前 15 天 | 增量幂等 upsert |
+| 4 | 复权因子 adjust | 前 30 天 | Tushare 免费档 1 次/小时 |
+| 5 | 期指 futures | 前 10 天 | IF/IH/IC/IM + 基差 |
+| 6 | 成交概况 turnover | 前 30 天 | 两融交易占比的分母 |
+| 7 | 两融 margin | 前 10 天 | T+1 发布，见 §7.6 |
+| 8 | 期指持仓 cffex_rank | 前 10 天 | 中金所前 20 会员 |
+| 9 | 涨停梯队 zt | 前 10 天 | 东财涨停池/炸板/昨涨停 |
+| 10 | 期权 PCR pcr | 前 3 天 | Tushare opt_daily 限频 1 次/分钟 |
+| 11 | 行业拥挤 sector | 当日快照 | 同花顺行业成交额 |
+| 12 | ETF 份额 etf_share | 当日快照 | 份额序列自建积累 |
+| 13 | 中美利差 bond | 全量历史 | 东财债券收益率 |
+| 14 | 解禁 release | 后 45 天 | 东财解禁汇总 |
+
+- 每个数据集的结果写入**数据新鲜度**表（总览可见最近成功时间/数据日期/错误）；
+  单个数据集失败不影响其余数据集，第二天自动重试。
+- 阿姆氏快照默认不在 NAS 上自动更新（easy-daily-trading 在本地 Mac）。
+  如需自动导入，把快照目录挂载进容器并追加 `--arms-dir`（见 docker-compose.yml 注释）。
+- 手动立即跑一轮：`docker compose exec personal-sync python -m personal.cli.main schedule --once`
+- 调整时间：修改 compose 中 `--at 06:00`（如 `--at 05:00`），`docker compose up -d personal-sync` 生效。
 
 ## 5. CLI 参考
 
@@ -364,10 +405,11 @@ python -m personal.cli.main <command> [options]
 | `init-db` | 创建/初始化个人库 | — |
 | `info` | 显示配置、上游契约、插件状态 | — |
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
-| `sync` | 同步日线/复权因子/日历/状态/期指/两融 | `--dataset bars\|adjust\|calendar\|status\|futures\|margin`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
+| `sync` | 同步全部个人数据集 | `--dataset bars\|adjust\|calendar\|status\|futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
 | `import-arms` | 导入阿姆氏（TRIN）日快照 | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
 | `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
+| `schedule` | 定时增量同步（默认 06:00 每日循环） | `--at HH:MM`、`--datasets`、`--arms-dir`、`--once`（立即跑一轮并退出） |
 | `plugins` | 列出插件和加载错误 | — |
 | `web` | 启动独立控制台 | `--host`、`--port`、`--reload` |
 
@@ -414,6 +456,9 @@ python -m personal.cli.main breadth --days 5
 # 股指期货主力合约（IF/IH/IC/IM + 基差）与融资余额（分板块）
 python -m personal.cli.main sync --dataset futures --start 2026-11-10 --end 2026-11-17
 python -m personal.cli.main sync --dataset margin --start 2026-11-10 --end 2026-11-17
+
+# 立即跑一轮完整定时同步（验证用）
+python -m personal.cli.main schedule --once --at 06:00
 ```
 
 日期参数省略时：`sync` 默认最近 730 天；`replay` 默认最近 365 天。
@@ -501,6 +546,14 @@ python -m personal.cli.main sync --dataset margin --start 2026-11-10 --end 2026-
 | `market_breadth` | `trade_date` | 市场宽度/阿姆氏 TRIN 日汇总（见 §7.5） |
 | `index_futures` | `(trade_date, symbol)` | IF/IH/IC/IM 主力合约价、持仓、基差 |
 | `margin_balance` | `(trade_date, scope_type, scope)` | 两融余额（market=沪/深/总计；board=四板块，仅股票） |
+| `market_turnover` | `trade_date` | 沪/深股票成交额（两融占比分母） |
+| `limit_up_stats` | `trade_date` | 涨停/首板/连板高度/炸板率/昨涨停今收益 |
+| `option_pcr` | `(trade_date, underlying)` | ETF 期权 PCR（50ETF/300ETF，成交量口径） |
+| `futures_rank` | `(trade_date, symbol)` | 中金所前 20 会员多空持仓汇总 |
+| `sector_amount` | `(trade_date, board)` | 同花顺行业成交额与占比（拥挤度） |
+| `etf_share` | `(trade_date, code)` | 宽基 ETF 份额快照（自建积累） |
+| `bond_yield` | `trade_date` | 中美国债 2Y/10Y 收益率与利差 |
+| `restricted_summary` | `release_date` | 解禁日历（家数/数量/实际解禁市值） |
 | `data_quality_event` | 自增 | 质检事件 |
 | `backtest_run` | `run_id` | 回测配置 + 指标 |
 | `backtest_trade` | 自增 | 回测逐笔交易 |
@@ -592,6 +645,20 @@ python -m personal.cli.main breadth --days 5
 - 板块之和 < 汇总之差 = ETF/债券/可转债等非股票标的
 - T+1 发布；明细按日逐日拉取，单次同步区间 ≤ 120 天（`MARGIN_MAX_DAYS`）
 - 上交所明细单页 2000 行，同步时自动翻页收齐
+
+### 7.7 深度市场指标口径（P1/P2 卡片）
+
+| 指标 | 来源 | 口径与用法 |
+|---|---|---|
+| 两融交易占比 | `margin_balance.rzye_buy ÷ market_turnover.total` | 情绪杠杆温度计：>10% 过热 / <7% 冰点（顺势） |
+| 涨停梯队/炸板率/昨涨停今收益 | 东财涨停池（盘后终值） | 炸板率=炸板/(涨停+炸板)，>40% 亏钱效应；昨涨停今收益深负=退潮（结构） |
+| 期权 PCR | Tushare `opt_daily`（SSE，50ETF/300ETF 按 `call_put` 聚合，合约表本地缓存 7 天） | **成交量口径**（按日返回有行情合约，未成交合约 vol=0，口径完整）；持仓量 PCR 只含有行情合约，仅供参考（逆向） |
+| 期指会员持仓 | 中金所官方 CSV（GBK，产品内全部上市合约累加前 20 会员） | 净空占比=(持卖−持买)/(持买+持卖)（逆向） |
+| 行业拥挤度 | 同花顺行业一览 `总成交额`（90 个行业） | 占比=板块成交额/合计；250 日分位>90%=拥挤警戒（快照自建，从启用日积累） |
+| ETF 份额 | 东财 ETF 快照（7 只宽基固定名单） | 份额无历史 API，每日快照自建序列；份额骤增=宽基托底资金 |
+| 中美利差 | 东财 `bond_zh_us_yield_em`（全量历史） | 10Y/2Y 利差走阔压制风险偏好（月/周级别） |
+| 解禁日历 | 东财解禁汇总 | 未来 45 天逐日家数/实际解禁市值 |
+| 综合状态 | 上述指标 + TRIN 上涨占比 | 一年滚动分位（样本<20 跳过）平均；0-25 冰点 / 25-40 偏冷 / 40-60 中性 / 60-75 偏热 / 75-100 过热 |
 
 ## 8. 插件使用与开发
 

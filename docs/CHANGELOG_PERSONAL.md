@@ -1160,3 +1160,115 @@ git apply --check patches/0003-news-intel-private-hosts.patch   # after 0002, on
 
 ### Next
 RM-05 scheduled sync (next commit).
+
+## [2026-11-18] CHG-0020 — RM-05: daily scheduled sync (personal-sync sidecar)
+
+### Metadata
+- id: CHG-0020
+- date: 2026-11-18
+- status: done
+- area: datahub, docker, web
+- related: CHG-0017, CHG-0018, RM-05
+
+### Summary
+Added the scheduled incremental sync requested by the user ("每天 5 点或者 6
+点跑这些数据", default 06:00 Asia/Shanghai, `--at` configurable). The
+`personal-sync` compose sidecar shares `data/personal.db` with the server and
+runs `python -m personal.cli.main schedule --at 06:00`. Per-dataset results
+land in a new `sync_state` table (last run / last success / data date / rows /
+error); failures are recorded and the remaining datasets still run, and the
+next day's loop retries naturally. `/api/status` exposes `sync_state`; the
+overview tab renders a 数据新鲜度 card. AkShare 1.19/1.20 compat handled in
+the futures source (`index_zh_daily_sina` vs pre-rename
+`stock_zh_index_daily`). Note: this entry's docs were accidentally applied to
+the parent workspace copy during the original RM-05 commit (`d3e76a0`) and
+lost in the follow-up sync; restored verbatim here alongside CHG-0021.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/schedule.py` | `parse_at`, `next_run_at`, `run_scheduled_sync`, `run_schedule_loop`, `--once` |
+| `personal/datahub/store.py` | `sync_state` table + `record_sync_state` (failure preserves last success) |
+| `personal/cli/main.py` | `schedule --at HH:MM --datasets --arms-dir --once` |
+| `personal/api/app.py` | `/api/status` gains `sync_state` |
+| `docker/docker-compose.yml` | `personal-sync` sidecar (06:00, shared data volume) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | 数据新鲜度 card on overview |
+
+### Verification
+- Container `schedule --once` executed all datasets against the real DB;
+  freshness card browser-verified.
+
+## [2026-11-18] CHG-0021 — P1/P2 deep-market indicator cards (RM-32..RM-40)
+
+### Metadata
+- id: CHG-0021
+- date: 2026-11-18
+- status: done
+- area: datahub, web, docs
+- related: CHG-0017, CHG-0018, CHG-0020, RM-32..RM-40
+
+### Summary
+Implemented the institutional-grade deep-market indicator set agreed with the
+user (8 new datasets + composite score), all free data sources. P1: margin
+trading ratio (existing data, zero new fetches), limit-up ladder / break rate
+/ prev-limit-up carry (Eastmoney pools), ETF-option PCR (Tushare opt_daily,
+volume basis, opt_basic cached 7 days, opt_daily rate-limited 1/min), CFFEX
+top-20 member positions (official GBK CSV aggregated across all listed
+contracts per product). P2: industry crowding (THS 90-board turnover share +
+250-day percentile), broad-base ETF share snapshots (7 funds, self-built
+series — no vendor history), CN/US yield spreads (full-history backfill,
+2663 days), restricted-release calendar (next 45 days). The review tab's card
+registry grows to 11 cards topped by a composite market-state score (each
+metric mapped to a ~1-year rolling percentile, averaged with pro-cyclical /
+contrarian direction labels, <20 samples skipped).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/models.py` | 8 new dataclasses (turnover/limit-up/PCR/rank/sector/ETF-share/bond/release) |
+| `personal/datahub/store.py` | 8 tables + upsert/get + `_range_query`/`_upsert_generic` helpers |
+| `personal/datahub/sources/sentiment_source.py` | LimitUpSource (zt/zbgc/previous pools) |
+| `personal/datahub/sources/flows_source.py` | TurnoverSource + EtfShareSource + SectorSource (akshare 1.19/1.20 dual-name) |
+| `personal/datahub/sources/rates_source.py` | BondSource + ReleaseSource |
+| `personal/datahub/sources/option_source.py` | OptionPcrSource (raw Tushare HTTP, contract cache) |
+| `personal/datahub/sources/cffex_source.py` | CffexRankSource (GBK CSV, stdlib HTTP) |
+| `personal/datahub/market.py` | 8 new sync functions + range cap |
+| `personal/datahub/composite.py` | Percentile engine + composite score |
+| `personal/cli/main.py` | `sync --dataset` gains turnover/zt/pcr/cffex_rank/sector/etf_share/bond/release |
+| `personal/api/app.py` | GET limitup/pcr/cffex-rank/flows/crowding/macro/composite + POST sync dispatch |
+| `personal/datahub/schedule.py` | DEFAULT_DATASETS grows to 14 |
+| `personal/tests/test_indicators.py` | 9 tests: CFFEX parse, PCR aggregation, store roundtrips, composite percentiles |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | 7 new cards + registry (11 total) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx`, `api/personal.ts`, `types/personal.ts` | review data loading + types |
+| `patches/0001-personal-web-integration.patch` | Regenerated (2953 lines); 0002→0003→0001 chain verified on pristine `c820915` |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.6 11-card table, §4.7 14-dataset table, CLI rows, §7.1 tables, §7.7 口径 |
+| `docs/AI_CONTEXT.md`, `docs/ROADMAP_PERSONAL.md` | test_count 99, module/schema/API rows, RM-05 restored done + RM-32..RM-40 |
+
+### Commands
+```bash
+cd upstream
+.venv/bin/python -m personal.cli.main sync --dataset bond          # 2663 days
+.venv/bin/python -m personal.cli.main sync --dataset turnover --start 2026-10-25 --end 2026-11-18
+.venv/bin/python -m personal.cli.main sync --dataset zt --start 2026-10-25 --end 2026-11-18
+.venv/bin/python -m personal.cli.main sync --dataset cffex_rank --start 2026-11-05 --end 2026-11-18
+.venv/bin/python -m personal.cli.main sync --dataset sector / etf_share / release
+.venv/bin/python -m personal.cli.main sync --dataset pcr            # 1/min, accumulate daily
+.venv/bin/python -m pytest personal/tests -q
+```
+
+### Verification
+- 99 tests green; compileall OK; patch chain applies on pristine c820915.
+- Real data: limit-up (break rate 48.6% on 11-12), margin ratio 8.7%→7.58%,
+  CFFEX IM net_ratio 6.8%, crowding 半导体 share 15.1%, CN-US 10Y spread
+  −3.50, composite score 18.6 = 冰点/机会区 (adv_ratio component first; others
+  accumulate samples). PCR backfill of 15 trading days runs at 1/min in the
+  background.
+- Browser: 11 cards render in the review tab (DOM-verified headings + data).
+
+### Notes / Migration
+- Crowding / ETF-share / PCR percentile series accumulate from adoption day;
+  the composite card gains components as samples cross 20.
+- PCR is volume-basis by design (opt_daily per-trade-date rows cover all
+  traded contracts); OI PCR is a reference column only.
+- THS board naming differs from Eastmoney — keep the crowding series
+  single-source.

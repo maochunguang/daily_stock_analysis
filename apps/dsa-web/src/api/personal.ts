@@ -1,9 +1,16 @@
 import type {
   PersonalBacktestResponse,
   PersonalBreadthRow,
+  PersonalCompositeResponse,
+  PersonalCrowdingResponse,
+  PersonalFlowsResponse,
+  PersonalFuturesRankRow,
   PersonalFuturesRow,
+  PersonalLimitUpRow,
+  PersonalMacroResponse,
   PersonalMarginRow,
   PersonalMarketSyncResponse,
+  PersonalPcrRow,
   PersonalPlugin,
   PersonalQmtHealth,
   PersonalStatus,
@@ -63,7 +70,17 @@ export interface PersonalReplayRequest {
 }
 
 export interface PersonalMarketSyncRequest {
-  dataset: 'futures' | 'margin';
+  dataset:
+    | 'futures'
+    | 'margin'
+    | 'turnover'
+    | 'zt'
+    | 'pcr'
+    | 'cffex_rank'
+    | 'sector'
+    | 'etf_share'
+    | 'bond'
+    | 'release';
   start: string | null;
   end: string | null;
 }
@@ -94,6 +111,19 @@ export const personalApi = {
     request<{ rows: PersonalFuturesRow[] }>(`/market/futures?days=${days}`),
   margin: (days = 30) =>
     request<{ rows: PersonalMarginRow[] }>(`/market/margin?days=${days}`),
+  limitup: (days = 20) =>
+    request<{ rows: PersonalLimitUpRow[] }>(`/market/limitup?days=${days}`),
+  pcr: (days = 20) =>
+    request<{ underlying: string; rows: PersonalPcrRow[] }>(`/market/pcr?days=${days}`),
+  cffexRank: (days = 20) =>
+    request<{ rows: PersonalFuturesRankRow[] }>(`/market/cffex-rank?days=${days}`),
+  flows: (days = 30) =>
+    request<PersonalFlowsResponse>(`/market/flows?days=${days}`),
+  crowding: (days = 30) =>
+    request<PersonalCrowdingResponse>(`/market/crowding?days=${days}`),
+  macro: (days = 120) =>
+    request<PersonalMacroResponse>(`/market/macro?days=${days}`),
+  composite: () => request<PersonalCompositeResponse>('/market/composite'),
   marketSync: (body: PersonalMarketSyncRequest) =>
     request<PersonalMarketSyncResponse>('/market/sync', {
       method: 'POST',

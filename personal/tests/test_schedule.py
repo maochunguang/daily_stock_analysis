@@ -80,7 +80,7 @@ class TestRunScheduledSync:
             assert [r.ok for r in results] == [True, True]
             assert [r.rows for r in results] == [40, 35]
             state = {row["dataset"]: row for row in store.get_sync_state()}
-            assert state["futures"]["last_ok_date"] == date(2026, 11, 17).isoformat()
+            assert state["futures"]["last_ok_date"] == date.today().isoformat()
             assert state["margin"]["rows"] == 35
             assert state["margin"]["last_error"] in (None, "")
         finally:

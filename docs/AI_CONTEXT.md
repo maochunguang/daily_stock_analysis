@@ -97,6 +97,13 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/market.py` | Market-level syncs: index futures + margin balance |
 | `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
 | `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits (SSE detail pagination) |
+| `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
+| `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
+| `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
+| `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares + THS sector crowding |
+| `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
+| `personal/datahub/sources/option_source.py` | Tushare ETF-option PCR (opt_basic cache 7d, opt_daily 1/min) |
+| `personal/datahub/sources/cffex_source.py` | CFFEX top-20 member position rank (official GBK CSV) |
 | `personal/datahub/status.py` | Derive suspension/ST/limit-up/down rows from bars/calendar/name/factors |
 | `personal/datahub/sync.py` | Source fallback, bars/adjust/calendar/status sync, cross-check |
 | `personal/datahub/sources/` | `synthetic`, `tushare`, `akshare`, `baostock` adapters |
@@ -139,6 +146,15 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `market_breadth` | `trade_date`; TRIN/涨跌家数/量额日汇总（量单位亿股、额单位亿元） |
 | `index_futures` | `(trade_date, symbol)`; IF/IH/IC/IM close/OI/basis vs spot |
 | `margin_balance` | `(trade_date, scope_type, scope)`; rzye/rqye/rzrqye/rzye_buy in yuan |
+| `market_turnover` | `trade_date`; SSE/SZSE stock turnover (margin-ratio denominator) |
+| `limit_up_stats` | `trade_date`; zt/first/streak/zb_rate/prev-zt carry |
+| `option_pcr` | `(trade_date, underlying)`; volume PCR (50ETF/300ETF) |
+| `futures_rank` | `(trade_date, symbol)`; CFFEX top-20 buy/sell/net_ratio |
+| `sector_amount` | `(trade_date, board)`; THS industry amount/share |
+| `etf_share` | `(trade_date, code)`; broad-ETF share snapshots (self-built series) |
+| `bond_yield` | `trade_date`; CN/US 2Y/10Y + spreads (full history) |
+| `restricted_summary` | `release_date`; release count/shares/MV |
+| `sync_state` | `dataset`; last_run/last_ok/last_ok_date/rows/last_error freshness |
 | `data_quality_event` | auto id; quality warnings/errors |
 | `backtest_run` | `run_id`; config + metrics JSON |
 | `backtest_trade` | run trades |
@@ -165,6 +181,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset margin` | Margin balance (market + board scopes, T+1, ≤120d/run) |
 | `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
+| `python -m personal.cli.main schedule --at 06:00 [--once]` | RM-05 daily scheduler (compose service personal-sync) |
+| `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
 
@@ -183,6 +201,13 @@ the page route is `/personal`.
 | GET | `/api/data/coverage` | Code/source coverage + stats |
 | GET | `/api/data/quality?limit=N` | Quality events |
 | GET | `/api/market/breadth?days=N` | Market breadth / TRIN rows (oldest → newest) |
+| GET | `/api/market/limitup?days=N` | Limit-up ladder stats |
+| GET | `/api/market/pcr?days=N&underlying=` | Option PCR rows |
+| GET | `/api/market/cffex-rank?days=N` | CFFEX member rank rows |
+| GET | `/api/market/flows?days=N` | Margin-buy ratio + turnover + ETF shares |
+| GET | `/api/market/crowding?days=N` | Industry crowding + percentiles |
+| GET | `/api/market/macro?days=N` | CN/US spreads + release calendar |
+| GET | `/api/market/composite` | Composite market-state score |
 | GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
 | GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
 | POST | `/api/market/sync` | Sync futures/margin (default last 10 days) |

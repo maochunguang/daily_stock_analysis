@@ -19,7 +19,18 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from ..config import Settings
-from .market import sync_index_futures, sync_margin_balance
+from .market import (
+    sync_bond_yield,
+    sync_etf_share,
+    sync_futures_rank,
+    sync_index_futures,
+    sync_limit_up,
+    sync_margin_balance,
+    sync_option_pcr,
+    sync_restricted_release,
+    sync_sector_amount,
+    sync_turnover,
+)
 from .store import PersonalStore
 from .sync import DataSyncService, build_sources
 
@@ -29,7 +40,15 @@ DEFAULT_DATASETS: tuple[str, ...] = (
     "bars",
     "adjust",
     "futures",
+    "turnover",
     "margin",
+    "cffex_rank",
+    "zt",
+    "pcr",
+    "sector",
+    "etf_share",
+    "bond",
+    "release",
 )
 DEFAULT_AT = "06:00"
 
@@ -104,7 +123,7 @@ def run_scheduled_sync(
                 message=message,
                 seconds=time_module.monotonic() - started,
             )
-            if dataset in ("bars", "adjust", "calendar", "status", "futures", "margin", "arms"):
+            if dataset != "arms" and dataset in DEFAULT_DATASETS or dataset == "arms":
                 store.record_sync_state(
                     dataset,
                     ok=ok,
@@ -142,6 +161,23 @@ def _run_dataset(
         return sync_index_futures(store, start=today - timedelta(days=10), end=today).rows
     if dataset == "margin":
         return sync_margin_balance(store, start=today - timedelta(days=10), end=today).rows
+    if dataset == "turnover":
+        return sync_turnover(store, start=today - timedelta(days=30), end=today).rows
+    if dataset == "zt":
+        return sync_limit_up(store, start=today - timedelta(days=10), end=today).rows
+    if dataset == "pcr":
+        # opt_daily 限频 1 次/分钟，定时任务每天只补最近 3 天
+        return sync_option_pcr(store, start=today - timedelta(days=3), end=today).rows
+    if dataset == "cffex_rank":
+        return sync_futures_rank(store, start=today - timedelta(days=10), end=today).rows
+    if dataset == "sector":
+        return sync_sector_amount(store, trade_date=today).rows
+    if dataset == "etf_share":
+        return sync_etf_share(store, trade_date=today).rows
+    if dataset == "bond":
+        return sync_bond_yield(store, start=today - timedelta(days=3650)).rows
+    if dataset == "release":
+        return sync_restricted_release(store, start=today, end=today + timedelta(days=45)).rows
 
     if dataset not in ("bars", "adjust", "calendar", "status"):
         raise ValueError(f"unknown dataset {dataset!r}")
