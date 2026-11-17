@@ -167,7 +167,49 @@ cd apps/dsa-web && npm run build
 | 启动时报端口被占用 | 宿主机 8000 被其他进程占用；用 `API_PORT=8010 docker compose ... up -d server` |
 | 构建很慢（>10 分钟） | `wkhtmltopdf` 的 Qt 依赖较大属正常现象；首次构建后走 Docker 层缓存会快很多 |
 
-## 9. 最小验证命令
+## 9. NAS 实际部署布局（2026-11-18 固化，更新不丢数据）
+
+UGREEN NAS（x86_64）实际部署与 compose 示例略有不同，以本节为准：
+
+| 项 | 值 |
+|---|---|
+| 项目目录 | `/volume2/docker/daily_stock_analysis/` |
+| 持久化 | `data/ logs/ reports/ .env`（bind 挂载 + 本地文件，重建容器不丢） |
+| 部署清单 | `docker-compose.yml`（同目录，含 server + personal-sync 两服务） |
+| 镜像 | `dsa-fork:latest`（本地 buildx amd64 构建，scp 传输） |
+| 访问 | `http://NAS_IP:18800/personal` |
+| 容器 | `daily_stock_analysis-2`（上游 `--schedule` 模式）+ `stock-personal-sync`（个人层 06:00 定时同步） |
+
+**更新镜像三步（数据/配置零丢失）：**
+
+```bash
+# 本机（Mac，arm64 -> amd64 交叉构建）
+docker buildx build --platform linux/amd64 -t dsa-fork:latest --load -f docker/Dockerfile .
+docker save dsa-fork:latest | gzip > /tmp/dsa-fork-amd64.tar.gz
+scp -O -P 931 /tmp/dsa-fork-amd64.tar.gz <user>@<NAS_IP>:~/
+
+# NAS（SSH；SFTP 受限必须 scp -O）
+docker load -i ~/dsa-fork-amd64.tar.gz
+cd /volume2/docker/daily_stock_analysis && docker compose up -d --force-recreate
+```
+
+`personal.db`、`stock_analysis.db`、`.env`、阿姆氏快照目录 `data/arms_daily/`
+都在 bind 挂载里，`--force-recreate` 只换容器不碰数据。容器配置以
+`docker-compose.yml` 为准（含 `NEWS_INTEL_ALLOW_PRIVATE_HOSTS` 等），**不要再
+手工 `docker run`**，改配置直接编辑 compose 文件后 `docker compose up -d`。
+
+`TUSHARE_TOKEN` 从项目目录 `.env` 由 compose 变量替换注入 personal-sync。
+
+数据源限制（回填时的实测结论）：
+
+- 东财涨停/炸板/昨涨停池只能回溯 **30 个交易日**，更早的历史无法回补
+- 行业拥挤度（同花顺行业成交额）与宽基 ETF 份额是**当日快照接口**，
+  无历史可回补，序列从启用日起自建积累
+- Tushare 免费档 `opt_basic`/`opt_daily` 限频 **1 次/小时**（所以 PCR 用
+  上交所官方统计接口，见 §7.7）
+- 长区间回填受 `MARGIN_MAX_DAYS=120` 保护，按 ≤120 天分块
+
+## 10. 最小验证命令
 
 ```bash
 curl -f http://127.0.0.1:8000/api/health
