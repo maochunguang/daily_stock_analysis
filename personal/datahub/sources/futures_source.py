@@ -32,6 +32,23 @@ class FuturesSource:
             raise SourceUnavailable("akshare is not installed") from exc
         return ak
 
+    @staticmethod
+    def _index_daily(ak, index_code: str):
+        """Sina index daily — renamed index_zh_daily_sina in akshare 1.20.44.
+
+        The Docker image pins akshare <1.20, which still exposes the old
+        stock_zh_index_daily name, so try both.
+        """
+        fetch = getattr(ak, "index_zh_daily_sina", None) or getattr(
+            ak, "stock_zh_index_daily", None
+        )
+        if fetch is None:
+            return None
+        try:
+            return fetch(symbol=index_code)
+        except Exception:
+            return None
+
     def fetch_index_futures(self, start: date, end: date) -> list[IndexFutures]:
         ak = self._ak()
         start_text = start.strftime("%Y%m%d")
@@ -93,10 +110,7 @@ class FuturesSource:
     ) -> dict[date, float]:
         """Spot index closes for one index (full history, filtered to range)."""
         closes: dict[date, float] = {}
-        try:
-            frame = ak.index_zh_daily_sina(symbol=index_code)
-        except Exception:
-            return closes
+        frame = self._index_daily(ak, index_code)
         if frame is None or frame.empty:
             return closes
         for _, row in frame.iterrows():

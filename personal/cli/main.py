@@ -87,6 +87,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     breadth.add_argument("--days", type=int, default=5, help="number of recent days")
 
+    schedule = subparsers.add_parser(
+        "schedule", help="run scheduled incremental syncs daily (RM-05)"
+    )
+    schedule.add_argument("--at", default="06:00", help="daily run time HH:MM (default 06:00)")
+    schedule.add_argument(
+        "--datasets",
+        default="calendar,status,bars,adjust,futures,margin",
+        help="comma-separated dataset list",
+    )
+    schedule.add_argument(
+        "--arms-dir",
+        default="",
+        help="optional easy-daily-trading cache/arms_index/daily to import breadth",
+    )
+    schedule.add_argument("--once", action="store_true", help="run all syncs now and exit")
+
     web = subparsers.add_parser("web", help="run the local Web console")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8765)
@@ -131,6 +147,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "breadth":
         return _breadth(settings, args)
+
+    if args.command == "schedule":
+        return _schedule(settings, args)
 
     if args.command == "web":
         return _web(args)
@@ -348,6 +367,27 @@ def _breadth(settings, args) -> int:
             f"{row.trade_date.isoformat():<12}{row.up_count:>6}{row.down_count:>6}"
             f"{trin:>8}{pct:>7}  {row.interpretation}"
         )
+    return 0
+
+
+def _schedule(settings, args) -> int:
+    from personal.datahub.schedule import run_schedule_loop
+
+    datasets = [item.strip() for item in args.datasets.split(",") if item.strip()]
+    try:
+        run_schedule_loop(
+            settings,
+            at=args.at,
+            datasets=datasets,
+            arms_dir=args.arms_dir or None,
+            once=bool(args.once),
+        )
+    except KeyboardInterrupt:
+        print("\nschedule stopped")
+        return 0
+    except ValueError as exc:
+        print(f"schedule failed: {exc}")
+        return 2
     return 0
 
 

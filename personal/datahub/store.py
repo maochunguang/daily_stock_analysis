@@ -160,6 +160,15 @@ CREATE TABLE IF NOT EXISTS margin_balance (
   PRIMARY KEY (trade_date, scope_type, scope)
 );
 
+CREATE TABLE IF NOT EXISTS sync_state (
+  dataset TEXT PRIMARY KEY,
+  last_run_at TEXT NOT NULL,
+  last_ok_at TEXT,
+  last_ok_date TEXT,
+  rows INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS data_quality_event (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   dataset TEXT NOT NULL,
@@ -783,6 +792,46 @@ class PersonalStore:
             for row in self._conn.execute(sql, params).fetchall()
         ]
         return result
+
+    def record_sync_state(
+        self,
+        dataset: str,
+        *,
+        ok: bool,
+        rows: int = 0,
+        message: str = "",
+        ok_date: Optional[date] = None,
+    ) -> None:
+        """Track freshness/failures per dataset for the Web console (RM-05)."""
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sync_state (dataset, last_run_at, last_ok_at, last_ok_date, rows, last_error)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(dataset) DO UPDATE SET
+                  last_run_at=excluded.last_run_at,
+                  last_ok_at=COALESCE(excluded.last_ok_at, sync_state.last_ok_at),
+                  last_ok_date=COALESCE(excluded.last_ok_date, sync_state.last_ok_date),
+                  rows=CASE WHEN excluded.last_ok_at IS NOT NULL
+                            THEN excluded.rows ELSE sync_state.rows END,
+                  last_error=excluded.last_error
+                """,
+                (
+                    dataset,
+                    now,
+                    now if ok else None,
+                    ok_date.isoformat() if ok_date else None,
+                    int(rows),
+                    "" if ok else message,
+                ),
+            )
+
+    def get_sync_state(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM sync_state ORDER BY dataset"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Quality

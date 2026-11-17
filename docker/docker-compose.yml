@@ -87,3 +87,17 @@ services:
     # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
     ports:
       - "${API_PORT:-8000}:${API_PORT:-8000}"
+
+  # 个人层定时同步（RM-05）：每天 06:00（容器 TZ=Asia/Shanghai）自动增量同步
+  # 日线/复权/日历/状态/期指/两融，并把新鲜度写入 /personal 总览的数据新鲜度卡。
+  # 阿姆氏快照在本地 Mac 的 easy-daily-trading 里，默认不在此更新；
+  # 如需自动导入，把快照目录挂载进容器并追加 --arms-dir，例如：
+  #   command: ["python", "-m", "personal.cli.main", "schedule", "--at", "06:00", "--arms-dir", "/app/arms_cache/daily"]
+  personal-sync:
+    <<: *common
+    container_name: stock-personal-sync
+    command: ["python", "-m", "personal.cli.main", "schedule", "--at", "06:00"]
+    # 数据目录与 server 共享同一个 personal.db；同步任务不监听端口。
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs

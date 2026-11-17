@@ -83,6 +83,12 @@ const COPY = {
     recentRuns: '最近回测',
     recentAnalyses: '最近分析',
     quality: '数据质量事件',
+    freshness: '数据新鲜度（定时同步）',
+    freshnessHint: 'personal-sync 容器每天 06:00 自动增量同步；失败会保留最近一次错误',
+    dsLastOk: '最近成功',
+    dsDataDate: '数据日期',
+    dsRows: '行数',
+    dsError: '错误',
     noData: '暂无数据',
     dataset: '数据集',
     source: '数据源',
@@ -161,6 +167,12 @@ const COPY = {
     recentRuns: 'Recent backtests',
     recentAnalyses: 'Recent analyses',
     quality: 'Data quality events',
+    freshness: 'Data freshness (scheduled sync)',
+    freshnessHint: 'The personal-sync container increments daily at 06:00; failures keep the last error visible',
+    dsLastOk: 'Last success',
+    dsDataDate: 'Data date',
+    dsRows: 'Rows',
+    dsError: 'Error',
     noData: 'No data',
     dataset: 'Dataset',
     source: 'Source',
@@ -722,6 +734,44 @@ const PersonalPage: React.FC = () => {
               </div>
             </Card>
           </div>
+
+          <Card title={copy.freshness} variant="bordered">
+            <p className="mb-3 text-xs text-muted-text">{copy.freshnessHint}</p>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className={TABLE_HEAD_CLASS}>
+                    <th className="py-2 pr-4">Dataset</th>
+                    <th className="py-2 pr-4">{copy.dsLastOk}</th>
+                    <th className="py-2 pr-4">{copy.dsDataDate}</th>
+                    <th className="py-2 pr-4 text-right">{copy.dsRows}</th>
+                    <th className="py-2">{copy.dsError}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {status.sync_state?.length ? (
+                    status.sync_state.map((state) => (
+                      <tr key={state.dataset}>
+                        <td className={TABLE_CELL_CLASS}>
+                          <Badge variant={state.last_error ? 'danger' : 'success'}>{state.dataset}</Badge>
+                        </td>
+                        <td className={TABLE_CELL_CLASS}>{state.last_ok_at?.slice(0, 19).replace('T', ' ') ?? '—'}</td>
+                        <td className={TABLE_CELL_CLASS}>{state.last_ok_date ?? '—'}</td>
+                        <td className={`${TABLE_CELL_CLASS} text-right`}>{state.rows}</td>
+                        <td className={TABLE_CELL_CLASS}>{state.last_error ?? ''}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td className="py-3 text-sm text-secondary-text" colSpan={5}>
+                        {copy.noData}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </>
       ) : null}
 

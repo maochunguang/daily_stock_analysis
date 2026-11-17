@@ -137,6 +137,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             coverage = store.coverage()
             runs = store.list_backtest_runs(limit=5)
             quality = store.list_quality_events(limit=5)
+            sync_state = store.get_sync_state()
         finally:
             store.close()
 
@@ -174,6 +175,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 "plugin_errors": plugin_errors,
                 "recent_runs": runs,
                 "recent_quality": quality,
+                "sync_state": sync_state,
                 "qmt": {
                     "bridge_url": settings.qmt_bridge_url,
                     "trading_enabled": settings.qmt_trading_enabled,

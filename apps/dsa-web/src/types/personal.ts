@@ -59,6 +59,7 @@ export interface PersonalStatus {
   plugin_errors: string[];
   recent_runs: PersonalRun[];
   recent_quality: PersonalQualityEvent[];
+  sync_state?: PersonalSyncState[];
   qmt: {
     bridge_url: string;
     trading_enabled: boolean;
@@ -197,4 +198,13 @@ export interface PersonalMarketSyncResponse {
   rows: number;
   latest_date: string | null;
   message: string;
+}
+
+export interface PersonalSyncState {
+  dataset: string;
+  last_run_at: string | null;
+  last_ok_at: string | null;
+  last_ok_date: string | null;
+  rows: number;
+  last_error: string | null;
 }
