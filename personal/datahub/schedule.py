@@ -166,8 +166,7 @@ def _run_dataset(
     if dataset == "zt":
         return sync_limit_up(store, start=today - timedelta(days=10), end=today).rows
     if dataset == "pcr":
-        # opt_daily 限频 1 次/分钟，定时任务每天只补最近 3 天
-        return sync_option_pcr(store, start=today - timedelta(days=3), end=today).rows
+        return sync_option_pcr(store, start=today - timedelta(days=10), end=today).rows
     if dataset == "cffex_rank":
         return sync_futures_rank(store, start=today - timedelta(days=10), end=today).rows
     if dataset == "sector":

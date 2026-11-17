@@ -58,29 +58,49 @@ class TestCffexRankSource:
         assert summary.net_ratio == round(680 / (400 + 1080), 4)
 
 
-class TestOptionPcrAggregation:
-    def test_aggregate_by_underlying_and_type(self):
+class TestOptionPcrSource:
+    def test_parse_sse_official_stats(self, monkeypatch):
+        import pandas as pd
+
         source = OptionPcrSource.__new__(OptionPcrSource)
-        contracts = [
-            {"ts_code": "100001.SH", "name": "50ETF购12月3000", "call_put": "C"},
-            {"ts_code": "100002.SH", "name": "50ETF沽12月3000", "call_put": "P"},
-            {"ts_code": "100003.SH", "name": "300ETF购12月4000", "call_put": "C"},
-            {"ts_code": "100004.SH", "name": "科创板50沽3月1200", "call_put": "P"},
-        ]
-        fields = ["ts_code", "trade_date", "exchange", "pre_settle", "pre_close",
-                  "open", "high", "low", "close", "settle", "vol", "amount", "oi"]
-        items = [
-            ["100001.SH", "20261117", "SSE", 0, 0, 0, 0, 0, 0, 0, 500, 0, 2000],
-            ["100002.SH", "20261117", "SSE", 0, 0, 0, 0, 0, 0, 0, 800, 0, 3000],
-            ["100003.SH", "20261117", "SSE", 0, 0, 0, 0, 0, 0, 0, 300, 0, 1000],
-            ["100004.SH", "20261117", "SSE", 0, 0, 0, 0, 0, 0, 0, 100, 0, 500],
-        ]
-        agg = source._aggregate(items, {c["ts_code"]: c for c in contracts})
-        assert agg["50ETF"]["call_vol"] == 500
-        assert agg["50ETF"]["put_vol"] == 800
-        assert agg["50ETF"]["call_oi"] == 2000
-        assert agg["300ETF"]["call_vol"] == 300
-        assert "科创板50" not in agg  # 只聚合 PCR_UNDERLYINGS
+        frame = pd.DataFrame(
+            [
+                {
+                    "合约标的代码": "510050",
+                    "认购成交量": 436684,
+                    "认沽成交量": 273032,
+                    "未平仓认购合约数": 769454,
+                    "未平仓认沽合约数": 556040,
+                },
+                {
+                    "合约标的代码": "588000",
+                    "认购成交量": 1950667,
+                    "认沽成交量": 1502911,
+                    "未平仓认购合约数": 1974348,
+                    "未平仓认沽合约数": 1502911,
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            source, "_stats", lambda ak, date_text: frame
+        )
+        rows = source.fetch_option_pcr(date(2026, 11, 17), date(2026, 11, 17))
+        assert len(rows) == 1  # 科创板50 不在 PCR 口径里
+        row = rows[0]
+        assert row.underlying == "50ETF"
+        assert row.call_vol == 436684
+        assert row.put_vol == 273032
+        # 官方百分数口径（62.52）归一为比值
+        assert row.pcr_vol == round(273032 / 436684, 3)
+        assert row.pcr_oi == round(556040 / 769454, 3)
+
+    def test_non_trading_day_skipped(self, monkeypatch):
+        source = OptionPcrSource.__new__(OptionPcrSource)
+        monkeypatch.setattr(
+            source, "_stats", lambda ak, date_text: (_ for _ in ()).throw(RuntimeError("empty"))
+        )
+        rows = source.fetch_option_pcr(date(2026, 11, 17), date(2026, 11, 17))
+        assert rows == []
 
 
 class TestStoreRoundtrips:

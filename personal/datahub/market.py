@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from ..config import get_settings
 from .models import (
     BondYield,
     EtfShare,
@@ -156,13 +155,11 @@ def sync_option_pcr(
     end: date | None = None,
     source: OptionPcrSource | None = None,
 ) -> MarketSyncResult:
-    """ETF-option PCR (volume basis). opt_daily is rate-limited to 1/min."""
+    """ETF-option PCR — SSE official daily statistics (complete OI basis)."""
     end = end or date.today()
-    start = start or end - timedelta(days=3)
+    start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     _check_range(start, end)
-    if source is None:
-        settings = get_settings()
-        source = OptionPcrSource(token=settings.tushare_token, cache_dir=settings.data_dir)
+    source = source or OptionPcrSource()
     rows = source.fetch_option_pcr(start, end)
     count = store.upsert_option_pcr(rows)
     return _result("pcr", start, end, rows)
