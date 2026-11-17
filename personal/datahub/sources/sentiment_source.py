@@ -44,12 +44,18 @@ class LimitUpSource:
         rows: list[LimitUpStats] = []
         day = start
         while day <= end:
-            date_text = day.strftime("%Y%m%d")
-            zt = _zt_pool(ak, "stock_zt_pool_em", "stock_zt_pool_em", date_text)
-            zb = _zt_pool(ak, "stock_zt_pool_zbgc_em", "stock_zt_pool_zbgc_em", date_text)
-            prev = _zt_pool(
-                ak, "stock_zt_pool_previous_em", "stock_zt_pool_previous_em", date_text
-            )
+            try:
+                date_text = day.strftime("%Y%m%d")
+                zt = _zt_pool(ak, "stock_zt_pool_em", "stock_zt_pool_em", date_text)
+                zb = _zt_pool(ak, "stock_zt_pool_zbgc_em", "stock_zt_pool_zbgc_em", date_text)
+                prev = _zt_pool(
+                    ak, "stock_zt_pool_previous_em", "stock_zt_pool_previous_em", date_text
+                )
+            except Exception:
+                # 单日失败（接口抖动 / 超出 30 交易日回溯窗）不拖垮整个区间
+                time.sleep(0.25)
+                day = date.fromordinal(day.toordinal() + 1)
+                continue
             if (zt is None or getattr(zt, "empty", True)) and (
                 zb is None or getattr(zb, "empty", True)
             ):
