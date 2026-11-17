@@ -19,6 +19,8 @@ from .models import (
     DailyBar,
     EtfSnapshot,
     FundNav,
+    IndexFutures,
+    MarginBalance,
     MarketBreadth,
     QualityIssue,
     TradingStatus,
@@ -128,6 +130,34 @@ CREATE TABLE IF NOT EXISTS market_breadth (
   signal_detail TEXT,
   source TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS index_futures (
+  trade_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  close REAL,
+  volume REAL,
+  open_interest REAL,
+  oi_chg REAL,
+  index_close REAL,
+  basis REAL,
+  basis_pct REAL,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS margin_balance (
+  trade_date TEXT NOT NULL,
+  scope_type TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  rzye REAL,
+  rqye REAL,
+  rzrqye REAL,
+  rzye_buy REAL,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, scope_type, scope)
 );
 
 CREATE TABLE IF NOT EXISTS data_quality_event (
@@ -619,6 +649,141 @@ class PersonalStore:
         ]
         return result
 
+    def upsert_index_futures(self, rows: Iterable[IndexFutures]) -> int:
+        payloads = [row.to_row() for row in rows]
+        if not payloads:
+            return 0
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO index_futures
+                  (trade_date, symbol, close, volume, open_interest, oi_chg,
+                   index_close, basis, basis_pct, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date, symbol) DO UPDATE SET
+                  close=excluded.close, volume=excluded.volume,
+                  open_interest=excluded.open_interest, oi_chg=excluded.oi_chg,
+                  index_close=excluded.index_close, basis=excluded.basis,
+                  basis_pct=excluded.basis_pct, source=excluded.source,
+                  updated_at=excluded.updated_at
+                """,
+                [payload + (now,) for payload in payloads],
+            )
+        return len(payloads)
+
+    def get_index_futures(
+        self,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        symbols: Optional[Sequence[str]] = None,
+        limit: int = 0,
+    ) -> list[IndexFutures]:
+        """Futures rows ordered oldest -> newest (latest N days when limit > 0)."""
+        conditions = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if symbols:
+            placeholders = ",".join("?" for _ in symbols)
+            conditions.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM index_futures"
+                + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = "SELECT * FROM index_futures" + where + " ORDER BY trade_date"
+        result = [
+            IndexFutures(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                symbol=row["symbol"],
+                close=row["close"],
+                volume=row["volume"],
+                open_interest=row["open_interest"],
+                oi_chg=row["oi_chg"],
+                index_close=row["index_close"],
+                basis=row["basis"],
+                basis_pct=row["basis_pct"],
+                source=row["source"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+        return result
+
+    def upsert_margin_balance(self, rows: Iterable[MarginBalance]) -> int:
+        payloads = [row.to_row() for row in rows]
+        if not payloads:
+            return 0
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO margin_balance
+                  (trade_date, scope_type, scope, rzye, rqye, rzrqye, rzye_buy,
+                   source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date, scope_type, scope) DO UPDATE SET
+                  rzye=excluded.rzye, rqye=excluded.rqye, rzrqye=excluded.rzrqye,
+                  rzye_buy=excluded.rzye_buy, source=excluded.source,
+                  updated_at=excluded.updated_at
+                """,
+                [payload + (now,) for payload in payloads],
+            )
+        return len(payloads)
+
+    def get_margin_balance(
+        self,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        scope_type: Optional[str] = None,
+        limit: int = 0,
+    ) -> list[MarginBalance]:
+        """Margin rows ordered oldest -> newest (latest N days when limit > 0)."""
+        conditions = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if scope_type:
+            conditions.append("scope_type = ?")
+            params.append(scope_type)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM margin_balance"
+                + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = "SELECT * FROM margin_balance" + where + " ORDER BY trade_date"
+        result = [
+            MarginBalance(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                scope_type=row["scope_type"],
+                scope=row["scope"],
+                rzye=row["rzye"],
+                rqye=row["rqye"],
+                rzrqye=row["rzrqye"],
+                rzye_buy=row["rzye_buy"],
+                source=row["source"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+        return result
+
     # ------------------------------------------------------------------
     # Quality
     # ------------------------------------------------------------------
@@ -733,6 +898,8 @@ class PersonalStore:
             "fund_nav",
             "etf_snapshot",
             "market_breadth",
+            "index_futures",
+            "margin_balance",
             "data_quality_event",
             "backtest_run",
             "trade_journal",

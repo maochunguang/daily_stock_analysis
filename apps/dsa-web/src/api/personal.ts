@@ -1,5 +1,9 @@
 import type {
   PersonalBacktestResponse,
+  PersonalBreadthRow,
+  PersonalFuturesRow,
+  PersonalMarginRow,
+  PersonalMarketSyncResponse,
   PersonalPlugin,
   PersonalQmtHealth,
   PersonalStatus,
@@ -58,6 +62,12 @@ export interface PersonalReplayRequest {
   save: boolean;
 }
 
+export interface PersonalMarketSyncRequest {
+  dataset: 'futures' | 'margin';
+  start: string | null;
+  end: string | null;
+}
+
 export const personalApi = {
   status: () => request<PersonalStatus>('/status'),
   plugins: () => request<{ plugins: PersonalPlugin[]; errors: string[] }>('/plugins'),
@@ -78,4 +88,15 @@ export const personalApi = {
     }),
   upstreamRecent: () => request<PersonalUpstreamRecent>('/upstream/recent?limit=20'),
   qmtHealth: () => request<PersonalQmtHealth>('/qmt/health'),
+  breadth: (days = 30) =>
+    request<{ rows: PersonalBreadthRow[] }>(`/market/breadth?days=${days}`),
+  futures: (days = 30) =>
+    request<{ rows: PersonalFuturesRow[] }>(`/market/futures?days=${days}`),
+  margin: (days = 30) =>
+    request<{ rows: PersonalMarginRow[] }>(`/market/margin?days=${days}`),
+  marketSync: (body: PersonalMarketSyncRequest) =>
+    request<PersonalMarketSyncResponse>('/market/sync', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };

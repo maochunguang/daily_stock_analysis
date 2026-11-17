@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--dataset",
         default="bars",
-        choices=("bars", "adjust", "calendar", "status"),
+        choices=("bars", "adjust", "calendar", "status", "futures", "margin"),
     )
     sync.add_argument("--code", action="append", default=[])
     sync.add_argument("--start", default="")
@@ -162,6 +162,8 @@ def _info(settings) -> int:
 
 
 def _sync(settings, args) -> int:
+    if args.dataset in ("futures", "margin"):
+        return _sync_market(settings, args)
     codes = list(args.code) or list(settings.stock_list)
     if not codes and args.dataset != "calendar":
         print("no codes: pass --code or set PERSONAL_STOCK_LIST")
@@ -220,6 +222,34 @@ def _sync(settings, args) -> int:
             print(f"  - {error}")
     print(f"synced {ok}/{len(results)} symbols")
     return 0 if ok else 1
+
+
+def _sync_market(settings, args) -> int:
+    from personal.datahub.market import (
+        sync_index_futures,
+        sync_margin_balance,
+    )
+
+    end = date.fromisoformat(args.end) if args.end else date.today()
+    start = date.fromisoformat(args.start) if args.start else end - timedelta(days=10)
+    store = PersonalStore(settings.personal_db)
+    try:
+        if args.dataset == "futures":
+            result = sync_index_futures(store, start=start, end=end)
+        else:
+            result = sync_margin_balance(store, start=start, end=end)
+    except Exception as exc:  # noqa: BLE001
+        print(f"sync failed: {exc}")
+        return 2
+    finally:
+        store.close()
+    print(
+        f"{result.dataset}: {result.rows} rows "
+        f"({result.start} -> {result.end}, latest {result.latest_date})"
+    )
+    if result.message:
+        print(f"note: {result.message}")
+    return 0 if result.rows else 1
 
 
 def _replay(settings, args) -> int:

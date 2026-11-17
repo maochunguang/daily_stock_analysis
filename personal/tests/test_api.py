@@ -2,7 +2,6 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -10,21 +9,6 @@ from personal.api.app import create_app
 from personal.config import get_settings
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture()
-def client(tmp_path):
-    base = get_settings()
-    settings = replace(
-        base,
-        personal_db=tmp_path / "personal.db",
-        upstream_db=tmp_path / "upstream.db",
-        plugin_dirs=(ROOT / "plugins",),
-        plugin_allowlist=frozenset(),
-        stock_list=("600519",),
-    )
-    with TestClient(create_app(settings)) as test_client:
-        yield test_client
 
 
 def test_index_page(client):

@@ -23,6 +23,7 @@
 | 同步日线 / 复权因子 / 交易日历 / 交易状态 | `/personal` → 数据同步，或 `sync` | §4.2、§5 |
 | 用合成数据验证回测流程 | `/personal` → 个人回测 → Demo | §4.3 |
 | 用上游 AI 建议做组合回测 | `/personal` → 个人回测 → Replay | §4.3 |
+| 看深度复盘（TRIN/期指/融资余额） | `/personal` → 深度复盘 | §4.6 |
 | 导入/查看市场宽度（阿姆氏 TRIN） | `import-arms` + `breadth`，API `/api/market/breadth` | §5、§7.5 |
 | 看已装插件 | `/personal` → 插件，或 `plugins` | §4.4、§8 |
 | 检查 Windows QMT 桥 | `/personal` → QMT | §4.5、§9 |
@@ -333,6 +334,23 @@ python -m personal.cli.main info
 
 ---
 
+### 4.6 深度复盘
+
+`/personal` → **深度复盘** tab，三张卡片式指标（以后新指标直接在卡片注册表里加一项）：
+
+| 卡片 | 内容 | 数据更新方式 |
+|---|---|---|
+| 市场宽度（阿姆氏 TRIN） | 当日 TRIN/分位带/历史分位、涨跌家数、上涨占比、上证指数、判读与背离信号、近 30 日曲线、近 5 日明细 | CLI `import-arms`（§7.5） |
+| 股指期货做空压力 | IF/IH/IC/IM 主力合约收盘、现货、**基差/基差率**、持仓量及变化、近 30 日基差率曲线 | 卡片右上「更新」按钮（拉最近 10 天）或 CLI `sync --dataset futures` |
+| 融资余额 | 两融总计（亿元）+ 5 日变化、沪市/深市、**分板块**（沪主板/科创板/深主板/创业板）余额与融资买入、近 20 日总计曲线 | 卡片右上「更新」按钮或 CLI `sync --dataset margin` |
+| 更多指标（规划中） | 会员持仓龙虎榜、ETF 资金流、行业融资余额等占位 | — |
+
+说明：
+
+- 基差 = 期货收盘 − 现货收盘，**贴水（负）= 对冲/做空压力大**；基差率 = 基差/现货。
+- 融资余额板块行只统计**股票标的**，与沪/深市汇总的差值≈ETF/债券/可转债口径。
+- 两融数据 **T+1 发布**（11-17 的数据 11-18 早上才有）；板块拆分按交易所每日明细聚合，一次同步最多 120 天。
+
 ## 5. CLI 参考
 
 通用形式：
@@ -346,7 +364,7 @@ python -m personal.cli.main <command> [options]
 | `init-db` | 创建/初始化个人库 | — |
 | `info` | 显示配置、上游契约、插件状态 | — |
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
-| `sync` | 同步日线/复权因子/日历/状态 | `--dataset bars\|adjust\|calendar\|status`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
+| `sync` | 同步日线/复权因子/日历/状态/期指/两融 | `--dataset bars\|adjust\|calendar\|status\|futures\|margin`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
 | `import-arms` | 导入阿姆氏（TRIN）日快照 | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
 | `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
@@ -392,6 +410,10 @@ python -m personal.cli.main plugins
 python -m personal.cli.main import-arms \
   --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
 python -m personal.cli.main breadth --days 5
+
+# 股指期货主力合约（IF/IH/IC/IM + 基差）与融资余额（分板块）
+python -m personal.cli.main sync --dataset futures --start 2026-11-10 --end 2026-11-17
+python -m personal.cli.main sync --dataset margin --start 2026-11-10 --end 2026-11-17
 ```
 
 日期参数省略时：`sync` 默认最近 730 天；`replay` 默认最近 365 天。
@@ -476,7 +498,9 @@ python -m personal.cli.main breadth --days 5
 | `trading_status` | `(code, trade_date)` | 停牌/ST/涨跌停标记 |
 | `fund_nav` | `(code, nav_date, source)` | 基金净值（Phase 2） |
 | `etf_snapshot` | `(code, trade_date, source)` | ETF 快照（Phase 2） |
-| `market_breadth` | `trade_date` | 市场宽度/阿姆氏 TRIN 日汇总（见 §7.4） |
+| `market_breadth` | `trade_date` | 市场宽度/阿姆氏 TRIN 日汇总（见 §7.5） |
+| `index_futures` | `(trade_date, symbol)` | IF/IH/IC/IM 主力合约价、持仓、基差 |
+| `margin_balance` | `(trade_date, scope_type, scope)` | 两融余额（market=沪/深/总计；board=四板块，仅股票） |
 | `data_quality_event` | 自增 | 质检事件 |
 | `backtest_run` | `run_id` | 回测配置 + 指标 |
 | `backtest_trade` | 自增 | 回测逐笔交易 |
@@ -552,6 +576,22 @@ python -m personal.cli.main breadth --days 5
 - 成交量单位为亿股、成交额为亿元（表列名带 `_yi` 后缀即为此含义）
 
 **已导入数据**：2025-10-16 ~ 2026-11-17 共 265 个交易日（来源标记 `easy_daily_trading`）。
+
+### 7.6 股指期货与融资余额口径
+
+**股指期货**（`index_futures` 表，来源 AkShare `futures_main_sina` + 新浪现货指数）：
+
+- 主力连续合约 IF0（沪深300）/ IH0（上证50）/ IC0（中证500）/ IM0（中证1000）
+- `basis = 期货收盘 − 现货收盘`；`basis_pct = basis / 现货 × 100`
+- 贴水（负）= 对冲/做空压力大；主力换月时主力连续价格有跳空，跨月比较需注意
+
+**融资余额**（`margin_balance` 表，来源上交所/深交所官方数据）：
+
+- `market` 行：沪市/深市/总计，官方汇总口径（含基金/债券标的）；深市官方单位为亿元，入库统一为元
+- `board` 行：沪主板/科创板/深主板/创业板，由每日**个股明细**按代码前缀聚合（60x/688-689/000-003/300-302），**仅股票**
+- 板块之和 < 汇总之差 = ETF/债券/可转债等非股票标的
+- T+1 发布；明细按日逐日拉取，单次同步区间 ≤ 120 天（`MARGIN_MAX_DAYS`）
+- 上交所明细单页 2000 行，同步时自动翻页收齐
 
 ## 8. 插件使用与开发
 

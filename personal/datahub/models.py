@@ -181,6 +181,71 @@ class MarketBreadth:
 
 
 @dataclass(frozen=True)
+class IndexFutures:
+    """One day of a CFFEX index-futures main contract (IF/IH/IC/IM).
+
+    ``basis``/``basis_pct`` compare the futures close with the spot index
+    close; deep discount (贴水) signals hedging/short pressure.
+    """
+
+    trade_date: date
+    symbol: str
+    close: float | None = None
+    volume: float | None = None
+    open_interest: float | None = None
+    oi_chg: float | None = None
+    index_close: float | None = None
+    basis: float | None = None
+    basis_pct: float | None = None
+    source: str = "unknown"
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.symbol,
+            self.close,
+            self.volume,
+            self.open_interest,
+            self.oi_chg,
+            self.index_close,
+            self.basis,
+            self.basis_pct,
+            self.source,
+        )
+
+
+@dataclass(frozen=True)
+class MarginBalance:
+    """One day of margin-financing balances for a market or board scope.
+
+    All monetary values are in yuan (元). ``scope_type`` is ``market``
+    (沪市/深市/总计) or ``board`` (沪主板/科创板/深主板/创业板, stock
+    instruments only — ETFs/bonds are excluded from board rows).
+    """
+
+    trade_date: date
+    scope_type: str
+    scope: str
+    rzye: float | None = None
+    rqye: float | None = None
+    rzrqye: float | None = None
+    rzye_buy: float | None = None
+    source: str = "unknown"
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.scope_type,
+            self.scope,
+            self.rzye,
+            self.rqye,
+            self.rzrqye,
+            self.rzye_buy,
+            self.source,
+        )
+
+
+@dataclass(frozen=True)
 class QualityIssue:
     dataset: str
     rule: str

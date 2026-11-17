@@ -38,6 +38,12 @@ class SyncRequest(BaseModel):
     cross_check: Optional[bool] = None
 
 
+class MarketSyncRequest(BaseModel):
+    dataset: Literal["futures", "margin"] = "futures"
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
 class DemoRequest(BaseModel):
     days: int = Field(default=400, ge=60, le=3000)
     save: bool = False
@@ -293,6 +299,80 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 "results": [asdict(item) for item in results],
             }
         )
+
+    @app.get("/api/market/futures")
+    def market_futures(days: int = Query(default=20, ge=1, le=500)) -> dict[str, Any]:
+        """Recent CFFEX main-contract rows (IF/IH/IC/IM), oldest -> newest."""
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_index_futures(limit=days)
+        finally:
+            store.close()
+        return {
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "symbol": row.symbol,
+                    "close": row.close,
+                    "volume": row.volume,
+                    "open_interest": row.open_interest,
+                    "oi_chg": row.oi_chg,
+                    "index_close": row.index_close,
+                    "basis": row.basis,
+                    "basis_pct": row.basis_pct,
+                    "source": row.source,
+                }
+                for row in rows
+            ]
+        }
+
+    @app.get("/api/market/margin")
+    def market_margin(days: int = Query(default=20, ge=1, le=500)) -> dict[str, Any]:
+        """Recent margin-financing balances (market + board scopes), oldest -> newest."""
+        store = PersonalStore(settings.personal_db)
+        try:
+            # 7 scopes per day (总计/沪市/深市 + 4 boards) + slack
+            rows = store.get_margin_balance(limit=days * 8)
+        finally:
+            store.close()
+        return {
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "scope_type": row.scope_type,
+                    "scope": row.scope,
+                    "rzye": row.rzye,
+                    "rqye": row.rqye,
+                    "rzrqye": row.rzrqye,
+                    "rzye_buy": row.rzye_buy,
+                    "source": row.source,
+                }
+                for row in rows
+            ]
+        }
+
+    @app.post("/api/market/sync")
+    def market_sync(request: MarketSyncRequest) -> dict[str, Any]:
+        from personal.datahub.market import (
+            sync_index_futures,
+            sync_margin_balance,
+        )
+
+        end = _parse_date(request.end, date.today())
+        start = _parse_date(request.start, end - timedelta(days=10))
+        store = PersonalStore(settings.personal_db)
+        try:
+            if request.dataset == "futures":
+                result = sync_index_futures(store, start=start, end=end)
+            else:
+                result = sync_margin_balance(store, start=start, end=end)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+        return _json_safe(result.as_dict())
 
     @app.get("/api/backtest/runs")
     def runs() -> dict[str, Any]:

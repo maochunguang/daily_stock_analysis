@@ -140,3 +140,61 @@ export interface PersonalQmtHealth {
   ok: boolean;
   detail: unknown;
 }
+
+export interface PersonalBreadthRow {
+  trade_date: string;
+  up_count: number;
+  down_count: number;
+  flat_count: number;
+  sample_count: number;
+  up_vol_yi: number | null;
+  down_vol_yi: number | null;
+  up_amount_yi: number | null;
+  down_amount_yi: number | null;
+  adv_ratio: number | null;
+  trin: number | null;
+  trin_amount: number | null;
+  trin_pct: number | null;
+  interpretation: string;
+  band: string;
+  index_close: number | null;
+  index_chg_pct: number | null;
+  index_pos: number | null;
+  divergence: number;
+  signal_tag: string;
+  signal_detail: string;
+  source: string;
+}
+
+export interface PersonalFuturesRow {
+  trade_date: string;
+  symbol: string;
+  close: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  oi_chg: number | null;
+  index_close: number | null;
+  basis: number | null;
+  basis_pct: number | null;
+  source: string;
+}
+
+export interface PersonalMarginRow {
+  trade_date: string;
+  scope_type: 'market' | 'board';
+  scope: string;
+  rzye: number | null;
+  rqye: number | null;
+  rzrqye: number | null;
+  rzye_buy: number | null;
+  source: string;
+}
+
+export interface PersonalMarketSyncResponse {
+  dataset: string;
+  start: string;
+  end: string;
+  rows: number;
+  latest_date: string | null;
+  message: string;
+}

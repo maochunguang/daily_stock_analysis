@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 76 |
+| `test_count` | 83 |
 | `last_updated` | 2026-11-16 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -92,6 +92,9 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/tradability.py` | T+1, 100-share lots, suspension, price limits |
 | `personal/datahub/quality.py` | OHLC/duplicate/jump/cross-source/missing-day checks |
 | `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
+| `personal/datahub/market.py` | Market-level syncs: index futures + margin balance |
+| `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
+| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits (SSE detail pagination) |
 | `personal/datahub/status.py` | Derive suspension/ST/limit-up/down rows from bars/calendar/name/factors |
 | `personal/datahub/sync.py` | Source fallback, bars/adjust/calendar/status sync, cross-check |
 | `personal/datahub/sources/` | `synthetic`, `tushare`, `akshare`, `baostock` adapters |
@@ -132,6 +135,8 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `fund_nav` | `(code, nav_date, source)` |
 | `etf_snapshot` | `(code, trade_date, source)` |
 | `market_breadth` | `trade_date`; TRIN/涨跌家数/量额日汇总（量单位亿股、额单位亿元） |
+| `index_futures` | `(trade_date, symbol)`; IF/IH/IC/IM close/OI/basis vs spot |
+| `margin_balance` | `(trade_date, scope_type, scope)`; rzye/rqye/rzrqye/rzye_buy in yuan |
 | `data_quality_event` | auto id; quality warnings/errors |
 | `backtest_run` | `run_id`; config + metrics JSON |
 | `backtest_trade` | run trades |
@@ -154,6 +159,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset calendar --source baostock ...` | Trading calendar |
 | `python -m personal.cli.main sync --dataset status --code C ...` | Trading status |
 | `python -m personal.cli.main replay --start D --end D` | Replay upstream signals |
+| `python -m personal.cli.main sync --dataset futures` | CFFEX main-contract futures + basis |
+| `python -m personal.cli.main sync --dataset margin` | Margin balance (market + board scopes, T+1, ≤120d/run) |
 | `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
 | `python -m personal.cli.main plugins` | List plugins |
@@ -174,6 +181,9 @@ the page route is `/personal`.
 | GET | `/api/data/coverage` | Code/source coverage + stats |
 | GET | `/api/data/quality?limit=N` | Quality events |
 | GET | `/api/market/breadth?days=N` | Market breadth / TRIN rows (oldest → newest) |
+| GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
+| GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
+| POST | `/api/market/sync` | Sync futures/margin (default last 10 days) |
 | POST | `/api/data/sync` | Sync bars / adjustment / calendar / status |
 | GET | `/api/backtest/runs` | Recent runs |
 | POST | `/api/backtest/demo` | Synthetic demo backtest |
@@ -181,7 +191,7 @@ the page route is `/personal`.
 | GET | `/api/upstream/recent` | Recent analyses/signals |
 | GET | `/api/qmt/health` | QMT bridge health |
 
-Web UI tabs: `总览` (status/coverage/runs/quality), `数据` (sync + coverage),
+Web UI tabs: `总览` (status/coverage/runs/quality), `深度复盘` (card grid: TRIN breadth, index-futures basis, margin balance — registry `apps/dsa-web/src/components/personal/ReviewCards.tsx`), `数据` (sync + coverage),
 `回测` (demo/replay + metrics/SVG chart/trades), `插件`, `上游`
 (analyses/signals), `QMT` (health check).
 
@@ -250,8 +260,11 @@ instrument name; limit prices from previous close + board rules.
   calls; synthetic syncs skip it. Disable with `PERSONAL_CROSS_SOURCE_CHECK=false`.
 - `market_breadth` data comes from the user's local `easy-daily-trading`
   snapshots (imported 265 days through 2026-11-17). It is not auto-refreshed;
-  run `tools/arms_index.py` there and re-run `import-arms`. A 深度复盘 page
-  (TRIN + index-futures short data + margin balance) is still pending (RM-31).
+  run `tools/arms_index.py` there and re-run `import-arms`.
+- Futures/margin sync requires the optional `akshare` dependency; margin data
+  is T+1 published and a run is capped at 120 days. Board rows count stock
+  instruments only (gap vs market summary ≈ ETF/bond scope). Futures basis
+  uses Sina main-contract series, which jumps on contract rolls.
 - Backtests default to hfq (backward-adjusted) prices; limit prices are scaled
   into the same space. `none` reproduces raw-price behavior for debugging.
 - Fund analytics, trade journal UI, review reports are Phase 2.

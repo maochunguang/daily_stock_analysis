@@ -4,6 +4,7 @@ import {
   Activity,
   BarChart3,
   Database,
+  Gauge,
   PlugZap,
   RefreshCw,
   ServerCog,
@@ -32,8 +33,12 @@ import {
   StatCard,
 } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 import type {
   PersonalBacktestResponse,
+  PersonalBreadthRow,
+  PersonalFuturesRow,
+  PersonalMarginRow,
   PersonalPlugin,
   PersonalRun,
   PersonalStatus,
@@ -41,7 +46,7 @@ import type {
   PersonalUpstreamRecent,
 } from '../types/personal';
 
-type TabKey = 'overview' | 'data' | 'backtest' | 'plugins' | 'qmt';
+type TabKey = 'overview' | 'review' | 'data' | 'backtest' | 'plugins' | 'qmt';
 
 const INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
@@ -52,10 +57,11 @@ const TABLE_CELL_CLASS = 'border-b border-border/40 py-2.5 pr-4 text-sm text-for
 const COPY = {
   zh: {
     title: '个人扩展',
-    description: '数据质量、成本回测、插件与 QMT 状态',
+    description: '数据质量、成本回测、深度复盘、插件与 QMT 状态',
     refresh: '刷新',
     tabs: {
       overview: '总览',
+      review: '深度复盘',
       data: '数据同步',
       backtest: '个人回测',
       plugins: '插件',
@@ -129,10 +135,11 @@ const COPY = {
   },
   en: {
     title: 'Personal Extension',
-    description: 'Data quality, cost-aware backtests, plugins and QMT status',
+    description: 'Data quality, cost-aware backtests, deep review, plugins and QMT status',
     refresh: 'Refresh',
     tabs: {
       overview: 'Overview',
+      review: 'Deep Review',
       data: 'Data',
       backtest: 'Backtest',
       plugins: 'Plugins',
@@ -283,6 +290,13 @@ const PersonalPage: React.FC = () => {
   const [qmtBusy, setQmtBusy] = useState(false);
   const [qmtResult, setQmtResult] = useState('');
 
+  const [reviewBreadth, setReviewBreadth] = useState<PersonalBreadthRow[]>([]);
+  const [reviewFutures, setReviewFutures] = useState<PersonalFuturesRow[]>([]);
+  const [reviewMargin, setReviewMargin] = useState<PersonalMarginRow[]>([]);
+  const [reviewLoaded, setReviewLoaded] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+
   const loadStatus = useCallback(async () => {
     setLoading(true);
     try {
@@ -303,6 +317,53 @@ const PersonalPage: React.FC = () => {
       setUpstream(null);
     }
   }, []);
+
+  const loadReview = useCallback(async () => {
+    setReviewBusy(true);
+    setReviewError('');
+    try {
+      const [breadthData, futuresData, marginData] = await Promise.all([
+        personalApi.breadth(30),
+        personalApi.futures(30),
+        personalApi.margin(30),
+      ]);
+      setReviewBreadth(breadthData.rows);
+      setReviewFutures(futuresData.rows);
+      setReviewMargin(marginData.rows);
+      setReviewLoaded(true);
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewBusy(false);
+    }
+  }, []);
+
+  const handleMarketSync = useCallback(
+    async (dataset: 'futures' | 'margin') => {
+      setReviewBusy(true);
+      try {
+        await personalApi.marketSync({ dataset, start: isoDaysAgo(10), end: isoDaysAgo(0) });
+        if (dataset === 'futures') {
+          const data = await personalApi.futures(30);
+          setReviewFutures(data.rows);
+        } else {
+          const data = await personalApi.margin(30);
+          setReviewMargin(data.rows);
+        }
+      } catch (err) {
+        setReviewError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setReviewBusy(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (tab === 'review' && !reviewLoaded) {
+      void loadReview();
+    }
+  }, [tab, reviewLoaded, loadReview]);
 
   useEffect(() => {
     document.title = `${copy.title} - DSA`;
@@ -463,6 +524,7 @@ const PersonalPage: React.FC = () => {
             }`}
           >
             {key === 'overview' ? <Activity className="h-4 w-4" /> : null}
+            {key === 'review' ? <Gauge className="h-4 w-4" /> : null}
             {key === 'data' ? <Database className="h-4 w-4" /> : null}
             {key === 'backtest' ? <BarChart3 className="h-4 w-4" /> : null}
             {key === 'plugins' ? <PlugZap className="h-4 w-4" /> : null}
@@ -661,6 +723,34 @@ const PersonalPage: React.FC = () => {
             </Card>
           </div>
         </>
+      ) : null}
+
+      {tab === 'review' ? (
+        reviewError ? (
+          <InlineAlert
+            variant="danger"
+            title={copy.loadError}
+            message={reviewError}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => void loadReview()}>
+                {copy.refresh}
+              </Button>
+            }
+          />
+        ) : (
+          <div className="grid gap-4 xl:grid-cols-2">
+            {REVIEW_CARDS.map(({ id, component: CardComponent }) => (
+              <CardComponent
+                key={id}
+                breadth={reviewBreadth}
+                futures={reviewFutures}
+                margin={reviewMargin}
+                busy={reviewBusy}
+                onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
+              />
+            ))}
+          </div>
+        )
       ) : null}
 
       {tab === 'data' ? (

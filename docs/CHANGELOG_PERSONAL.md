@@ -1031,3 +1031,81 @@ cd upstream
 ### Next
 RM-31 continued: 深度复盘 page + 股指期货做空数据 + 融资余额 ingestion; RM-05
 scheduled sync for automated daily refresh.
+
+
+## [2026-11-17] CHG-0018 — Deep review tab: index futures + margin balance + extensible cards
+
+### Metadata
+- id: CHG-0018
+- date: 2026-11-17
+- status: done
+- area: datahub, web, docs
+- related: CHG-0017, RM-31
+
+### Summary
+Completed RM-31 with the 深度复盘 (deep review) tab in the integrated UI and the
+two remaining datasets. 股指期货: CFFEX main contracts IF/IH/IC/IM via AkShare
+with spot-index basis (贴水 = short pressure) and open interest + OI change,
+stored per (trade_date, symbol). 融资余额: exchange summaries (沪市 via SSE
+summary, 深市 via SZSE summary converted from 亿元) plus per-board splits
+(沪主板/科创板/深主板/创业板) aggregated from daily per-stock detail — the SSE
+detail endpoint caps pages at 2000 rows, so the source paginates with
+`pageHelp.pageNo` until `pageHelp.total` is covered. Board rows count stock
+instruments only; market rows use official summaries; 总计 = 沪 + 深. The
+review tab renders a card registry (`REVIEW_CARDS` in
+`apps/dsa-web/src/components/personal/ReviewCards.tsx`): new indicators are one
+component + one registry entry, no PersonalPage changes. Ships with a
+placeholder card listing planned indicators (member rankings, ETF flows,
+industry-level margin).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/models.py` | `IndexFutures`, `MarginBalance` dataclasses |
+| `personal/datahub/store.py` | `index_futures` + `margin_balance` tables, upsert/get methods, stats |
+| `personal/datahub/sources/futures_source.py` | New: main-contract daily + spot closes -> basis/basis_pct/oi_chg |
+| `personal/datahub/sources/margin_source.py` | New: SSE/SZSE summaries + board aggregation + SSE pagination (`classify_board`) |
+| `personal/datahub/market.py` | New: `sync_index_futures` / `sync_margin_balance` (margin capped at 120 days/run) |
+| `personal/cli/main.py` | `sync --dataset futures\|margin` |
+| `personal/api/app.py` | `GET /api/market/futures`, `GET /api/market/margin`, `POST /api/market/sync` |
+| `personal/tests/test_market.py` | New: board classification, sync roundtrips, range cap, API wiring with fake sources |
+| `personal/tests/conftest.py` | Shared `client` fixture (moved from test_api.py) |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | New: card registry + 市场宽度/期指/融资余额/占位 cards (recharts) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | `review` tab, lazy data load, market-sync refresh handlers |
+| `apps/dsa-web/src/api/personal.ts`, `src/types/personal.ts` | breadth/futures/margin/marketSync client + types |
+| `patches/0001-personal-web-integration.patch` | Regenerated (2060 lines), applies on pristine `c820915` |
+| `docs/USER_GUIDE_PERSONAL.md` | §0 nav, §4.6 深度复盘, §5 rows, §7.1 tables, new §7.6 口径 |
+| `docs/AI_CONTEXT.md`, `docs/ROADMAP_PERSONAL.md` | test_count 83, module/schema/API/CLI rows, RM-31 done |
+
+### Commands
+```bash
+cd upstream
+.venv/bin/python -m personal.cli.main sync --dataset futures --start 2026-11-04 --end 2026-11-17
+.venv/bin/python -m personal.cli.main sync --dataset margin  --start 2026-11-10 --end 2026-11-17
+.venv/bin/python -m pytest personal/tests -q
+cd apps/dsa-web && npm run build
+docker compose -f docker/docker-compose.yml build server && API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+```
+
+### Verification
+- 83 tests green; `compileall` OK; patch 0001 + 0002 both apply on pristine
+  `c820915`; reverse check matches the fork tree.
+- Real data in `personal.db`: futures 40 rows (latest 2026-11-17, IM basis
+  −69.4 / −1.14%), margin 35 rows (latest 2026-11-16; 总计 22283.7 亿, boards
+  沪主板 7947.4 / 深主板 5672.3 / 创业板 4548.7 / 科创板 2840.1; board sums <
+  market summaries by the ETF/bond scope, as documented).
+- Browser (container on :8010): 深度复盘 tab renders all cards with real data;
+  TRIN 30-day curve, futures 4-line basis% chart with tooltip, margin board
+  table; per-card 更新 buttons trigger `/api/market/sync` then reload.
+
+### Notes / Migration
+- Margin data is T+1 published; today's numbers appear tomorrow morning.
+- `sync --dataset margin` default window is 10 days; hard cap 120 days/run
+  (per-day exchange detail requests).
+- Futures basis uses Sina main-contract series — values jump on contract rolls.
+- Industry-level margin split and member position rankings are future cards.
+- Port note: host :8000 is occupied locally; verified with `API_PORT=8010`.
+
+### Next
+RM-05 scheduled sync (auto-refresh breadth/futures/margin after close);
+optional industry-level margin split card.
