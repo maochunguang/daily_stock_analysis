@@ -150,16 +150,24 @@ class OptionPcrSource:
             TUSHARE_API, data=body, headers={"Content-Type": "application/json"}
         )
         last_error: Exception | None = None
-        for attempt in range(3):
+        attempt = 0
+        while attempt < 5:
+            attempt += 1
             try:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 if payload.get("code") == 0:
                     return payload
-                last_error = RuntimeError(payload.get("msg") or payload.get("code"))
+                message = str(payload.get("msg") or payload.get("code"))
+                # 40203 频率超限：快进快出的重试只会刷新限频窗口，等满一分钟再试
+                if "频率超限" in message:
+                    last_error = RuntimeError(message)
+                    time.sleep(62)
+                    continue
+                last_error = RuntimeError(message)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-            time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.5 * attempt)
         raise SourceUnavailable(f"tushare {method} failed: {last_error}")
 
 
