@@ -42,6 +42,7 @@ class CffexRankSource:
                 summary = self._fetch_symbol(symbol, day)
                 if summary is not None:
                     rows.append(summary)
+                time.sleep(0.2)  # 中金所接口礼貌节流
             day = date.fromordinal(day.toordinal() + 1)
         return rows
 

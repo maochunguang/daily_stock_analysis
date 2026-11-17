@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date
 
 from ..models import EtfShare, MarketTurnover, SectorAmount
@@ -65,6 +66,7 @@ class TurnoverSource:
             szse = szse_amounts.get(day)
             if sse is not None and szse is not None:
                 rows.append(MarketTurnover(trade_date=day, sse_amount=sse, szse_amount=szse))
+            time.sleep(0.2)  # 交易所接口礼貌节流
             day = date.fromordinal(day.toordinal() + 1)
         return rows
 
@@ -104,6 +106,7 @@ class TurnoverSource:
                     amount = _to_float(match.iloc[0].get("成交金额"))
                     if amount is not None:
                         out[day] = amount
+            time.sleep(0.2)  # 交易所接口礼貌节流
             day = date.fromordinal(day.toordinal() + 1)
         return out
 

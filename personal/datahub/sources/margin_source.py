@@ -158,6 +158,8 @@ class MarginSource:
             if sse_row is not None and szse_row is not None:
                 rows.append(_total_row(day, sse_row, szse_row, self.name))
             rows.extend(board_rows)
+            # 两融明细按日轮询（SSE 翻页 + 深市两接口），礼貌节流
+            time.sleep(0.3)
         return rows
 
     # ------------------------------------------------------------------

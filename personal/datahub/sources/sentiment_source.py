@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import date
 
 from ..models import LimitUpStats
@@ -85,6 +86,8 @@ class LimitUpSource:
                     prev_zt_up_ratio=prev_up_ratio,
                 )
             )
+            # 东财接口按日轮询，礼貌节流避免高频并发
+            time.sleep(0.25)
             day = date.fromordinal(day.toordinal() + 1)
         return rows
 
