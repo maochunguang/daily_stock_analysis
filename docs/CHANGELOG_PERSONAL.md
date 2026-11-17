@@ -1272,3 +1272,36 @@ cd upstream
   traded contracts); OI PCR is a reference column only.
 - THS board naming differs from Eastmoney — keep the crowding series
   single-source.
+
+## [2026-11-18] CHG-0022 — PCR source switched to SSE official daily statistics
+
+### Metadata
+- id: CHG-0022
+- date: 2026-11-18
+- status: done
+- area: datahub, docs
+- related: CHG-0021, RM-34
+
+### Summary
+Tushare's free tier limits `opt_basic`/`opt_daily` to 1 request/hour (observed
+during backfill — a 6-month history would need days of polling), so the PCR
+source now uses the SSE official option daily statistics
+(AkShare `option_daily_stats_sse`, one request per day, no vendor rate limit).
+This is strictly better: both volume PCR and OI PCR are complete exchange
+aggregates (the old OI column only covered traded contracts). The official
+"认沽/认购" percentage is normalized to a ratio (/100) on ingest. Per-day
+exchange loops across sentiment/cffex/flows/margin sources now sleep
+0.2–0.3s between calls so long backfills stay polite.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/option_source.py` | Rewritten on SSE official stats; Tushare token/cache logic removed |
+| `personal/datahub/market.py`, `personal/datahub/schedule.py` | PCR window back to 10 days; no token wiring |
+| `personal/tests/test_indicators.py` | PCR tests rewritten for the official-stats parser (100 tests) |
+| `personal/datahub/sources/*` | 0.2–0.3s inter-day throttling for backfills |
+| `docs/USER_GUIDE_PERSONAL.md`, `docs/AI_CONTEXT.md` | PCR source/口径 rows |
+
+### Verification
+- 100 tests green; live fetch returns 50ETF volume PCR 0.6252 (=官方 62.52%).
+- 6-month backfill completes in minutes instead of days.

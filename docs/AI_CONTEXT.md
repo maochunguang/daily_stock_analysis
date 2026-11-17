@@ -102,7 +102,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
-| `personal/datahub/sources/option_source.py` | Tushare ETF-option PCR (opt_basic cache 7d, opt_daily 1/min) |
+| `personal/datahub/sources/option_source.py` | ETF-option PCR via SSE official daily stats (complete volume+OI basis, no vendor rate limit) |
 | `personal/datahub/sources/cffex_source.py` | CFFEX top-20 member position rank (official GBK CSV) |
 | `personal/datahub/status.py` | Derive suspension/ST/limit-up/down rows from bars/calendar/name/factors |
 | `personal/datahub/sync.py` | Source fallback, bars/adjust/calendar/status sync, cross-check |
