@@ -21,11 +21,13 @@ repository. Read it before changing code.
 
 ## Hard invariants
 
-1. **DSA-side code is guarded by the UI patch.** In this fork the DSA code is
-   the repo root; the only DSA-side changes are in
-   `patches/0001-personal-web-integration.patch` (personal page, sidebar entry,
-   `/personal-api` mount, auth coverage). Keep future DSA-side edits confined to
-   that patch; personal code lives in `personal/`.
+1. **DSA-side changes are guarded by patches.** In this fork the DSA code is
+   the repo root; DSA-side edits live in `patches/0001-personal-web-integration.patch`
+   (personal page, sidebar entry, `/personal-api` mount, auth coverage) and
+   `patches/0002-deepseek-news-search.patch` (DeepSeek news-search provider +
+   settings schema). `docker/` packaging and the personal block in
+   `.env.example` are fork-maintained directly. Keep future DSA-side edits
+   confined to these patches (or extend them); personal code lives in `personal/`.
 2. **Personal code must not import upstream internals.** Allowed: `personal.contracts.*`.
    Forbidden: `from src.analyzer import ...`, `from src.core.pipeline import ...`.
 3. **Never write to the upstream database.** The upstream DB is opened read-only

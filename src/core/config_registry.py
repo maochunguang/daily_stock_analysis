@@ -1219,6 +1219,35 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {"multi_value": True, "delimiter": ","},
         "display_order": 54,
     },
+    "DEEPSEEK_SEARCH_API_KEYS": {
+        "title": "DeepSeek Search API Keys",
+        "description": "Comma-separated DeepSeek official web-search API keys (structured results with model-friendly summaries; billed per successful request).",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {"multi_value": True, "delimiter": ","},
+        "display_order": 55,
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "DEEPSEEK_SEARCH_API_KEYS=sk-xxx,sk-yyy",
+        ],
+        "docs": [
+            {
+                "label": "DeepSeek 网页搜索 API 文档",
+                "href": "https://api-docs.deepseek.com/zh-cn/api/search",
+            },
+            {
+                "label": "完整指南：搜索服务配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
+            },
+        ],
+        "warning_codes": ["secret_value", "comma_separated_keys"],
+    },
     "SEARXNG_BASE_URLS": {
         "title": "SearXNG Base URLs",
         "description": "Comma-separated SearXNG instance URLs (self-hosted, no quota). Enable format: json in settings.yml.",
@@ -4882,6 +4911,20 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
             "MINIMAX_API_KEYS=minimax_key_1,minimax_key_2",
         ],
         "docs": _DOC_FULL_GUIDE_SEARCH,
+        "warning_codes": ["secret_value", "comma_separated_keys"],
+    },
+    "DEEPSEEK_SEARCH_API_KEYS": {
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "DEEPSEEK_SEARCH_API_KEYS=deepseek_key_1,deepseek_key_2",
+        ],
+        "docs": [
+            {
+                "label": "DeepSeek 网页搜索 API 文档",
+                "href": "https://api-docs.deepseek.com/zh-cn/api/search",
+            },
+        ]
+        + _DOC_FULL_GUIDE_SEARCH,
         "warning_codes": ["secret_value", "comma_separated_keys"],
     },
     "SEARXNG_PUBLIC_INSTANCES_ENABLED": {

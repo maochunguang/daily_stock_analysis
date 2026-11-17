@@ -1,0 +1,837 @@
+diff --git a/.github/workflows/00-daily-analysis.yml b/.github/workflows/00-daily-analysis.yml
+index 4f29daa..e5caf79 100644
+--- a/.github/workflows/00-daily-analysis.yml
++++ b/.github/workflows/00-daily-analysis.yml
+@@ -338,6 +338,7 @@ jobs:
+           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+           MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
++          DEEPSEEK_SEARCH_API_KEYS: ${{ secrets.DEEPSEEK_SEARCH_API_KEYS }}
+           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+           SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS || secrets.SEARXNG_BASE_URLS }}
+           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
+@@ -528,6 +529,7 @@ jobs:
+           echo "  Tavily API Keys: $([ -n "$TAVILY_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+           echo "  SerpAPI Keys: $([ -n "$SERPAPI_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+           echo "  MiniMax API Keys: $([ -n "$MINIMAX_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
++          echo "  DeepSeek Search Keys: $([ -n "$DEEPSEEK_SEARCH_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+           echo "  Brave API Keys: $([ -n "$BRAVE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+           echo "  SearXNG Base URLs: $([ -n "$SEARXNG_BASE_URLS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+           case "${SEARXNG_PUBLIC_INSTANCES_ENABLED,,}" in
+diff --git a/apps/dsa-web/src/utils/systemConfigI18n.ts b/apps/dsa-web/src/utils/systemConfigI18n.ts
+index c3deb84..7ae12a0 100644
+--- a/apps/dsa-web/src/utils/systemConfigI18n.ts
++++ b/apps/dsa-web/src/utils/systemConfigI18n.ts
+@@ -59,6 +59,7 @@ const fieldTitleMap: Record<string, string> = {
+   SEARXNG_BASE_URLS: 'SearXNG 自建实例地址',
+   SEARXNG_PUBLIC_INSTANCES_ENABLED: 'SearXNG 公共实例自动发现',
+   MINIMAX_API_KEYS: 'MiniMax API Keys',
++  DEEPSEEK_SEARCH_API_KEYS: 'DeepSeek Search API Keys',
+   NEWS_STRATEGY_PROFILE: '新闻策略窗口档位',
+   NEWS_MAX_AGE_DAYS: '新闻最大时效（天）',
+   REALTIME_SOURCE_PRIORITY: '实时数据源优先级',
+@@ -236,6 +237,7 @@ const fieldDescriptionMap: Record<string, string> = {
+   SEARXNG_BASE_URLS: 'SearXNG 自建实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）。',
+   SEARXNG_PUBLIC_INSTANCES_ENABLED: '默认关闭；设为 true 后，当未配置 SearXNG 自建实例时，会从 searx.space 获取公共实例并轮询使用。',
+   MINIMAX_API_KEYS: '用于新闻检索的 MiniMax 密钥，支持逗号分隔多个（最低优先级）。',
++  DEEPSEEK_SEARCH_API_KEYS: 'DeepSeek 官方网页搜索密钥，支持逗号分隔多个；优先返回面向模型的长摘要，按成功请求计费（约 ¥5/千次）。',
+   NEWS_STRATEGY_PROFILE: '新闻窗口档位：ultra_short=1天，short=3天，medium=7天，long=30天。',
+   NEWS_MAX_AGE_DAYS: '新闻最大时效上限。实际窗口 = min(策略档位天数, NEWS_MAX_AGE_DAYS)。例如 ultra_short + 7 仍为 1 天。',
+   REALTIME_SOURCE_PRIORITY: '按逗号分隔填写数据源调用优先级。',
+diff --git a/docs/full-guide.md b/docs/full-guide.md
+index 1760cd0..cd8afb2 100644
+--- a/docs/full-guide.md
++++ b/docs/full-guide.md
+@@ -389,6 +389,7 @@ daily_stock_analysis/
+ | `BOCHA_API_KEYS` | 博查搜索 API Key（中文优化） | 可选 |
+ | `BRAVE_API_KEYS` | Brave Search API Key（美股优化） | 可选 |
+ | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search（结构化搜索结果） | 可选 |
++| `DEEPSEEK_SEARCH_API_KEYS` | [DeepSeek](https://api-docs.deepseek.com/zh-cn/api/search) 官方网页搜索 API（结构化结果 + 面向模型的长摘要；约 ¥5/千次成功请求） | 可选 |
+ | `SOCIAL_SENTIMENT_API_KEY` | Stock Sentiment API Key（Reddit / X / Polymarket，可选） | 可选 |
+ | `SOCIAL_SENTIMENT_API_URL` | Stock Sentiment API 地址（默认 `https://api.adanos.org`） | 可选 |
+ | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时仅在显式启用公共实例发现后使用 `searx.space` | 可选 |
+@@ -398,7 +399,7 @@ daily_stock_analysis/
+ | `NEWS_MAX_AGE_DAYS` | 新闻最大时效（天），搜索时限制结果在近期内 | 默认 `3` |
+ | `BIAS_THRESHOLD` | 乖离率阈值（%），超过提示不追高；强势趋势股自动放宽到 1.5 倍 | 默认 `5.0` |
+ 
+-> Anspire 保留为可选服务。搜索顺序为 Bocha → Tavily → Brave → SerpAPI → Anspire → MiniMax → SearXNG，按已配置且可用的渠道依次尝试；仅配置 Anspire 时仍可直接使用。
++> Anspire 保留为可选服务。搜索顺序为 Bocha → Tavily → Brave → SerpAPI → Anspire → MiniMax → DeepSeek → SearXNG，按已配置且可用的渠道依次尝试；仅配置 Anspire 时仍可直接使用。
+ 
+ > 行为说明：搜索服务与社交舆情服务为可选增强链路。任一服务初始化失败时，系统会记录 warning 并降级为跳过该服务，仅影响对应环节，不会阻塞技术面主链路和主任务流。
+ 
+diff --git a/src/config.py b/src/config.py
+index e9b0724..e713124 100644
+--- a/src/config.py
++++ b/src/config.py
+@@ -1093,6 +1093,7 @@ class Config:
+     anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
+     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
+     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
++    deepseek_search_api_keys: List[str] = field(default_factory=list)  # DeepSeek 官方网页搜索 API Keys
+     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
+     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
+     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+@@ -1812,7 +1813,13 @@ class Config:
+ 
+         minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
+         minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
+-        
++
++        # DeepSeek 官方网页搜索 API（与 LLM 用的 DEEPSEEK_API_KEYS 相互独立）
++        deepseek_search_keys_str = os.getenv('DEEPSEEK_SEARCH_API_KEYS', '')
++        deepseek_search_api_keys = [
++            k.strip() for k in deepseek_search_keys_str.split(',') if k.strip()
++        ]
++
+         tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
+         tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
+         
+@@ -2012,6 +2019,7 @@ class Config:
+             anspire_api_keys=anspire_api_keys,
+             bocha_api_keys=bocha_api_keys,
+             minimax_api_keys=minimax_api_keys,
++            deepseek_search_api_keys=deepseek_search_api_keys,
+             tavily_api_keys=tavily_api_keys,
+             brave_api_keys=brave_api_keys,
+             serpapi_keys=serpapi_keys,
+@@ -3187,6 +3195,7 @@ class Config:
+             self.anspire_api_keys
+             or self.bocha_api_keys
+             or self.minimax_api_keys
++            or self.deepseek_search_api_keys
+             or self.tavily_api_keys
+             or self.brave_api_keys
+             or self.serpapi_keys
+@@ -3616,7 +3625,7 @@ class Config:
+         if not self.has_search_capability_enabled():
+             issues.append(ConfigIssue(
+                 severity="info",
+-                message="未配置搜索引擎能力 (Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG)，新闻搜索功能将不可用",
++                message="未配置搜索引擎能力 (Bocha/MiniMax/Tavily/Brave/SerpAPI/DeepSeek/SearXNG)，新闻搜索功能将不可用",
+                 field="BOCHA_API_KEYS",
+             ))
+ 
+diff --git a/src/core/config_registry.py b/src/core/config_registry.py
+index 3dc3239..5b67146 100644
+--- a/src/core/config_registry.py
++++ b/src/core/config_registry.py
+@@ -1219,6 +1219,35 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+         "validation": {"multi_value": True, "delimiter": ","},
+         "display_order": 54,
+     },
++    "DEEPSEEK_SEARCH_API_KEYS": {
++        "title": "DeepSeek Search API Keys",
++        "description": "Comma-separated DeepSeek official web-search API keys (structured results with model-friendly summaries; billed per successful request).",
++        "category": "data_source",
++        "data_type": "string",
++        "ui_control": "password",
++        "is_sensitive": True,
++        "is_required": False,
++        "is_editable": True,
++        "default_value": None,
++        "options": [],
++        "validation": {"multi_value": True, "delimiter": ","},
++        "display_order": 55,
++        "help_key": "settings.data_source.search_api_keys",
++        "examples": [
++            "DEEPSEEK_SEARCH_API_KEYS=sk-xxx,sk-yyy",
++        ],
++        "docs": [
++            {
++                "label": "DeepSeek 网页搜索 API 文档",
++                "href": "https://api-docs.deepseek.com/zh-cn/api/search",
++            },
++            {
++                "label": "完整指南：搜索服务配置",
++                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
++            },
++        ],
++        "warning_codes": ["secret_value", "comma_separated_keys"],
++    },
+     "SEARXNG_BASE_URLS": {
+         "title": "SearXNG Base URLs",
+         "description": "Comma-separated SearXNG instance URLs (self-hosted, no quota). Enable format: json in settings.yml.",
+@@ -4884,6 +4913,20 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
+         "docs": _DOC_FULL_GUIDE_SEARCH,
+         "warning_codes": ["secret_value", "comma_separated_keys"],
+     },
++    "DEEPSEEK_SEARCH_API_KEYS": {
++        "help_key": "settings.data_source.search_api_keys",
++        "examples": [
++            "DEEPSEEK_SEARCH_API_KEYS=deepseek_key_1,deepseek_key_2",
++        ],
++        "docs": [
++            {
++                "label": "DeepSeek 网页搜索 API 文档",
++                "href": "https://api-docs.deepseek.com/zh-cn/api/search",
++            },
++        ]
++        + _DOC_FULL_GUIDE_SEARCH,
++        "warning_codes": ["secret_value", "comma_separated_keys"],
++    },
+     "SEARXNG_PUBLIC_INSTANCES_ENABLED": {
+         "help_key": "settings.data_source.SEARXNG_BASE_URLS",
+         "examples": [
+diff --git a/src/search_service.py b/src/search_service.py
+index 3387586..2a070dd 100644
+--- a/src/search_service.py
++++ b/src/search_service.py
+@@ -31,6 +31,7 @@ from tenacity import (
+     wait_exponential,
+     retry_if_exception_type,
+     before_sleep_log,
++    RetryError,
+ )
+ 
+ from data_provider.us_index_mapping import is_us_index_code
+@@ -1626,6 +1627,223 @@ class MiniMaxSearchProvider(BaseSearchProvider):
+             return '未知来源'
+ 
+ 
++class DeepseekSearchProvider(BaseSearchProvider):
++    """
++    DeepSeek 官方网页搜索 API
++
++    特点：
++    - DeepSeek 自研搜索引擎，返回结构化结果
++    - summary 长摘要（约 600-800 字符）适合直接喂给大模型
++    - 通过 query 操作符 after:/before: 支持时间过滤（无独立 freshness 参数）
++    - query 硬性限制 1-128 字符，自动截断并追加时间操作符
++
++    文档：https://api-docs.deepseek.com/zh-cn/api/search
++    计费：每 1000 次成功请求 5 元（results 为空不计费）
++    """
++
++    API_ENDPOINT = "https://api.deepseek.com/v1/tools/search"
++    _MAX_QUERY_CHARS = 128
++
++    def __init__(self, api_keys: List[str]):
++        super().__init__(api_keys, "DeepSeek")
++
++    def _build_search_query(self, query: str, days: int) -> str:
++        """Append the ``after:`` operator for freshness within the 128-char limit."""
++        search_query = (query or "").strip()
++        if days is None or days <= 0:
++            return search_query[: self._MAX_QUERY_CHARS]
++        try:
++            from datetime import datetime, timedelta, timezone
++            after_date = (
++                datetime.now(timezone.utc) - timedelta(days=days)
++            ).date().isoformat()
++        except Exception:
++            return search_query[: self._MAX_QUERY_CHARS]
++        suffix = f" after:{after_date}"
++        max_query_len = self._MAX_QUERY_CHARS - len(suffix)
++        if max_query_len <= 0:
++            return search_query[: self._MAX_QUERY_CHARS]
++        return search_query[:max_query_len].rstrip() + suffix
++
++    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
++        """执行 DeepSeek 网页搜索"""
++        try:
++            import requests
++        except ImportError:
++            return SearchResponse(
++                query=query,
++                results=[],
++                provider=self.name,
++                success=False,
++                error_message="requests 未安装，请运行: pip install requests"
++            )
++
++        try:
++            search_query = self._build_search_query(query, days)
++            headers = {
++                'Authorization': f'Bearer {api_key}',
++                'Content-Type': 'application/json',
++            }
++            payload = {
++                "query": search_query,
++                "count": min(max(max_results, 1), 50),  # API 上限 50
++                "need_content": False,  # snippet/summary 已足够，正文按需另取
++            }
++
++            response = _post_with_retry(
++                self.API_ENDPOINT, headers=headers, json=payload, timeout=15
++            )
++
++            if response.status_code != 200:
++                error_message = self._parse_http_error(response)
++                if response.status_code == 401:
++                    error_msg = f"API KEY无效: {error_message}"
++                elif response.status_code == 402:
++                    error_msg = f"余额不足: {error_message}"
++                elif response.status_code == 429:
++                    error_msg = f"请求频率达到限制: {error_message}"
++                elif response.status_code in (400, 422):
++                    error_msg = f"请求参数错误: {error_message}"
++                else:
++                    error_msg = f"HTTP {response.status_code}: {error_message}"
++
++                logger.warning(f"[DeepSeek] 搜索失败: {error_msg}")
++                return SearchResponse(
++                    query=query,
++                    results=[],
++                    provider=self.name,
++                    success=False,
++                    error_message=error_msg,
++                )
++
++            try:
++                data = response.json()
++            except ValueError as e:
++                error_msg = f"响应JSON解析失败: {str(e)}"
++                logger.error(f"[DeepSeek] {error_msg}")
++                return SearchResponse(
++                    query=query,
++                    results=[],
++                    provider=self.name,
++                    success=False,
++                    error_message=error_msg,
++                )
++
++            items = data.get('results') or []
++            logger.info(
++                f"[DeepSeek] 搜索完成，query='{search_query}'，原始结果 {len(items)} 条"
++            )
++            logger.debug(f"[DeepSeek] 原始响应: {data}")
++
++            results: List[SearchResult] = []
++            for item in items:
++                # 优先使用 summary（面向模型的长摘要），fallback 到 snippet
++                snippet = (item.get('summary') or item.get('snippet') or '')[:500]
++                results.append(SearchResult(
++                    title=item.get('title', ''),
++                    snippet=snippet,
++                    url=item.get('url', ''),
++                    source=item.get('site_name') or self._extract_domain(item.get('url', '')),
++                    published_date=self._format_date(item.get('date')),
++                ))
++                if len(results) >= max_results:
++                    break
++
++            logger.info(f"[DeepSeek] 成功解析 {len(results)} 条结果")
++
++            return SearchResponse(
++                query=query,
++                results=results,
++                provider=self.name,
++                success=True,
++            )
++
++        except RetryError as e:
++            # _post_with_retry 已重试瞬时错误；解包底层异常给出可读信息
++            cause = e.last_attempt.exception() if e.last_attempt else e
++            if isinstance(cause, requests.exceptions.Timeout):
++                error_msg = "请求超时（已自动重试）"
++            else:
++                error_msg = f"网络请求失败: {cause}"
++            logger.error(f"[DeepSeek] {error_msg}")
++            return SearchResponse(
++                query=query,
++                results=[],
++                provider=self.name,
++                success=False,
++                error_message=error_msg
++            )
++        except requests.exceptions.Timeout:
++            error_msg = "请求超时"
++            logger.error(f"[DeepSeek] {error_msg}")
++            return SearchResponse(
++                query=query,
++                results=[],
++                provider=self.name,
++                success=False,
++                error_message=error_msg
++            )
++        except requests.exceptions.RequestException as e:
++            error_msg = f"网络请求失败: {str(e)}"
++            logger.error(f"[DeepSeek] {error_msg}")
++            return SearchResponse(
++                query=query,
++                results=[],
++                provider=self.name,
++                success=False,
++                error_message=error_msg
++            )
++        except Exception as e:
++            error_msg = f"未知错误: {str(e)}"
++            logger.error(f"[DeepSeek] {error_msg}")
++            return SearchResponse(
++                query=query,
++                results=[],
++                provider=self.name,
++                success=False,
++                error_message=error_msg
++            )
++
++    @staticmethod
++    def _parse_http_error(response) -> str:
++        """Parse HTTP error response from DeepSeek API."""
++        try:
++            content_type = response.headers.get('content-type', '')
++            if 'json' in content_type:
++                err = response.json()
++                error_field = err.get('error')
++                if isinstance(error_field, dict):
++                    return error_field.get('message') or str(err)
++                return err.get('message') or err.get('msg') or str(err)
++            return response.text[:200]
++        except Exception:
++            return f"HTTP {response.status_code}: {response.text[:200]}"
++
++    @staticmethod
++    def _format_date(date_str) -> Optional[str]:
++        """Normalize RFC 3339 UTC dates to ``YYYY-MM-DD``."""
++        if not date_str:
++            return None
++        try:
++            from datetime import datetime
++            return datetime.fromisoformat(
++                str(date_str).replace('Z', '+00:00')
++            ).strftime('%Y-%m-%d')
++        except Exception:
++            return str(date_str)
++
++    @staticmethod
++    def _extract_domain(url: str) -> str:
++        """从 URL 提取域名作为来源"""
++        try:
++            from urllib.parse import urlparse
++            parsed = urlparse(url)
++            domain = parsed.netloc.replace('www.', '')
++            return domain or '未知来源'
++        except Exception:
++            return '未知来源'
++
++
+ class BraveSearchProvider(BaseSearchProvider):
+     """
+     Brave Search 搜索引擎
+@@ -2409,6 +2627,7 @@ class SearchService:
+         brave_keys: Optional[List[str]] = None,
+         serpapi_keys: Optional[List[str]] = None,
+         minimax_keys: Optional[List[str]] = None,
++        deepseek_keys: Optional[List[str]] = None,
+         searxng_base_urls: Optional[List[str]] = None,
+         searxng_public_instances_enabled: bool = False,
+         searxng_timeout_seconds: Optional[int] = None,
+@@ -2425,6 +2644,7 @@ class SearchService:
+             brave_keys: Brave Search API Key 列表
+             serpapi_keys: SerpAPI Key 列表
+             minimax_keys: MiniMax API Key 列表
++            deepseek_keys: DeepSeek 官方网页搜索 API Key 列表
+             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
+             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
+             news_max_age_days: 新闻最大时效（天）
+@@ -2437,6 +2657,7 @@ class SearchService:
+             "brave_keys": list(brave_keys or []),
+             "serpapi_keys": list(serpapi_keys or []),
+             "minimax_keys": list(minimax_keys or []),
++            "deepseek_keys": list(deepseek_keys or []),
+             "searxng_base_urls": list(searxng_base_urls or []),
+             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
+             "searxng_timeout_seconds": searxng_timeout_seconds,
+@@ -2492,7 +2713,12 @@ class SearchService:
+             self._providers.append(MiniMaxSearchProvider(minimax_keys))
+             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
+ 
+-        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
++        # 7. DeepSeek（官方网页搜索 API，结构化结果 + 模型友好的长摘要）
++        if deepseek_keys:
++            self._providers.append(DeepseekSearchProvider(deepseek_keys))
++            logger.info(f"已配置 DeepSeek 搜索，共 {len(deepseek_keys)} 个 API Key")
++
++        # 8. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+         searxng_provider = SearXNGSearchProvider(
+             searxng_base_urls,
+             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
+@@ -4922,6 +5148,7 @@ def get_search_service() -> SearchService:
+                     brave_keys=config.brave_api_keys,
+                     serpapi_keys=config.serpapi_keys,
+                     minimax_keys=config.minimax_api_keys,
++                    deepseek_keys=getattr(config, "deepseek_search_api_keys", None),
+                     searxng_base_urls=config.searxng_base_urls,
+                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
+                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
+diff --git a/tests/test_deepseek_search_registry.py b/tests/test_deepseek_search_registry.py
+new file mode 100644
+index 0000000..c1a33bf
+--- /dev/null
++++ b/tests/test_deepseek_search_registry.py
+@@ -0,0 +1,80 @@
++# -*- coding: utf-8 -*-
++"""
++DeepSeek 搜索配置的 registry 注册测试
++
++验证 DEEPSEEK_SEARCH_API_KEYS 在系统配置 schema 中被注册为 data_source 类
++（而不是被 ``DEEPSEEK_`` 前缀推断成 ai_model），并复用搜索密钥的多值密码输入。
++
++运行方式:
++```bash
++python -m pytest tests/test_deepseek_search_registry.py -v
++```
++"""
++
++import os
++import sys
++import unittest
++from pathlib import Path
++
++project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if project_root not in sys.path:
++    sys.path.insert(0, project_root)
++
++from src.core.config_registry import (  # noqa: E402
++    build_schema_response,
++    get_field_definition,
++    get_registered_field_keys,
++)
++
++
++class TestDeepseekSearchRegistry(unittest.TestCase):
++    """DEEPSEEK_SEARCH_API_KEYS 的 schema 注册行为"""
++
++    def test_field_is_registered_as_data_source(self):
++        field = get_field_definition("DEEPSEEK_SEARCH_API_KEYS")
++        self.assertEqual(field["category"], "data_source")
++        self.assertNotEqual(field["display_order"], 9000)
++        self.assertEqual(field["display_order"], 55)
++
++    def test_field_uses_password_multivalue_control(self):
++        field = get_field_definition("DEEPSEEK_SEARCH_API_KEYS")
++        self.assertEqual(field["ui_control"], "password")
++        self.assertTrue(field["is_sensitive"])
++        self.assertTrue(field["validation"].get("multi_value"))
++        self.assertEqual(field["validation"].get("delimiter"), ",")
++
++    def test_field_has_search_help_and_docs(self):
++        field = get_field_definition("DEEPSEEK_SEARCH_API_KEYS")
++        self.assertEqual(field["help_key"], "settings.data_source.search_api_keys")
++        docs = field.get("docs") or []
++        self.assertTrue(
++            any("deepseek" in (doc.get("href") or "").lower() for doc in docs)
++        )
++
++    def test_schema_response_includes_deepseek_search(self):
++        schema = build_schema_response()
++        categories = schema.get("categories") or []
++        data_source = next(
++            (
++                category
++                for category in categories
++                if category.get("category") == "data_source"
++            ),
++            None,
++        )
++        self.assertIsNotNone(data_source)
++        keys = {
++            item.get("key")
++            for item in (data_source.get("fields") or [])
++            if isinstance(item, dict)
++        }
++        self.assertIn("DEEPSEEK_SEARCH_API_KEYS", keys)
++
++    def test_llm_key_and_search_key_are_registered_separately(self):
++        keys = get_registered_field_keys()
++        self.assertIn("DEEPSEEK_API_KEYS", keys)
++        self.assertIn("DEEPSEEK_SEARCH_API_KEYS", keys)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_search_deepseek_provider.py b/tests/test_search_deepseek_provider.py
+new file mode 100644
+index 0000000..1eb96f0
+--- /dev/null
++++ b/tests/test_search_deepseek_provider.py
+@@ -0,0 +1,289 @@
++# -*- coding: utf-8 -*-
++"""
++DeepSeek 官方网页搜索 API 测试套件
++
++测试覆盖范围:
++1. Query 构建 - after: 时间操作符拼接与 128 字符硬限制截断
++2. 响应解析 - results[] 字段映射（summary 优先、site_name 来源、RFC3339 日期）
++3. 参数约束 - count 上限 50、need_content=False、Bearer 鉴权头
++4. 错误处理 - 401/402/429/422 错误映射、超时与网络错误降级
++5. 服务接线 - SearchService 按 DEEPSEEK_SEARCH_API_KEYS 初始化 provider
++
++运行方式:
++```bash
++python -m pytest tests/test_search_deepseek_provider.py -v
++```
++"""
++
++import os
++import re
++import sys
++import unittest
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++from dotenv import load_dotenv
++load_dotenv()
++
++# 添加项目根目录到 Python 路径，解决模块导入问题
++project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if project_root not in sys.path:
++    sys.path.insert(0, project_root)
++
++# Mock newspaper before search_service import (optional dependency)
++if "newspaper" not in sys.modules:
++    mock_np = MagicMock()
++    mock_np.Article = MagicMock()
++    mock_np.Config = MagicMock()
++    sys.modules["newspaper"] = mock_np
++
++from src.search_service import (  # noqa: E402
++    DeepseekSearchProvider,
++    SearchService,
++    SearchResult,
++)
++
++
++class _FakeResponse:
++    """模拟 HTTP 响应对象"""
++
++    def __init__(self, status_code=200, json_data=None, text="", headers=None):
++        self.status_code = status_code
++        self._json_data = json_data or {}
++        self.text = text
++        self.headers = headers or {"content-type": "application/json"}
++
++    def json(self):
++        return self._json_data
++
++
++def _make_provider() -> DeepseekSearchProvider:
++    return DeepseekSearchProvider(["sk-deepseek-test-key"])
++
++
++class TestDeepseekQueryBuilding(unittest.TestCase):
++    """query 构建：after: 操作符与 128 字符硬限制"""
++
++    def setUp(self):
++        self.provider = _make_provider()
++
++    def test_appends_after_operator_for_positive_days(self):
++        query = self.provider._build_search_query("600519 贵州茅台 新闻", 7)
++        self.assertTrue(query.startswith("600519 贵州茅台 新闻"))
++        self.assertRegex(query, r" after:\d{4}-\d{2}-\d{2}$")
++        self.assertLessEqual(len(query), 128)
++
++    def test_no_operator_for_non_positive_days(self):
++        self.assertEqual(self.provider._build_search_query("茅台 新闻", 0), "茅台 新闻")
++        self.assertEqual(
++            self.provider._build_search_query("茅台 新闻", None), "茅台 新闻"
++        )
++
++    def test_truncates_long_query_to_api_limit(self):
++        query = self.provider._build_search_query("好" * 200, 7)
++        self.assertLessEqual(len(query), 128)
++        self.assertTrue(query.startswith("好" * 100))
++        self.assertRegex(query, r" after:\d{4}-\d{2}-\d{2}$")
++
++    def test_strips_surrounding_whitespace(self):
++        self.assertEqual(
++            self.provider._build_search_query("  茅台 新闻  ", 0), "茅台 新闻"
++        )
++
++
++class TestDeepseekSearchProvider(unittest.TestCase):
++    """DeepseekSearchProvider 行为测试（mock HTTP）"""
++
++    def setUp(self):
++        self.provider = _make_provider()
++
++    @patch("src.search_service.requests")
++    def test_search_success_maps_fields(self, mock_requests):
++        try:
++            import requests as real_requests
++            mock_requests.exceptions = real_requests.exceptions
++        except ImportError:
++            pass
++
++        fake_response = _FakeResponse(
++            status_code=200,
++            json_data={
++                "results": [
++                    {
++                        "rerank_score": 2.4,
++                        "title": "贵州茅台发布回购公告",
++                        "url": "https://finance.sina.com.cn/stock/600519",
++                        "snippet": "短摘要，用于前端展示。",
++                        "summary": "面向模型的长摘要，包含公告要点与资金安排。",
++                        "site_name": "新浪财经",
++                        "site_icon": None,
++                        "date": "2026-11-10T08:00:00+00:00",
++                        "authority": 3,
++                    },
++                    {
++                        "title": "白酒板块走强",
++                        "url": "https://www.eastmoney.com/a/123.html",
++                        "snippet": "只有短摘要的结果。",
++                        "summary": "",
++                        "site_name": None,
++                        "date": None,
++                    },
++                ]
++            },
++        )
++        mock_requests.post = MagicMock(return_value=fake_response)
++
++        response = self.provider.search("600519 贵州茅台", max_results=5, days=7)
++
++        self.assertTrue(response.success)
++        self.assertEqual(response.provider, "DeepSeek")
++        self.assertEqual(len(response.results), 2)
++
++        first = response.results[0]
++        self.assertEqual(first.title, "贵州茅台发布回购公告")
++        self.assertEqual(first.snippet, "面向模型的长摘要，包含公告要点与资金安排。")
++        self.assertEqual(first.source, "新浪财经")
++        self.assertEqual(first.published_date, "2026-11-10")
++
++        second = response.results[1]
++        self.assertEqual(second.snippet, "只有短摘要的结果。")
++        self.assertEqual(second.source, "eastmoney.com")
++        self.assertIsNone(second.published_date)
++
++        # 验证 API 调用契约
++        mock_requests.post.assert_called_once()
++        call_args = mock_requests.post.call_args
++        self.assertEqual(
++            call_args[0][0], "https://api.deepseek.com/v1/tools/search"
++        )
++        headers = call_args[1]["headers"]
++        self.assertEqual(headers["Authorization"], "Bearer sk-deepseek-test-key")
++        payload = call_args[1]["json"]
++        self.assertEqual(payload["count"], 5)
++        self.assertFalse(payload["need_content"])
++        self.assertRegex(payload["query"], r" after:\d{4}-\d{2}-\d{2}$")
++
++    @patch("src.search_service.requests")
++    def test_count_is_clamped_to_api_maximum(self, mock_requests):
++        try:
++            import requests as real_requests
++            mock_requests.exceptions = real_requests.exceptions
++        except ImportError:
++            pass
++
++        fake_response = _FakeResponse(status_code=200, json_data={"results": []})
++        mock_requests.post = MagicMock(return_value=fake_response)
++
++        response = self.provider.search("茅台", max_results=100, days=7)
++
++        self.assertTrue(response.success)
++        self.assertEqual(response.results, [])
++        payload = mock_requests.post.call_args[1]["json"]
++        self.assertEqual(payload["count"], 50)
++
++    @patch("src.search_service.requests")
++    def test_http_402_maps_to_balance_error(self, mock_requests):
++        try:
++            import requests as real_requests
++            mock_requests.exceptions = real_requests.exceptions
++        except ImportError:
++            pass
++
++        fake_response = _FakeResponse(
++            status_code=402,
++            json_data={"error": {"message": "Insufficient Balance"}},
++        )
++        mock_requests.post = MagicMock(return_value=fake_response)
++
++        response = self.provider.search("茅台 新闻", max_results=5, days=7)
++
++        self.assertFalse(response.success)
++        self.assertIn("余额不足", response.error_message)
++        self.assertIn("Insufficient Balance", response.error_message)
++
++    @patch("src.search_service.requests")
++    def test_timeout_returns_failure(self, mock_requests):
++        try:
++            import requests as real_requests
++            mock_requests.exceptions = real_requests.exceptions
++        except ImportError:
++            pass
++
++        mock_requests.post = MagicMock(
++            side_effect=real_requests.exceptions.Timeout("timed out")
++        )
++
++        response = self.provider.search("茅台 新闻", max_results=5, days=7)
++
++        self.assertFalse(response.success)
++        self.assertIn("请求超时", response.error_message)
++        self.assertEqual(response.results, [])
++
++    @patch("src.search_service.requests")
++    def test_invalid_query_is_truncated_before_request(self, mock_requests):
++        try:
++            import requests as real_requests
++            mock_requests.exceptions = real_requests.exceptions
++        except ImportError:
++            pass
++
++        fake_response = _FakeResponse(status_code=200, json_data={"results": []})
++        mock_requests.post = MagicMock(return_value=fake_response)
++
++        self.provider.search("重" * 200, max_results=5, days=7)
++
++        payload = mock_requests.post.call_args[1]["json"]
++        self.assertLessEqual(len(payload["query"]), 128)
++
++    def test_extract_domain(self):
++        cases = [
++            ("https://finance.sina.com.cn/news/1", "finance.sina.com.cn"),
++            ("https://www.eastmoney.com/a/1", "eastmoney.com"),
++            ("invalid_url", "未知来源"),
++            ("", "未知来源"),
++        ]
++        for url, expected in cases:
++            self.assertEqual(
++                DeepseekSearchProvider._extract_domain(url), expected
++            )
++
++    def test_search_result_dataclass_shape(self):
++        result = SearchResult(
++            title="标题",
++            snippet="摘要",
++            url="https://example.com",
++            source="example.com",
++            published_date="2026-11-10",
++        )
++        self.assertIn("标题", result.to_text())
++
++
++class TestDeepseekSearchServiceWiring(unittest.TestCase):
++    """SearchService 按配置初始化 DeepSeek provider"""
++
++    def test_search_service_initializes_deepseek_provider(self):
++        service = SearchService(deepseek_keys=["k1", "k2"])
++        names = [provider.name for provider in service._providers]
++        self.assertIn("DeepSeek", names)
++        self.assertEqual(
++            service._constructor_kwargs["deepseek_keys"], ["k1", "k2"]
++        )
++
++    def test_search_service_without_deepseek_keys_skips_provider(self):
++        service = SearchService()
++        names = [provider.name for provider in service._providers]
++        self.assertNotIn("DeepSeek", names)
++
++    def test_provider_order_deepseek_before_searxng(self):
++        service = SearchService(
++            minimax_keys=["mm"],
++            deepseek_keys=["ds"],
++            searxng_public_instances_enabled=False,
++        )
++        names = [provider.name for provider in service._providers]
++        self.assertEqual(names, ["MiniMax", "DeepSeek"])
++
++
++if __name__ == "__main__":
++    unittest.main()

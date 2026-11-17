@@ -125,6 +125,7 @@
 | `BOCHA_API_KEYS` | 博查搜索：中文搜索优化，支持 AI 摘要 | 可选 |
 | `BRAVE_API_KEYS` | Brave Search：隐私优先，美股资讯补强 | 可选 |
 | `MINIMAX_API_KEYS` | MiniMax：结构化搜索结果 | 可选 |
+| `DEEPSEEK_SEARCH_API_KEYS` | [DeepSeek](https://api-docs.deepseek.com/zh-cn/api/search) 官方网页搜索：结构化结果 + 面向模型的长摘要 | 可选 |
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例：无配额兜底，适合私有部署 | 可选 |
 
 更多搜索源、社交舆情和降级规则见 [搜索服务配置](docs/full-guide.md#搜索服务配置)。

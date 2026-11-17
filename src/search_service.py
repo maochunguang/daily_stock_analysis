@@ -31,6 +31,7 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
     before_sleep_log,
+    RetryError,
 )
 
 from data_provider.us_index_mapping import is_us_index_code
@@ -1626,6 +1627,223 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class DeepseekSearchProvider(BaseSearchProvider):
+    """
+    DeepSeek 官方网页搜索 API
+
+    特点：
+    - DeepSeek 自研搜索引擎，返回结构化结果
+    - summary 长摘要（约 600-800 字符）适合直接喂给大模型
+    - 通过 query 操作符 after:/before: 支持时间过滤（无独立 freshness 参数）
+    - query 硬性限制 1-128 字符，自动截断并追加时间操作符
+
+    文档：https://api-docs.deepseek.com/zh-cn/api/search
+    计费：每 1000 次成功请求 5 元（results 为空不计费）
+    """
+
+    API_ENDPOINT = "https://api.deepseek.com/v1/tools/search"
+    _MAX_QUERY_CHARS = 128
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "DeepSeek")
+
+    def _build_search_query(self, query: str, days: int) -> str:
+        """Append the ``after:`` operator for freshness within the 128-char limit."""
+        search_query = (query or "").strip()
+        if days is None or days <= 0:
+            return search_query[: self._MAX_QUERY_CHARS]
+        try:
+            from datetime import datetime, timedelta, timezone
+            after_date = (
+                datetime.now(timezone.utc) - timedelta(days=days)
+            ).date().isoformat()
+        except Exception:
+            return search_query[: self._MAX_QUERY_CHARS]
+        suffix = f" after:{after_date}"
+        max_query_len = self._MAX_QUERY_CHARS - len(suffix)
+        if max_query_len <= 0:
+            return search_query[: self._MAX_QUERY_CHARS]
+        return search_query[:max_query_len].rstrip() + suffix
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        """执行 DeepSeek 网页搜索"""
+        try:
+            import requests
+        except ImportError:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="requests 未安装，请运行: pip install requests"
+            )
+
+        try:
+            search_query = self._build_search_query(query, days)
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            }
+            payload = {
+                "query": search_query,
+                "count": min(max(max_results, 1), 50),  # API 上限 50
+                "need_content": False,  # snippet/summary 已足够，正文按需另取
+            }
+
+            response = _post_with_retry(
+                self.API_ENDPOINT, headers=headers, json=payload, timeout=15
+            )
+
+            if response.status_code != 200:
+                error_message = self._parse_http_error(response)
+                if response.status_code == 401:
+                    error_msg = f"API KEY无效: {error_message}"
+                elif response.status_code == 402:
+                    error_msg = f"余额不足: {error_message}"
+                elif response.status_code == 429:
+                    error_msg = f"请求频率达到限制: {error_message}"
+                elif response.status_code in (400, 422):
+                    error_msg = f"请求参数错误: {error_message}"
+                else:
+                    error_msg = f"HTTP {response.status_code}: {error_message}"
+
+                logger.warning(f"[DeepSeek] 搜索失败: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            try:
+                data = response.json()
+            except ValueError as e:
+                error_msg = f"响应JSON解析失败: {str(e)}"
+                logger.error(f"[DeepSeek] {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            items = data.get('results') or []
+            logger.info(
+                f"[DeepSeek] 搜索完成，query='{search_query}'，原始结果 {len(items)} 条"
+            )
+            logger.debug(f"[DeepSeek] 原始响应: {data}")
+
+            results: List[SearchResult] = []
+            for item in items:
+                # 优先使用 summary（面向模型的长摘要），fallback 到 snippet
+                snippet = (item.get('summary') or item.get('snippet') or '')[:500]
+                results.append(SearchResult(
+                    title=item.get('title', ''),
+                    snippet=snippet,
+                    url=item.get('url', ''),
+                    source=item.get('site_name') or self._extract_domain(item.get('url', '')),
+                    published_date=self._format_date(item.get('date')),
+                ))
+                if len(results) >= max_results:
+                    break
+
+            logger.info(f"[DeepSeek] 成功解析 {len(results)} 条结果")
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+
+        except RetryError as e:
+            # _post_with_retry 已重试瞬时错误；解包底层异常给出可读信息
+            cause = e.last_attempt.exception() if e.last_attempt else e
+            if isinstance(cause, requests.exceptions.Timeout):
+                error_msg = "请求超时（已自动重试）"
+            else:
+                error_msg = f"网络请求失败: {cause}"
+            logger.error(f"[DeepSeek] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时"
+            logger.error(f"[DeepSeek] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except requests.exceptions.RequestException as e:
+            error_msg = f"网络请求失败: {str(e)}"
+            logger.error(f"[DeepSeek] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except Exception as e:
+            error_msg = f"未知错误: {str(e)}"
+            logger.error(f"[DeepSeek] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+
+    @staticmethod
+    def _parse_http_error(response) -> str:
+        """Parse HTTP error response from DeepSeek API."""
+        try:
+            content_type = response.headers.get('content-type', '')
+            if 'json' in content_type:
+                err = response.json()
+                error_field = err.get('error')
+                if isinstance(error_field, dict):
+                    return error_field.get('message') or str(err)
+                return err.get('message') or err.get('msg') or str(err)
+            return response.text[:200]
+        except Exception:
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+
+    @staticmethod
+    def _format_date(date_str) -> Optional[str]:
+        """Normalize RFC 3339 UTC dates to ``YYYY-MM-DD``."""
+        if not date_str:
+            return None
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(
+                str(date_str).replace('Z', '+00:00')
+            ).strftime('%Y-%m-%d')
+        except Exception:
+            return str(date_str)
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except Exception:
+            return '未知来源'
+
+
 class BraveSearchProvider(BaseSearchProvider):
     """
     Brave Search 搜索引擎
@@ -2409,6 +2627,7 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
+        deepseek_keys: Optional[List[str]] = None,
         searxng_base_urls: Optional[List[str]] = None,
         searxng_public_instances_enabled: bool = False,
         searxng_timeout_seconds: Optional[int] = None,
@@ -2425,6 +2644,7 @@ class SearchService:
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
+            deepseek_keys: DeepSeek 官方网页搜索 API Key 列表
             searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
             news_max_age_days: 新闻最大时效（天）
@@ -2437,6 +2657,7 @@ class SearchService:
             "brave_keys": list(brave_keys or []),
             "serpapi_keys": list(serpapi_keys or []),
             "minimax_keys": list(minimax_keys or []),
+            "deepseek_keys": list(deepseek_keys or []),
             "searxng_base_urls": list(searxng_base_urls or []),
             "searxng_public_instances_enabled": bool(searxng_public_instances_enabled),
             "searxng_timeout_seconds": searxng_timeout_seconds,
@@ -2492,7 +2713,12 @@ class SearchService:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 7. DeepSeek（官方网页搜索 API，结构化结果 + 模型友好的长摘要）
+        if deepseek_keys:
+            self._providers.append(DeepseekSearchProvider(deepseek_keys))
+            logger.info(f"已配置 DeepSeek 搜索，共 {len(deepseek_keys)} 个 API Key")
+
+        # 8. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -4922,6 +5148,7 @@ def get_search_service() -> SearchService:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     minimax_keys=config.minimax_api_keys,
+                    deepseek_keys=getattr(config, "deepseek_search_api_keys", None),
                     searxng_base_urls=config.searxng_base_urls,
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     searxng_timeout_seconds=getattr(config, "searxng_timeout_seconds", None),
