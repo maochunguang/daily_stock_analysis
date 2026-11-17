@@ -392,6 +392,8 @@ class IntelligenceService:
     def _validate_url(self, raw_url: str, *, allow_no_url: bool = False) -> None:
         if allow_no_url and raw_url.startswith("no-url:intel:"):
             return
+        # 0003: 允许自建数据源（如 TrendRadar）指向内网/本机地址，配置门控默认关闭
+        allow_private = bool(getattr(self.config, "news_intel_allow_private_hosts", False))
         parsed = urlparse(raw_url)
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
             raise IntelligenceServiceError("source url must be an absolute http(s) URL")
@@ -400,7 +402,9 @@ class IntelligenceService:
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         if not hostname:
             raise IntelligenceServiceError("source url host is required")
-        if hostname in _PRIVATE_HOSTNAMES or hostname.endswith(".local"):
+        if not allow_private and (
+            hostname in _PRIVATE_HOSTNAMES or hostname.endswith(".local")
+        ):
             raise IntelligenceServiceError("source url host is not allowed")
         has_public_address = False
         try:
@@ -408,7 +412,7 @@ class IntelligenceService:
         except ValueError:
             ip = None
         if ip is not None:
-            if self._is_blocked_ip(ip):
+            if not allow_private and self._is_blocked_ip(ip):
                 raise IntelligenceServiceError("source url must not target private or local network addresses")
             return
         try:
@@ -422,7 +426,7 @@ class IntelligenceService:
                 ip = ipaddress.ip_address(info[4][0])
             except (IndexError, ValueError):
                 continue
-            if self._is_blocked_ip(ip):
+            if not allow_private and self._is_blocked_ip(ip):
                 raise IntelligenceServiceError("source url must not target private or local network addresses")
             has_public_address = True
         if not has_public_address:
@@ -558,10 +562,13 @@ class IntelligenceService:
         target_hostname = self._normalize_hostname(parsed.hostname)
         original_getaddrinfo = socket.getaddrinfo
 
+        allow_private = bool(getattr(self.config, "news_intel_allow_private_hosts", False))
+
         def guarded_getaddrinfo(host: Any, port: Any, *args: Any, **inner_kwargs: Any) -> Any:
             addrinfos = original_getaddrinfo(host, port, *args, **inner_kwargs)
             if self._normalize_hostname(host) == target_hostname:
-                self._validate_addrinfos(addrinfos)
+                if not allow_private:
+                    self._validate_addrinfos(addrinfos)
             return addrinfos
 
         with _DNS_GUARD_LOCK:
