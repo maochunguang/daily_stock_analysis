@@ -23,9 +23,11 @@ repository. Read it before changing code.
 
 1. **DSA-side changes are guarded by patches.** In this fork the DSA code is
    the repo root; DSA-side edits live in `patches/0001-personal-web-integration.patch`
-   (personal page, sidebar entry, `/personal-api` mount, auth coverage) and
+   (personal page, sidebar entry, `/personal-api` mount, auth coverage),
    `patches/0002-deepseek-news-search.patch` (DeepSeek news-search provider +
-   settings schema). `docker/` packaging and the personal block in
+   settings schema), and `patches/0003-news-intel-private-hosts.patch`
+   (NEWS_INTEL_ALLOW_PRIVATE_HOSTS gate for self-hosted sources; depends on
+   0002). `docker/` packaging and the personal block in
    `.env.example` are fork-maintained directly. Keep future DSA-side edits
    confined to these patches (or extend them); personal code lives in `personal/`.
 2. **Personal code must not import upstream internals.** Allowed: `personal.contracts.*`.

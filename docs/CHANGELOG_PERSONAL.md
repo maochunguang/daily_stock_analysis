@@ -1109,3 +1109,54 @@ docker compose -f docker/docker-compose.yml build server && API_PORT=8010 docker
 ### Next
 RM-05 scheduled sync (auto-refresh breadth/futures/margin after close);
 optional industry-level margin split card.
+
+
+## [2026-11-17] CHG-0019 — Patch 0003: self-hosted news intel sources on private hosts
+
+### Metadata
+- id: CHG-0019
+- date: 2026-11-17
+- status: done
+- area: upstream-integration, search
+- related: CHG-0016
+- patch: patches/0003-news-intel-private-hosts.patch
+
+### Summary
+Formalized the user's local TrendRadar change as patch 0003 (DSA-side edit,
+kept out of earlier batches because it was still uncommitted work).
+`NEWS_INTEL_ALLOW_PRIVATE_HOSTS=false|true` gates the intel-source SSRF guard
+in `IntelligenceService._validate_url` and the DNS-guarded fetch path: when
+enabled, self-hosted sources such as a local TrendRadar RSS output
+(localhost / LAN addresses) are accepted; the default stays closed so the
+public-internet-only protection is unchanged. Env documentation already lives
+in `.env.example` (fork-maintained); the patch applies after patch 0002 on
+pristine `c820915` (shared `src/config.py`).
+
+### Files
+| Path | Change |
+|---|---|
+| `src/services/intelligence_service.py` | `_validate_url` + DNS guard honor the config gate |
+| `src/config.py` | `news_intel_allow_private_hosts` field + `NEWS_INTEL_ALLOW_PRIVATE_HOSTS` parsing |
+| `patches/0003-news-intel-private-hosts.patch` | New patch (80 lines) |
+| `tests/test_intel_private_hosts.py` | New: gate default-closed, private IP/localhost/LAN allowed when enabled, invalid URLs still rejected |
+| `PERSONAL_AGENTS.md`, `docs/AI_CONTEXT.md` | Patch inventory now lists 0003 |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+
+### Commands
+```bash
+docker cp tests/test_intel_private_hosts.py stock-server:/app/tests/
+docker exec -w /app stock-server python -m pytest tests/test_intel_private_hosts.py -q
+git apply --check patches/0003-news-intel-private-hosts.patch   # after 0002, on pristine c820915
+```
+
+### Verification
+- 6/6 tests pass in the Docker container.
+- Patch 0003 applies cleanly on a pristine `c820915` worktree with 0002
+  applied first.
+
+### Notes / Migration
+- The gate is default-off; only enable on trusted LAN/NAS networks.
+- Upstream sync: re-apply 0001 → 0002 → 0003 in order.
+
+### Next
+RM-05 scheduled sync (next commit).

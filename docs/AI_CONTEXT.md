@@ -24,7 +24,7 @@
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
 | `ui_patch` | `patches/0001-personal-web-integration.patch` |
-| `search_patch` | `patches/0002-deepseek-news-search.patch` (DeepSeek news search, fork-local DSA change) |
+| `search_patch` | `patches/0002-deepseek-news-search.patch` (DeepSeek news search) + `patches/0003-news-intel-private-hosts.patch` (self-hosted intel source gate) |
 | `docker_doc` | `docs/DOCKER_PERSONAL.md` |
 | `user_guide` | `docs/USER_GUIDE_PERSONAL.md` (required for every user-facing feature) |
 | `roadmap` | `docs/ROADMAP_PERSONAL.md` |
@@ -48,11 +48,13 @@ multi-asset derivatives beyond future ETF options.
 ## Architecture invariants
 
 1. In this fork, the DSA code is the repo root. DSA-side changes are confined
-   to two patches: `patches/0001-personal-web-integration.patch` (personal
-   page/API mount) and `patches/0002-deepseek-news-search.patch` (DeepSeek news
-   search provider + settings schema). `docker/` packaging and the personal
-   block in `.env.example` are fork-maintained directly; re-apply the patches
-   and re-check these files after upstream sync. Never import upstream
+   to three patches: `patches/0001-personal-web-integration.patch` (personal
+   page/API mount), `patches/0002-deepseek-news-search.patch` (DeepSeek news
+   search provider + settings schema), and
+   `patches/0003-news-intel-private-hosts.patch` (NEWS_INTEL_ALLOW_PRIVATE_HOSTS
+   gate for self-hosted intel sources; applies after 0002). `docker/` packaging
+   and the personal block in `.env.example` are fork-maintained directly;
+   re-apply the patches and re-check these files after upstream sync. Never import upstream
    internals from personal business code.
 2. `personal/contracts/` is the only upstream data boundary.
 3. Personal DB is separate from the upstream DB.
