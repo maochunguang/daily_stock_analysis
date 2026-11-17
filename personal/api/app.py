@@ -210,6 +210,44 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         finally:
             store.close()
 
+    @app.get("/api/market/breadth")
+    def market_breadth(days: int = Query(default=30, ge=1, le=500)) -> dict[str, Any]:
+        """Recent market breadth / TRIN rows (oldest -> newest)."""
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_market_breadth(limit=days)
+        finally:
+            store.close()
+        return {
+            "rows": [
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "up_count": row.up_count,
+                    "down_count": row.down_count,
+                    "flat_count": row.flat_count,
+                    "sample_count": row.sample_count,
+                    "up_vol_yi": row.up_vol_yi,
+                    "down_vol_yi": row.down_vol_yi,
+                    "up_amount_yi": row.up_amount_yi,
+                    "down_amount_yi": row.down_amount_yi,
+                    "adv_ratio": row.adv_ratio,
+                    "trin": row.trin,
+                    "trin_amount": row.trin_amount,
+                    "trin_pct": row.trin_pct,
+                    "interpretation": row.interpretation,
+                    "band": row.band,
+                    "index_close": row.index_close,
+                    "index_chg_pct": row.index_chg_pct,
+                    "index_pos": row.index_pos,
+                    "divergence": row.divergence,
+                    "signal_tag": row.signal_tag,
+                    "signal_detail": row.signal_detail,
+                    "source": row.source,
+                }
+                for row in rows
+            ]
+        }
+
     @app.post("/api/data/sync")
     def sync(request: SyncRequest) -> dict[str, Any]:
         codes = request.codes or list(settings.stock_list)

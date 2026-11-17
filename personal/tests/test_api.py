@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,53 @@ def test_upstream_recent_missing(client):
     payload = response.json()
     assert payload["available"] is False
     assert payload["analyses"] == []
+
+
+def test_market_breadth_endpoint(client, tmp_path):
+    empty = client.get("/api/market/breadth")
+    assert empty.status_code == 200
+    assert empty.json()["rows"] == []
+
+    from personal.datahub.breadth import load_easy_daily_snapshots
+    from personal.datahub.store import PersonalStore
+
+    daily_dir = tmp_path / "daily"
+    daily_dir.mkdir()
+    snapshot = {
+        "date": "2026-11-17",
+        "up": 1192,
+        "down": 3717,
+        "flat": 117,
+        "total": 5026,
+        "up_vol_yi": 306.61,
+        "down_vol_yi": 623.52,
+        "trin": 0.652,
+        "adv_ratio": 23.7,
+        "band": "中低位",
+        "signal": "中低位｜普跌+量能尚可 → 弱势整理",
+        "pct": 32.6,
+        "index": 3584.58,
+        "index_chg": -0.5,
+        "signal_tag": "—",
+        "divergence": 0,
+    }
+    (daily_dir / "2026-11-17.json").write_text(json.dumps(snapshot), encoding="utf-8")
+    store = PersonalStore(tmp_path / "personal.db")
+    try:
+        store.upsert_market_breadth(list(load_easy_daily_snapshots(daily_dir)))
+    finally:
+        store.close()
+
+    response = client.get("/api/market/breadth")
+    assert response.status_code == 200
+    rows = response.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["trade_date"] == "2026-11-17"
+    assert rows[0]["trin"] == 0.652
+    assert rows[0]["down_count"] == 3717
+
+    bounded = client.get("/api/market/breadth", params={"days": 0})
+    assert bounded.status_code == 422
 
 
 def test_can_be_mounted_under_upstream_prefix(tmp_path):

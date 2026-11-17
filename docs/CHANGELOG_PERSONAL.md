@@ -870,3 +870,164 @@ API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
 
 ### Next
 RM-05 scheduled incremental sync and RM-06 dividend/fee completion.
+
+## [2026-11-17] CHG-0016 — DeepSeek official web-search provider + settings schema
+
+### Metadata
+- id: CHG-0016
+- date: 2026-11-17
+- status: done
+- area: search, upstream-integration, config-ui
+- related: CHG-0010, CHG-0015
+- patch: patches/0002-deepseek-news-search.patch
+
+### Summary
+Added DeepSeek's official web-search API as a news-search provider. The
+provider posts to `POST https://api.deepseek.com/v1/tools/search` (Bearer
+auth), prefers the model-friendly `summary` field over `snippet`, maps
+RFC 3339 dates to `YYYY-MM-DD`, and implements freshness via the documented
+`after:` query operator (the API has no freshness parameter and a hard
+128-character query limit, so queries are truncated before appending it).
+`DEEPSEEK_SEARCH_API_KEYS` (comma-separated, independent from the LLM's
+`DEEPSEEK_API_KEYS`) is registered in the config registry as a `data_source`
+password/multi-value field, so it appears in the existing Web settings page
+with the same add/remove multi-key UI as the other providers. Search priority
+is now Bocha → Tavily → Brave → SerpAPI → Anspire → MiniMax → DeepSeek →
+SearXNG.
+
+### Files
+| Path | Change |
+|---|---|
+| `src/search_service.py` | `DeepseekSearchProvider` (endpoint/auth/payload/error mapping/RetryError unwrap); `SearchService` kwarg + priority slot; singleton wiring |
+| `src/config.py` | `deepseek_search_api_keys` field, `DEEPSEEK_SEARCH_API_KEYS` parsing, capability gate, validation message |
+| `src/core/config_registry.py` | `DEEPSEEK_SEARCH_API_KEYS` field definition (data_source/password/multi_value, display_order 55) + help metadata |
+| `apps/dsa-web/src/utils/systemConfigI18n.ts` | zh title/description for the new field |
+| `.env.example` | DeepSeek search block in the search-engine section (fork-maintained file) |
+| `README.md` | News-source table row |
+| `docs/full-guide.md` | 搜索服务配置 table row + updated priority sentence |
+| `.github/workflows/00-daily-analysis.yml` | `DEEPSEEK_SEARCH_API_KEYS` secret mapping + startup echo |
+| `patches/0002-deepseek-news-search.patch` | New patch covering the DSA-side files above (verified against pristine `c820915`) |
+| `tests/test_search_deepseek_provider.py` | New: query building, response mapping, count clamp, 402/timeout mapping, service wiring |
+| `tests/test_deepseek_search_registry.py` | New: registry category/ui/docs/schema assertions |
+| `docs/AI_CONTEXT.md`, `docs/USER_GUIDE_PERSONAL.md`, `PERSONAL_AGENTS.md` | Patch inventory, invariant update, config table row |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+
+### Commands
+```bash
+# new tests + contract tests (run in the Docker container which has all deps)
+docker exec -w /app stock-server python -m pytest \
+  tests/test_search_deepseek_provider.py tests/test_deepseek_search_registry.py \
+  --no-header -p no:cacheprovider
+
+cd apps/dsa-web && npm run build
+docker compose -f docker/docker-compose.yml build server
+API_PORT=8010 docker compose -f docker/docker-compose.yml up -d server
+```
+
+### Verification
+- `tests/test_search_deepseek_provider.py` (14 tests) +
+  `tests/test_deepseek_search_registry.py` (5 tests): **19 passed**.
+- Regression: `test_search_tavily_provider.py`, `test_search_serpapi_provider.py`,
+  `test_search_searxng.py`, `test_anspire_search.py`, `test_config_registry.py`,
+  `test_searxng_env_docs.py` — **93 passed** (contract tests needed
+  `.env.example`/workflows/locales/docs copied into the container; the image
+  intentionally omits them).
+- Config wiring in container: `DEEPSEEK_SEARCH_API_KEYS=k1,k2` parses to
+  `['k1','k2']`, `has_search_capability_enabled()` becomes true, and
+  `get_search_service()` instantiates the `DeepSeek` provider.
+- `GET /api/v1/system/config?include_schema=true` returns
+  `DEEPSEEK_SEARCH_API_KEYS` under `data_source` with
+  `ui_control=password`, `is_sensitive=true`, `display_order=55`.
+- Browser: 设置页 → 数据源 shows `DeepSeek Search API Keys`（敏感 + 多 Key 增删，
+  位于 MiniMax 之后）；截图确认样式与其他 provider 一致。
+- Frontend `npm run build` and Docker image build both succeeded; container
+  healthy on 8010.
+- `git apply --check` on a pristine `c820915` worktree: both `0001` and `0002`
+  patches apply cleanly.
+
+### Notes / Migration
+- Priority slot: DeepSeek sits after MiniMax and before SearXNG; configure
+  DeepSeek keys and it is used automatically (no other provider configured →
+  it is the only engine).
+- Billing: DeepSeek Search charges ~¥5 per 1,000 successful requests
+  (empty `results` are not billed); QPS 100 per account, 429 on excess.
+- `DEEPSEEK_SEARCH_API_KEYS` is independent from `DEEPSEEK_API_KEYS`
+  (LLM). The registry infers `DEEPSEEK_*` as `ai_model`, so the field is
+  explicitly registered as `data_source`.
+- Freshness uses the documented `after:YYYY-MM-DD` operator; DeepSeek has no
+  freshness parameter and a 128-char query limit, so long queries are
+  truncated before appending the operator.
+- `.env.example` and `README.md` are fork-maintained (they already carry the
+  personal-layer block), so they are not part of patch 0002; re-add the
+  DeepSeek lines manually after an upstream sync.
+- EN/繁中 translations (`README_EN/README_CHT/full-guide_EN/DEPLOY*`) were
+  left unchanged in this pass.
+
+### Next
+RM-05 scheduled incremental sync; RM-06 dividend/fee completion. Optionally
+add a live DeepSeek search smoke test once a funded key is configured.
+
+## [2026-11-17] CHG-0017 — Market breadth (TRIN) data layer from easy-daily-trading
+
+### Metadata
+- id: CHG-0017
+- date: 2026-11-17
+- status: done
+- area: datahub, web, docs
+- related: CHG-0015, RM-31
+
+### Summary
+Ported the user's proven A-share TRIN (Arms Index) methodology from their
+local `easy-daily-trading` project into the personal layer, and imported its
+accumulated snapshots: 265 trading days (2025-10-16 ~ 2026-11-17) with
+up/down/flat counts, up/down volume & amount, TRIN (volume basis) and
+TRIN (amount basis), the A-share empirical percentile bands (median ≈0.78,
+negative-skewed — not the US 1.0 center), 上涨占比-aware interpretation
+text, and index-divergence tags against the Shanghai Composite. Data comes
+from `easy-daily-trading/cache/arms_index/daily/{date}.json`; refresh is a
+two-step manual flow (run `tools/arms_index.py` there, `import-arms` here).
+The 深度复盘 page (TRIN + index-futures short data + margin balance) and the
+futures/margin datasets are the next phase of RM-31.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/breadth.py` | New: `A_SHARE_BANDS`, `trin_band`, `interpret`, `percentile_of`, `compute_trin`, `load_easy_daily_snapshots` (tolerant parser, provenance `easy_daily_trading`) |
+| `personal/datahub/models.py` | `MarketBreadth` dataclass (volume in 亿股, amount in 亿元 per `_yi` column convention) |
+| `personal/datahub/store.py` | `market_breadth` table, `upsert_market_breadth` (idempotent by `trade_date`), `get_market_breadth(start/end/limit)`, stats count |
+| `personal/cli/main.py` | `import-arms --dir`, `breadth --days` commands |
+| `personal/api/app.py` | `GET /api/market/breadth?days=N` (1-500, oldest → newest) |
+| `personal/tests/test_breadth.py` | New: bands/interpretation regression vs the 2026-11-17 snapshot, loader tolerance, store roundtrip/idempotency |
+| `personal/tests/test_api.py` | Breadth endpoint test (empty + populated + 422 on days=0) |
+| `docs/USER_GUIDE_PERSONAL.md` | §0 nav row, §5 CLI rows + example, §7.1 table row, new §7.5 口径与更新流程 |
+| `docs/AI_CONTEXT.md` | test_count 76, breadth module/schema/CLI/API rows, limitation note |
+| `docs/ROADMAP_PERSONAL.md` | RM-31 status: data layer done, page + futures/margin data pending |
+
+### Commands
+```bash
+cd upstream
+.venv/bin/python -m personal.cli.main import-arms \
+  --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
+.venv/bin/python -m personal.cli.main breadth --days 3
+.venv/bin/python -m pytest personal/tests -q
+```
+
+### Verification
+- 265 days imported (idempotent re-import verified); latest row
+  2026-11-17 TRIN 0.652 (中低位/33 pct, 上证 3584.58 −0.5%).
+- `personal/tests`: 76 passed (9 new breadth + 1 API test), `compileall` OK.
+- Interpretation strings byte-identical to the source project for the
+  2026-11-17 snapshot (`中低位｜普跌+量能尚可 → 弱势整理`).
+
+### Notes / Migration
+- `market_breadth` is keyed by `trade_date` only — one row per day, latest
+  import wins (source provenance stored per row).
+- Volume/amount columns store 亿股/亿元 (rounding as produced by the source
+  project); recomputing TRIN from these columns may differ in the 3rd
+  decimal — always read the stored `trin` column.
+- Daily refresh is manual: `python3 tools/arms_index.py --days 3` in
+  easy-daily-trading, then `import-arms`. Automation lands with RM-05.
+
+### Next
+RM-31 continued: 深度复盘 page + 股指期货做空数据 + 融资余额 ingestion; RM-05
+scheduled sync for automated daily refresh.

@@ -19,11 +19,12 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 66 |
+| `test_count` | 76 |
 | `last_updated` | 2026-11-16 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
 | `ui_patch` | `patches/0001-personal-web-integration.patch` |
+| `search_patch` | `patches/0002-deepseek-news-search.patch` (DeepSeek news search, fork-local DSA change) |
 | `docker_doc` | `docs/DOCKER_PERSONAL.md` |
 | `user_guide` | `docs/USER_GUIDE_PERSONAL.md` (required for every user-facing feature) |
 | `roadmap` | `docs/ROADMAP_PERSONAL.md` |
@@ -46,9 +47,13 @@ multi-asset derivatives beyond future ETF options.
 
 ## Architecture invariants
 
-1. In this fork, the DSA code is the repo root. Keep DSA-side changes confined
-   to the UI integration patch (`patches/0001-personal-web-integration.patch`);
-   never import upstream internals from personal business code.
+1. In this fork, the DSA code is the repo root. DSA-side changes are confined
+   to two patches: `patches/0001-personal-web-integration.patch` (personal
+   page/API mount) and `patches/0002-deepseek-news-search.patch` (DeepSeek news
+   search provider + settings schema). `docker/` packaging and the personal
+   block in `.env.example` are fork-maintained directly; re-apply the patches
+   and re-check these files after upstream sync. Never import upstream
+   internals from personal business code.
 2. `personal/contracts/` is the only upstream data boundary.
 3. Personal DB is separate from the upstream DB.
 4. Plugin code may import only `personal.plugins.api`.
@@ -86,6 +91,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/adjust.py` | qfq/hfq adjustment; Tushare `adj_factor` convention |
 | `personal/datahub/tradability.py` | T+1, 100-share lots, suspension, price limits |
 | `personal/datahub/quality.py` | OHLC/duplicate/jump/cross-source/missing-day checks |
+| `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
 | `personal/datahub/status.py` | Derive suspension/ST/limit-up/down rows from bars/calendar/name/factors |
 | `personal/datahub/sync.py` | Source fallback, bars/adjust/calendar/status sync, cross-check |
 | `personal/datahub/sources/` | `synthetic`, `tushare`, `akshare`, `baostock` adapters |
@@ -125,6 +131,7 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `trading_status` | `(code, trade_date)`; suspension/ST/limit flags |
 | `fund_nav` | `(code, nav_date, source)` |
 | `etf_snapshot` | `(code, trade_date, source)` |
+| `market_breadth` | `trade_date`; TRIN/涨跌家数/量额日汇总（量单位亿股、额单位亿元） |
 | `data_quality_event` | auto id; quality warnings/errors |
 | `backtest_run` | `run_id`; config + metrics JSON |
 | `backtest_trade` | run trades |
@@ -147,6 +154,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset calendar --source baostock ...` | Trading calendar |
 | `python -m personal.cli.main sync --dataset status --code C ...` | Trading status |
 | `python -m personal.cli.main replay --start D --end D` | Replay upstream signals |
+| `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
+| `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
 
@@ -164,6 +173,7 @@ the page route is `/personal`.
 | GET | `/api/plugins` | Plugin list/errors |
 | GET | `/api/data/coverage` | Code/source coverage + stats |
 | GET | `/api/data/quality?limit=N` | Quality events |
+| GET | `/api/market/breadth?days=N` | Market breadth / TRIN rows (oldest → newest) |
 | POST | `/api/data/sync` | Sync bars / adjustment / calendar / status |
 | GET | `/api/backtest/runs` | Recent runs |
 | POST | `/api/backtest/demo` | Synthetic demo backtest |
@@ -238,6 +248,10 @@ instrument name; limit prices from previous close + board rules.
   distinguishable from un-downloaded data.
 - Cross-source validation needs a second usable source and doubles network
   calls; synthetic syncs skip it. Disable with `PERSONAL_CROSS_SOURCE_CHECK=false`.
+- `market_breadth` data comes from the user's local `easy-daily-trading`
+  snapshots (imported 265 days through 2026-11-17). It is not auto-refreshed;
+  run `tools/arms_index.py` there and re-run `import-arms`. A 深度复盘 page
+  (TRIN + index-futures short data + margin balance) is still pending (RM-31).
 - Backtests default to hfq (backward-adjusted) prices; limit prices are scaled
   into the same space. `none` reproduces raw-price behavior for debugging.
 - Fund analytics, trade journal UI, review reports are Phase 2.
@@ -275,3 +289,4 @@ instrument name; limit prices from previous close + board rules.
 | `CHG-0013` | Docker runtime verification on macOS arm64 |
 | `CHG-0014` | Personal user guide + mandatory manual rule |
 | `CHG-0015` | Adjustment-aware backtest, calendar/status sync, cross-source checks |
+| `CHG-0016` | DeepSeek official web-search provider + settings schema |

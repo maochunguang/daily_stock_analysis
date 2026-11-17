@@ -9,7 +9,7 @@
 |---|---|
 | 适用仓库 | `maochunguang/daily_stock_analysis`（自包含 fork） |
 | 个人层版本 | `0.1.0` |
-| 最后更新 | 2026-11-16 |
+| 最后更新 | 2026-11-17 |
 | 主要入口 | 集成 Web UI `/personal`、独立控制台、CLI |
 | 数据范围 | A 股股票、ETF；基金净值/期权为后续阶段 |
 
@@ -23,6 +23,7 @@
 | 同步日线 / 复权因子 / 交易日历 / 交易状态 | `/personal` → 数据同步，或 `sync` | §4.2、§5 |
 | 用合成数据验证回测流程 | `/personal` → 个人回测 → Demo | §4.3 |
 | 用上游 AI 建议做组合回测 | `/personal` → 个人回测 → Replay | §4.3 |
+| 导入/查看市场宽度（阿姆氏 TRIN） | `import-arms` + `breadth`，API `/api/market/breadth` | §5、§7.5 |
 | 看已装插件 | `/personal` → 插件，或 `plugins` | §4.4、§8 |
 | 检查 Windows QMT 桥 | `/personal` → QMT | §4.5、§9 |
 | 部署到 NAS | Docker Compose | §2.2、[DOCKER_PERSONAL.md](DOCKER_PERSONAL.md) |
@@ -150,6 +151,7 @@ python -m personal.cli.main info
 | `PERSONAL_STOCK_LIST` | 空 | 默认股票池，逗号分隔，如 `600519,000001,510050` |
 | `TUSHARE_TOKEN` | 空 | Tushare token；只在本地 env 文件里填 |
 | `PERSONAL_DATA_SOURCE_PRIORITY` | `tushare,baostock,akshare,tencent` | 自动模式的优先级；`tencent` 目前未实现，会被跳过 |
+| `DEEPSEEK_SEARCH_API_KEYS` | 空 | DeepSeek 官方网页搜索密钥（上游 AI 报告的新闻搜索用，与 LLM 的 `DEEPSEEK_API_KEYS` 相互独立），在 Web 设置页「数据源」分类里配置 |
 | `PERSONAL_DB` | `data/personal.db` | 个人库路径；Docker 内为 `/app/data/personal.db` |
 | `PERSONAL_UPSTREAM_DB` | `data/stock_analysis.db` | 上游库**只读**；Docker 内为 `/app/data/stock_analysis.db` |
 | `PERSONAL_DATA_DIR` | `data` | 数据目录 |
@@ -346,6 +348,8 @@ python -m personal.cli.main <command> [options]
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
 | `sync` | 同步日线/复权因子/日历/状态 | `--dataset bars\|adjust\|calendar\|status`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
+| `import-arms` | 导入阿姆氏（TRIN）日快照 | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
+| `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
 | `plugins` | 列出插件和加载错误 | — |
 | `web` | 启动独立控制台 | `--host`、`--port`、`--reload` |
 
@@ -383,6 +387,11 @@ python -m personal.cli.main replay --start 2025-01-01 --end 2026-11-16 \
 
 # 插件
 python -m personal.cli.main plugins
+
+# 导入阿姆氏快照并查看最近 5 天
+python -m personal.cli.main import-arms \
+  --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
+python -m personal.cli.main breadth --days 5
 ```
 
 日期参数省略时：`sync` 默认最近 730 天；`replay` 默认最近 365 天。
@@ -467,6 +476,7 @@ python -m personal.cli.main plugins
 | `trading_status` | `(code, trade_date)` | 停牌/ST/涨跌停标记 |
 | `fund_nav` | `(code, nav_date, source)` | 基金净值（Phase 2） |
 | `etf_snapshot` | `(code, trade_date, source)` | ETF 快照（Phase 2） |
+| `market_breadth` | `trade_date` | 市场宽度/阿姆氏 TRIN 日汇总（见 §7.4） |
 | `data_quality_event` | 自增 | 质检事件 |
 | `backtest_run` | `run_id` | 回测配置 + 指标 |
 | `backtest_trade` | 自增 | 回测逐笔交易 |
@@ -511,6 +521,37 @@ python -m personal.cli.main plugins
 > 或调整优先级/删除旧源数据。
 
 ---
+
+### 7.5 市场宽度与阿姆氏指标（TRIN）
+
+市场宽度表 `market_breadth` 存每个交易日的全市场汇总，供「深度复盘」（建设中）
+和 API `/api/market/breadth?days=N` 使用。
+
+**数据来源**：另一个本地项目 `easy-daily-trading`（`tools/arms_index.py`，腾讯/新浪
+前复权日线，剔除北交所与 ST）。在那边每天跑一次：
+
+```bash
+cd /Users/mao/vibecoding/easy-daily-trading
+python3 tools/arms_index.py --days 3          # 更新 cache/arms_index/daily/
+```
+
+然后回这边导入（可重复执行，按日期幂等覆盖）：
+
+```bash
+python -m personal.cli.main import-arms \
+  --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
+python -m personal.cli.main breadth --days 5
+```
+
+**口径**（移植自 easy-daily-trading，A 股 250 日实测分位，不套美股 1.0 中枢）：
+
+- `TRIN = (上涨家数 ÷ 下跌家数) ÷ (上涨成交量 ÷ 下跌成交量)`；另存按成交额口径的 `TRIN(额)` 交叉校验
+- 分位带：`<0.405 极低`、`0.579 偏低`、`0.780 中低位`、`1.122 中高位`、`1.428 偏高`、`1.747 高位`、`>1.747 极高`
+- 判读必须结合**上涨占比**：同样 TRIN 0.40，普涨日=量能集中在龙头（健康）；普跌日=资金抱团避险（恐慌但常近短期底）
+- 指数背离（对照上证指数 20 日窗口）：`顶部信号` = 指数新高但量能跟不上，警惕回落；`底部信号` = 指数新低且抛压集中，常近短期底。**背离是风险提示，不是买卖信号**
+- 成交量单位为亿股、成交额为亿元（表列名带 `_yi` 后缀即为此含义）
+
+**已导入数据**：2025-10-16 ~ 2026-11-17 共 265 个交易日（来源标记 `easy_daily_trading`）。
 
 ## 8. 插件使用与开发
 

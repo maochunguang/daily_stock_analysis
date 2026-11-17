@@ -19,6 +19,7 @@ from .models import (
     DailyBar,
     EtfSnapshot,
     FundNav,
+    MarketBreadth,
     QualityIssue,
     TradingStatus,
 )
@@ -101,6 +102,32 @@ CREATE TABLE IF NOT EXISTS etf_snapshot (
   amount REAL,
   source TEXT NOT NULL,
   PRIMARY KEY (code, trade_date, source)
+);
+
+CREATE TABLE IF NOT EXISTS market_breadth (
+  trade_date TEXT PRIMARY KEY,
+  up_count INTEGER NOT NULL DEFAULT 0,
+  down_count INTEGER NOT NULL DEFAULT 0,
+  flat_count INTEGER NOT NULL DEFAULT 0,
+  sample_count INTEGER NOT NULL DEFAULT 0,
+  up_vol_yi REAL,
+  down_vol_yi REAL,
+  up_amount_yi REAL,
+  down_amount_yi REAL,
+  adv_ratio REAL,
+  trin REAL,
+  trin_amount REAL,
+  trin_pct REAL,
+  interpretation TEXT,
+  band TEXT,
+  index_close REAL,
+  index_chg_pct REAL,
+  index_pos REAL,
+  divergence INTEGER NOT NULL DEFAULT 0,
+  signal_tag TEXT,
+  signal_detail TEXT,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS data_quality_event (
@@ -497,6 +524,101 @@ class PersonalStore:
             )
         return len(rows)
 
+    def upsert_market_breadth(self, rows: Iterable[MarketBreadth]) -> int:
+        payloads = [row.to_row() for row in rows]
+        if not payloads:
+            return 0
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO market_breadth
+                  (trade_date, up_count, down_count, flat_count, sample_count,
+                   up_vol_yi, down_vol_yi, up_amount_yi, down_amount_yi,
+                   adv_ratio, trin, trin_amount, trin_pct,
+                   interpretation, band, index_close, index_chg_pct, index_pos,
+                   divergence, signal_tag, signal_detail, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                  up_count=excluded.up_count, down_count=excluded.down_count,
+                  flat_count=excluded.flat_count, sample_count=excluded.sample_count,
+                  up_vol_yi=excluded.up_vol_yi, down_vol_yi=excluded.down_vol_yi,
+                  up_amount_yi=excluded.up_amount_yi, down_amount_yi=excluded.down_amount_yi,
+                  adv_ratio=excluded.adv_ratio, trin=excluded.trin,
+                  trin_amount=excluded.trin_amount, trin_pct=excluded.trin_pct,
+                  interpretation=excluded.interpretation, band=excluded.band,
+                  index_close=excluded.index_close, index_chg_pct=excluded.index_chg_pct,
+                  index_pos=excluded.index_pos, divergence=excluded.divergence,
+                  signal_tag=excluded.signal_tag, signal_detail=excluded.signal_detail,
+                  source=excluded.source, updated_at=excluded.updated_at
+                """,
+                [
+                    (
+                        payload[0], payload[1], payload[2], payload[3], payload[4],
+                        payload[5], payload[6], payload[7], payload[8], payload[9],
+                        payload[10], payload[11], payload[12], payload[13],
+                        payload[14], payload[15], payload[16], payload[17],
+                        payload[18], payload[19], payload[20], payload[21], now,
+                    )
+                    for payload in payloads
+                ],
+            )
+        return len(payloads)
+
+    def get_market_breadth(
+        self, start: Optional[date] = None, end: Optional[date] = None, limit: int = 0
+    ) -> list[MarketBreadth]:
+        """Market breadth rows ordered from oldest to newest.
+
+        ``limit`` (when positive) keeps the most recent N days.
+        """
+        conditions = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM market_breadth"
+                + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = "SELECT * FROM market_breadth" + where + " ORDER BY trade_date"
+        result = [
+            MarketBreadth(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                up_count=row["up_count"],
+                down_count=row["down_count"],
+                flat_count=row["flat_count"],
+                sample_count=row["sample_count"],
+                up_vol_yi=row["up_vol_yi"],
+                down_vol_yi=row["down_vol_yi"],
+                up_amount_yi=row["up_amount_yi"],
+                down_amount_yi=row["down_amount_yi"],
+                adv_ratio=row["adv_ratio"],
+                trin=row["trin"],
+                trin_amount=row["trin_amount"],
+                trin_pct=row["trin_pct"],
+                interpretation=row["interpretation"] or "",
+                band=row["band"] or "",
+                index_close=row["index_close"],
+                index_chg_pct=row["index_chg_pct"],
+                index_pos=row["index_pos"],
+                divergence=row["divergence"],
+                signal_tag=row["signal_tag"] or "",
+                signal_detail=row["signal_detail"] or "",
+                source=row["source"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+        return result
+
     # ------------------------------------------------------------------
     # Quality
     # ------------------------------------------------------------------
@@ -610,6 +732,7 @@ class PersonalStore:
             "trading_status",
             "fund_nav",
             "etf_snapshot",
+            "market_breadth",
             "data_quality_event",
             "backtest_run",
             "trade_journal",

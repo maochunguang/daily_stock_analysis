@@ -72,6 +72,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("--save", action="store_true")
 
+    import_arms = subparsers.add_parser(
+        "import-arms",
+        help="import TRIN daily snapshots from easy-daily-trading cache/arms_index/daily",
+    )
+    import_arms.add_argument(
+        "--dir",
+        default="",
+        help="directory containing {date}.json snapshots (default: cache/arms_index/daily)",
+    )
+
+    breadth = subparsers.add_parser(
+        "breadth", help="show stored market breadth (TRIN) rows"
+    )
+    breadth.add_argument("--days", type=int, default=5, help="number of recent days")
+
     web = subparsers.add_parser("web", help="run the local Web console")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8765)
@@ -110,6 +125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "replay":
         return _replay(settings, args)
+
+    if args.command == "import-arms":
+        return _import_arms(settings, args)
+
+    if args.command == "breadth":
+        return _breadth(settings, args)
 
     if args.command == "web":
         return _web(args)
@@ -252,6 +273,51 @@ def _replay(settings, args) -> int:
     print(f"replay: {start} -> {end}, signals={len(signals)}")
     _print_metrics(result.metrics)
     print(f"final_cash={result.final_cash:.2f} positions={result.final_positions}")
+    return 0
+
+
+def _import_arms(settings, args) -> int:
+    from personal.datahub.breadth import load_easy_daily_snapshots
+
+    directory = Path(args.dir or Path("cache/arms_index/daily"))
+    if not directory.exists():
+        print(f"snapshots directory not found: {directory}")
+        return 1
+    rows = list(load_easy_daily_snapshots(directory))
+    if not rows:
+        print(f"no usable snapshots in {directory}")
+        return 1
+    store = PersonalStore(settings.personal_db)
+    try:
+        count = store.upsert_market_breadth(rows)
+    finally:
+        store.close()
+    latest = rows[-1]
+    print(f"imported {count} breadth days from {directory} (source easy_daily_trading)")
+    print(f"range: {rows[0].trade_date} -> {latest.trade_date}")
+    if latest.trin is not None:
+        print(f"latest TRIN: {latest.trin} ({latest.band}) {latest.interpretation}")
+    return 0
+
+
+def _breadth(settings, args) -> int:
+    store = PersonalStore(settings.personal_db)
+    try:
+        rows = store.get_market_breadth(limit=max(1, args.days))
+    finally:
+        store.close()
+    if not rows:
+        print("no market breadth rows; run: python -m personal.cli.main import-arms")
+        return 1
+    print(f"{'date':<12}{'up':>6}{'down':>6}{'TRIN':>8}{'pct%':>7}  判读")
+    print("-" * 90)
+    for row in rows:
+        trin = f"{row.trin:.3f}" if row.trin is not None else "—"
+        pct = f"{row.trin_pct:.0f}" if row.trin_pct is not None else "—"
+        print(
+            f"{row.trade_date.isoformat():<12}{row.up_count:>6}{row.down_count:>6}"
+            f"{trin:>8}{pct:>7}  {row.interpretation}"
+        )
     return 0
 
 

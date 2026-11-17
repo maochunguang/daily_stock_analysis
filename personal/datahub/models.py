@@ -123,6 +123,64 @@ class EtfSnapshot:
 
 
 @dataclass(frozen=True)
+class MarketBreadth:
+    """One day of market-wide breadth aggregates (TRIN / Arms Index).
+
+    Volume columns are in 亿股 and amount columns in 亿元 so every source
+    (imported snapshots, full-market daily pulls) stores the same unit.
+    """
+
+    trade_date: date
+    up_count: int = 0
+    down_count: int = 0
+    flat_count: int = 0
+    sample_count: int = 0
+    up_vol_yi: float | None = None
+    down_vol_yi: float | None = None
+    up_amount_yi: float | None = None
+    down_amount_yi: float | None = None
+    adv_ratio: float | None = None
+    trin: float | None = None
+    trin_amount: float | None = None
+    trin_pct: float | None = None
+    interpretation: str = ""
+    band: str = ""
+    index_close: float | None = None
+    index_chg_pct: float | None = None
+    index_pos: float | None = None
+    divergence: int = 0
+    signal_tag: str = ""
+    signal_detail: str = ""
+    source: str = "unknown"
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.up_count,
+            self.down_count,
+            self.flat_count,
+            self.sample_count,
+            self.up_vol_yi,
+            self.down_vol_yi,
+            self.up_amount_yi,
+            self.down_amount_yi,
+            self.adv_ratio,
+            self.trin,
+            self.trin_amount,
+            self.trin_pct,
+            self.interpretation,
+            self.band,
+            self.index_close,
+            self.index_chg_pct,
+            self.index_pos,
+            self.divergence,
+            self.signal_tag,
+            self.signal_detail,
+            self.source,
+        )
+
+
+@dataclass(frozen=True)
 class QualityIssue:
     dataset: str
     rule: str
