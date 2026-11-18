@@ -72,14 +72,15 @@ index c3a1338..1bd1728 100644
    { path: '/settings', element: <SettingsPage /> },
 diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
 new file mode 100644
-index 0000000..08e3630
+index 0000000..17ed050
 --- /dev/null
 +++ b/apps/dsa-web/src/api/personal.ts
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,137 @@
 +import type {
 +  PersonalBacktestResponse,
 +  PersonalBreadthRow,
 +  PersonalCompositeResponse,
++  PersonalValidationResponse,
 +  PersonalCrowdingResponse,
 +  PersonalFlowsResponse,
 +  PersonalFuturesRankRow,
@@ -202,6 +203,10 @@ index 0000000..08e3630
 +  macro: (days = 120) =>
 +    request<PersonalMacroResponse>(`/market/macro?days=${days}`),
 +  composite: () => request<PersonalCompositeResponse>('/market/composite'),
++  marketValidate: (days = 400, online = false) =>
++    request<PersonalValidationResponse>(
++      `/market/validate?days=${days}&online=${online ? 'true' : 'false'}`,
++    ),
 +  marketSync: (body: PersonalMarketSyncRequest) =>
 +    request<PersonalMarketSyncResponse>('/market/sync', {
 +      method: 'POST',
@@ -241,12 +246,12 @@ index 1fad650..f8b9957 100644
    { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
 diff --git a/apps/dsa-web/src/components/personal/ReviewCards.tsx b/apps/dsa-web/src/components/personal/ReviewCards.tsx
 new file mode 100644
-index 0000000..3842a45
+index 0000000..70dc0ce
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/ReviewCards.tsx
-@@ -0,0 +1,1217 @@
+@@ -0,0 +1,1341 @@
 +import type React from 'react';
-+import { Landmark, RefreshCw, TrendingDown } from 'lucide-react';
++import { Landmark, RefreshCw, ShieldCheck, TrendingDown } from 'lucide-react';
 +import {
 +  CartesianGrid,
 +  Legend,
@@ -270,6 +275,7 @@ index 0000000..3842a45
 +  PersonalMacroResponse,
 +  PersonalMarginRow,
 +  PersonalPcrRow,
++  PersonalValidationResponse,
 +} from '../../types/personal';
 +
 +/**
@@ -368,6 +374,19 @@ index 0000000..3842a45
 +    metricLabel: '指标',
 +    kindLabel: '类型',
 +    pending: '等待回填',
++    healthTitle: '数据体检',
++    healthScore: '健康分',
++    healthOk: '正常',
++    healthWarn: '注意',
++    healthError: '异常',
++    healthEmpty: '无数据',
++    healthLatest: '最新',
++    healthIssues: '问题',
++    healthRun: '重新体检',
++    healthOnline: '外部抽检',
++    healthClean: '全部通过，未发现异常',
++    healthHint:
++      '规则：恒等式、取值域、交易日、环比跳变、跨指标（行业成交额 vs 全市场）与外部源抽检（交易所/中债/乐咕/中金所）',
 +  },
 +  en: {
 +    breadthTitle: 'Market breadth (TRIN)',
@@ -459,6 +478,19 @@ index 0000000..3842a45
 +    metricLabel: 'Metric',
 +    kindLabel: 'Kind',
 +    pending: 'backfilling',
++    healthTitle: 'Data health check',
++    healthScore: 'Health',
++    healthOk: 'OK',
++    healthWarn: 'Warn',
++    healthError: 'Error',
++    healthEmpty: 'Empty',
++    healthLatest: 'Latest',
++    healthIssues: 'Issues',
++    healthRun: 'Re-check',
++    healthOnline: 'Cross-source',
++    healthClean: 'All checks passed',
++    healthHint:
++      'Rules: identities, ranges, trading days, jumps, cross-metric (sector vs turnover) and external spot checks (exchange/ChinaBond/Legu/CFFEX)',
 +  },
 +} as const;
 +
@@ -480,8 +512,10 @@ index 0000000..3842a45
 +  crowding: PersonalCrowdingResponse | null;
 +  macro: PersonalMacroResponse | null;
 +  composite: PersonalCompositeResponse | null;
++  validation: PersonalValidationResponse | null;
 +  busy: boolean;
 +  onRefreshMarket: (dataset: 'futures' | 'margin') => void;
++  onValidate: (online: boolean) => void;
 +}
 +
 +export type ReviewCardComponent = React.FC<ReviewCardProps>;
@@ -1449,7 +1483,102 @@ index 0000000..3842a45
 +  );
 +};
 +
++const HEALTH_BADGE: Record<
++  PersonalValidationResponse['status'],
++  { variant: 'success' | 'warning' | 'danger' | 'info'; labelKey: 'healthOk' | 'healthWarn' | 'healthError' | 'healthEmpty' }
++> = {
++  ok: { variant: 'success', labelKey: 'healthOk' },
++  warn: { variant: 'warning', labelKey: 'healthWarn' },
++  error: { variant: 'danger', labelKey: 'healthError' },
++  empty: { variant: 'info', labelKey: 'healthEmpty' },
++};
++
++export const HealthCard: ReviewCardComponent = ({ validation, onValidate, busy }) => {
++  const copy = useReviewCopy();
++  const issues = validation
++    ? validation.findings.filter((item) => item.severity !== 'info').slice(0, 12)
++    : [];
++
++  return (
++    <Card title={copy.healthTitle} variant="bordered" className="xl:col-span-2">
++      {!validation ? (
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++      ) : (
++        <>
++          <div className="flex flex-wrap items-center gap-3">
++            <ShieldCheck className="h-8 w-8 text-secondary-text" />
++            <div>
++              <div className="text-3xl font-semibold text-foreground">{validation.score}</div>
++              <div className="text-xs text-secondary-text">{copy.healthScore} / 100</div>
++            </div>
++            <Badge variant={HEALTH_BADGE[validation.status].variant}>
++              {copy[HEALTH_BADGE[validation.status].labelKey]}
++            </Badge>
++            <span className="text-xs text-muted-text">{validation.generated_at.replace('T', ' ')}</span>
++            {validation.online ? <Badge variant="info">online</Badge> : null}
++            <div className="ml-auto flex gap-2">
++              <button
++                type="button"
++                onClick={() => onValidate(false)}
++                disabled={busy}
++                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
++              >
++                <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
++                {copy.healthRun}
++              </button>
++              <button
++                type="button"
++                onClick={() => onValidate(true)}
++                disabled={busy}
++                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
++              >
++                {copy.healthOnline}
++              </button>
++            </div>
++          </div>
++
++          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
++            {validation.datasets.map((item) => (
++              <div key={item.dataset} className="rounded-lg border border-border/50 px-3 py-2">
++                <div className="flex items-center justify-between gap-2">
++                  <span className="truncate text-sm text-foreground">{item.label}</span>
++                  <Badge variant={HEALTH_BADGE[item.status].variant}>
++                    {copy[HEALTH_BADGE[item.status].labelKey]}
++                  </Badge>
++                </div>
++                <div className="mt-1 text-xs text-secondary-text">
++                  {copy.healthLatest} {item.latest ?? '—'} · {copy.healthIssues}{' '}
++                  {item.errors + item.warnings}
++                </div>
++              </div>
++            ))}
++          </div>
++
++          {issues.length ? (
++            <ul className="mt-4 space-y-1.5">
++              {issues.map((item, index) => (
++                <li key={`${item.dataset}-${item.rule}-${index}`} className="text-xs text-secondary-text">
++                  <Badge variant={item.severity === 'error' ? 'danger' : 'warning'}>
++                    {item.severity === 'error' ? copy.healthError : copy.healthWarn}
++                  </Badge>{' '}
++                  <span className="font-medium text-foreground">{item.dataset}</span> · {item.detail}
++                  {item.trade_date ? `（${item.trade_date}）` : ''}
++                </li>
++              ))}
++            </ul>
++          ) : (
++            <p className="mt-4 text-sm text-emerald-600">{copy.healthClean}</p>
++          )}
++
++          <p className="mt-3 text-xs text-muted-text">{copy.healthHint}</p>
++        </>
++      )}
++    </Card>
++  );
++};
++
 +export const REVIEW_CARDS: ReadonlyArray<ReviewCardSlot> = [
++  { id: 'health', component: HealthCard },
 +  { id: 'composite', component: CompositeCard },
 +  { id: 'breadth', component: BreadthCard },
 +  { id: 'futures', component: FuturesCard },
@@ -1464,10 +1593,10 @@ index 0000000..3842a45
 +];
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
-index 0000000..39c60e4
+index 0000000..97a18c1
 --- /dev/null
 +++ b/apps/dsa-web/src/pages/PersonalPage.tsx
-@@ -0,0 +1,1185 @@
+@@ -0,0 +1,1203 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useMemo, useState } from 'react';
 +import {
@@ -1521,6 +1650,7 @@ index 0000000..39c60e4
 +  PersonalStatus,
 +  PersonalSyncResponse,
 +  PersonalUpstreamRecent,
++  PersonalValidationResponse,
 +} from '../types/personal';
 +
 +type TabKey = 'overview' | 'review' | 'data' | 'backtest' | 'plugins' | 'qmt';
@@ -1789,6 +1919,7 @@ index 0000000..39c60e4
 +  const [reviewCrowding, setReviewCrowding] = useState<PersonalCrowdingResponse | null>(null);
 +  const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
 +  const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
++  const [reviewValidation, setReviewValidation] = useState<PersonalValidationResponse | null>(null);
 +  const [reviewLoaded, setReviewLoaded] = useState(false);
 +  const [reviewBusy, setReviewBusy] = useState(false);
 +  const [reviewError, setReviewError] = useState('');
@@ -1829,6 +1960,7 @@ index 0000000..39c60e4
 +        crowdingData,
 +        macroData,
 +        compositeData,
++        validationData,
 +      ] = await Promise.all([
 +        personalApi.breadth(30),
 +        personalApi.futures(30),
@@ -1840,6 +1972,7 @@ index 0000000..39c60e4
 +        personalApi.crowding(30),
 +        personalApi.macro(120),
 +        personalApi.composite(),
++        personalApi.marketValidate(400),
 +      ]);
 +      setReviewBreadth(breadthData.rows);
 +      setReviewFutures(futuresData.rows);
@@ -1851,6 +1984,7 @@ index 0000000..39c60e4
 +      setReviewCrowding(crowdingData);
 +      setReviewMacro(macroData);
 +      setReviewComposite(compositeData);
++      setReviewValidation(validationData);
 +      setReviewLoaded(true);
 +    } catch (err) {
 +      setReviewError(err instanceof Error ? err.message : String(err));
@@ -1879,6 +2013,17 @@ index 0000000..39c60e4
 +    },
 +    [],
 +  );
++
++  const handleValidate = useCallback(async (online: boolean) => {
++    setReviewBusy(true);
++    try {
++      setReviewValidation(await personalApi.marketValidate(400, online));
++    } catch (err) {
++      setReviewError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setReviewBusy(false);
++    }
++  }, []);
 +
 +  useEffect(() => {
 +    if (tab === 'review' && !reviewLoaded) {
@@ -2311,8 +2456,10 @@ index 0000000..39c60e4
 +                crowding={reviewCrowding}
 +                macro={reviewMacro}
 +                composite={reviewComposite}
++                validation={reviewValidation}
 +                busy={reviewBusy}
 +                onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
++                onValidate={(online) => void handleValidate(online)}
 +              />
 +            ))}
 +          </div>
@@ -2655,10 +2802,10 @@ index 0000000..39c60e4
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..b392042
+index 0000000..e2e4f0c
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,324 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -2950,4 +3097,36 @@ index 0000000..b392042
 +  score: number | null;
 +  state: string;
 +  components: PersonalCompositeComponent[];
++}
++
++export interface PersonalValidationFinding {
++  dataset: string;
++  rule: string;
++  severity: 'error' | 'warn' | 'info';
++  detail: string;
++  trade_date: string | null;
++}
++
++export interface PersonalValidationDataset {
++  dataset: string;
++  label: string;
++  status: 'ok' | 'warn' | 'error' | 'empty';
++  rows: number;
++  latest: string | null;
++  expected_latest: string | null;
++  errors: number;
++  warnings: number;
++  findings: PersonalValidationFinding[];
++}
++
++export interface PersonalValidationResponse {
++  generated_at: string;
++  start: string;
++  end: string;
++  score: number;
++  status: 'ok' | 'warn' | 'error' | 'empty';
++  online: boolean;
++  counts: Record<string, number>;
++  datasets: PersonalValidationDataset[];
++  findings: PersonalValidationFinding[];
 +}

@@ -1247,6 +1247,15 @@ class PersonalStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def clear_quality_events(self, dataset_prefix: str) -> int:
+        """Drop previous validation snapshots so daily runs do not pile up."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM data_quality_event WHERE dataset LIKE ?",
+                (f"{dataset_prefix}%",),
+            )
+        return cursor.rowcount or 0
+
     # ------------------------------------------------------------------
     # Backtest / journal
     # ------------------------------------------------------------------

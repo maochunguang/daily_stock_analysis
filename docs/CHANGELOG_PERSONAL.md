@@ -1305,3 +1305,82 @@ exchange loops across sentiment/cffex/flows/margin sources now sleep
 ### Verification
 - 100 tests green; live fetch returns 50ETF volume PCR 0.6252 (=官方 62.52%).
 - 6-month backfill completes in minutes instead of days.
+
+## [2026-11-18] CHG-0023 — RM-41: indicator data validation + cross-source spot checks
+
+### Metadata
+- id: CHG-0023
+- date: 2026-11-18
+- status: done
+- area: datahub | web | docs
+- related: CHG-0017, CHG-0018, CHG-0021, CHG-0022, RM-41
+
+### Summary
+Added a read-only validation layer for every deep-market indicator dataset.
+It checks internal identities, value ranges, trading-day alignment, day-over-day
+jumps, coverage gaps, cross-metric ratios (sector turnover vs market turnover,
+board margin vs market total) and optionally spot-checks four independent
+external sources (exchange margin details, ChinaBond official yields, CFFEX
+official futures quotes, Legulegu breadth). Results are exposed via
+`dsa-personal validate`, `GET /api/market/validate`, a new "数据体检" review
+card, and a post-sync hook that persists findings to `data_quality_event`.
+
+The audit that motivated this change also found and fixed two real data bugs:
+- `etf_share.share_yi` stored raw fund units (份) instead of 亿份.
+- Snapshot datasets (sector/ETF shares, limit-up pools) were stamped with
+  `date.today()` even when fetched before the close, shifting them one day
+  forward (and duplicating yesterday's limit-up pool under today).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/validate.py` | New: rule engine, per-dataset checkers, online spot checks, report models |
+| `personal/datahub/store.py` | `clear_quality_events(prefix)` for repeatable validation snapshots |
+| `personal/datahub/market.py` | `last_completed_trade_date()` + `_default_end()`; snapshot date fix; all implicit ends capped at last close |
+| `personal/datahub/sources/flows_source.py` | ETF `最新份额` (份) → 亿份 conversion |
+| `personal/datahub/schedule.py` | Multi-time `--at` support; post-run validation; `as_of` cap; 730-day calendar seed |
+| `personal/cli/main.py` | `validate` command; schedule `--at` help |
+| `personal/api/app.py` | `GET /api/market/validate`; sector/ETF snapshot date defaults |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | `HealthCard` + registry entry + zh/en copy |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | validation state/load/handler and card props |
+| `apps/dsa-web/src/api/personal.ts`, `types/personal.ts` | `marketValidate` client + response types |
+| `personal/tests/test_validate.py` | 14 tests: identities, ranges, cross-metric, snapshot date, ETF units, online futures check |
+| `personal/tests/test_api.py` | `/api/market/validate` contract test |
+| `docker/docker-compose.yml` | personal-sync runs 06:00 and 12:00 |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.6 数据体检, §4.7 two runs + as-of rule, §5 validate |
+| `docs/DOCKER_PERSONAL.md` | NAS repair/migration steps |
+| `docs/ROADMAP_PERSONAL.md` | RM-41 done |
+| `patches/0001-personal-web-integration.patch` | Regenerated with the health card |
+
+### Commands
+```bash
+python -m personal.cli.main validate
+python -m personal.cli.main validate --dataset margin --dataset pcr --json
+python -m personal.cli.main validate --online
+python -m personal.cli.main schedule --once
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- `pytest personal/tests`: 115 passed.
+- Local run against a copy of the NAS DB: 8/11 datasets `ok`; only the known
+  ETF unit rows (old data) and the future-dated snapshot rows flagged `error`,
+  exactly the two bugs this change fixes.
+- External spot checks measured before coding: SSE margin detail/summary ratio
+  97.0%, SZSE 99.1%, CFFEX main-contract close/OI identical to Sina snapshot,
+  ChinaBond 10Y vs Eastmoney 0.16bp.
+- `npm run build`: PersonalPage bundle rebuilt successfully.
+
+### Notes / Migration
+- Existing installs must delete the one-day `etf_share` / `sector_amount` rows
+  and the future-dated `limit_up_stats` row, then re-sync; see
+  `docs/DOCKER_PERSONAL.md` §9.
+- Validation only judges trading-day alignment inside the stored calendar
+  coverage; backfill `calendar` (2 years) to enable full-history checks.
+- Online spot checks are manual only (`--online`), never part of the scheduled
+  run, to avoid extra external requests and Tushare quota use.
+
+### Next
+- Add more external comparisons when a stable second source exists (turnover,
+  PCR, sector amounts).
+- Consider persisting validation history (currently latest snapshot only).

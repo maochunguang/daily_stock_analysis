@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 83 |
+| `test_count` | 115 |
 | `last_updated` | 2026-11-16 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -99,6 +99,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits (SSE detail pagination) |
 | `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
+| `personal/datahub/validate.py` | RM-41 data passport: identities, ranges, trading days, jumps, cross-metric ratios, optional external spot checks |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
@@ -181,7 +182,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset margin` | Margin balance (market + board scopes, T+1, ≤120d/run) |
 | `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
-| `python -m personal.cli.main schedule --at 06:00 [--once]` | RM-05 daily scheduler (compose service personal-sync) |
+| `python -m personal.cli.main schedule --at 06:00[,12:00] [--once]` | RM-05 daily scheduler (compose service personal-sync); runs post-sync validation |
+| `python -m personal.cli.main validate [--days N] [--dataset D] [--online] [--json]` | RM-41 indicator data health report |
 | `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
@@ -208,6 +210,7 @@ the page route is `/personal`.
 | GET | `/api/market/crowding?days=N` | Industry crowding + percentiles |
 | GET | `/api/market/macro?days=N` | CN/US spreads + release calendar |
 | GET | `/api/market/composite` | Composite market-state score |
+| GET | `/api/market/validate?days=N&online=bool` | RM-41 data health report (11 datasets, offline by default) |
 | GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
 | GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
 | POST | `/api/market/sync` | Sync futures/margin (default last 10 days) |
@@ -218,7 +221,7 @@ the page route is `/personal`.
 | GET | `/api/upstream/recent` | Recent analyses/signals |
 | GET | `/api/qmt/health` | QMT bridge health |
 
-Web UI tabs: `总览` (status/coverage/runs/quality), `深度复盘` (card grid: TRIN breadth, index-futures basis, margin balance — registry `apps/dsa-web/src/components/personal/ReviewCards.tsx`), `数据` (sync + coverage),
+Web UI tabs: `总览` (status/coverage/runs/quality + sync freshness), `深度复盘` (card grid: data-health, composite, TRIN breadth, index futures, member rank, margin, limit-up, PCR, flows, crowding, macro — registry `apps/dsa-web/src/components/personal/ReviewCards.tsx`), `数据` (sync + coverage),
 `回测` (demo/replay + metrics/SVG chart/trades), `插件`, `上游`
 (analyses/signals), `QMT` (health check).
 
@@ -285,6 +288,15 @@ instrument name; limit prices from previous close + board rules.
   distinguishable from un-downloaded data.
 - Cross-source validation needs a second usable source and doubles network
   calls; synthetic syncs skip it. Disable with `PERSONAL_CROSS_SOURCE_CHECK=false`.
+- RM-41 validation only judges trading-day alignment inside the stored calendar
+  coverage; backfill `calendar` (2 years) for full-history checks. Online
+  spot checks are manual (`validate --online`) and cover margin, futures, bond
+  and breadth only; turnover/PCR/sector have no usable independent second source.
+  Validation history keeps only the latest snapshot (`data_quality_event`
+  rows prefixed `validate:` are replaced each run).
+- Snapshot-only datasets (sector amounts, ETF shares) are stamped with the last
+  completed trading day; all implicit sync ends are capped at the last close so
+  pre-open/partial data never enters the series.
 - `market_breadth` data comes from the user's local `easy-daily-trading`
   snapshots (imported 265 days through 2026-11-17). It is not auto-refreshed;
   run `tools/arms_index.py` there and re-run `import-arms`.

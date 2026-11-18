@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Landmark, RefreshCw, TrendingDown } from 'lucide-react';
+import { Landmark, RefreshCw, ShieldCheck, TrendingDown } from 'lucide-react';
 import {
   CartesianGrid,
   Legend,
@@ -23,6 +23,7 @@ import type {
   PersonalMacroResponse,
   PersonalMarginRow,
   PersonalPcrRow,
+  PersonalValidationResponse,
 } from '../../types/personal';
 
 /**
@@ -121,6 +122,19 @@ const REVIEW_COPY = {
     metricLabel: '指标',
     kindLabel: '类型',
     pending: '等待回填',
+    healthTitle: '数据体检',
+    healthScore: '健康分',
+    healthOk: '正常',
+    healthWarn: '注意',
+    healthError: '异常',
+    healthEmpty: '无数据',
+    healthLatest: '最新',
+    healthIssues: '问题',
+    healthRun: '重新体检',
+    healthOnline: '外部抽检',
+    healthClean: '全部通过，未发现异常',
+    healthHint:
+      '规则：恒等式、取值域、交易日、环比跳变、跨指标（行业成交额 vs 全市场）与外部源抽检（交易所/中债/乐咕/中金所）',
   },
   en: {
     breadthTitle: 'Market breadth (TRIN)',
@@ -212,6 +226,19 @@ const REVIEW_COPY = {
     metricLabel: 'Metric',
     kindLabel: 'Kind',
     pending: 'backfilling',
+    healthTitle: 'Data health check',
+    healthScore: 'Health',
+    healthOk: 'OK',
+    healthWarn: 'Warn',
+    healthError: 'Error',
+    healthEmpty: 'Empty',
+    healthLatest: 'Latest',
+    healthIssues: 'Issues',
+    healthRun: 'Re-check',
+    healthOnline: 'Cross-source',
+    healthClean: 'All checks passed',
+    healthHint:
+      'Rules: identities, ranges, trading days, jumps, cross-metric (sector vs turnover) and external spot checks (exchange/ChinaBond/Legu/CFFEX)',
   },
 } as const;
 
@@ -233,8 +260,10 @@ export interface ReviewCardProps {
   crowding: PersonalCrowdingResponse | null;
   macro: PersonalMacroResponse | null;
   composite: PersonalCompositeResponse | null;
+  validation: PersonalValidationResponse | null;
   busy: boolean;
   onRefreshMarket: (dataset: 'futures' | 'margin') => void;
+  onValidate: (online: boolean) => void;
 }
 
 export type ReviewCardComponent = React.FC<ReviewCardProps>;
@@ -1202,7 +1231,102 @@ export const CompositeCard: ReviewCardComponent = ({ composite }) => {
   );
 };
 
+const HEALTH_BADGE: Record<
+  PersonalValidationResponse['status'],
+  { variant: 'success' | 'warning' | 'danger' | 'info'; labelKey: 'healthOk' | 'healthWarn' | 'healthError' | 'healthEmpty' }
+> = {
+  ok: { variant: 'success', labelKey: 'healthOk' },
+  warn: { variant: 'warning', labelKey: 'healthWarn' },
+  error: { variant: 'danger', labelKey: 'healthError' },
+  empty: { variant: 'info', labelKey: 'healthEmpty' },
+};
+
+export const HealthCard: ReviewCardComponent = ({ validation, onValidate, busy }) => {
+  const copy = useReviewCopy();
+  const issues = validation
+    ? validation.findings.filter((item) => item.severity !== 'info').slice(0, 12)
+    : [];
+
+  return (
+    <Card title={copy.healthTitle} variant="bordered" className="xl:col-span-2">
+      {!validation ? (
+        <p className="text-sm text-secondary-text">{copy.noData}</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <ShieldCheck className="h-8 w-8 text-secondary-text" />
+            <div>
+              <div className="text-3xl font-semibold text-foreground">{validation.score}</div>
+              <div className="text-xs text-secondary-text">{copy.healthScore} / 100</div>
+            </div>
+            <Badge variant={HEALTH_BADGE[validation.status].variant}>
+              {copy[HEALTH_BADGE[validation.status].labelKey]}
+            </Badge>
+            <span className="text-xs text-muted-text">{validation.generated_at.replace('T', ' ')}</span>
+            {validation.online ? <Badge variant="info">online</Badge> : null}
+            <div className="ml-auto flex gap-2">
+              <button
+                type="button"
+                onClick={() => onValidate(false)}
+                disabled={busy}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+                {copy.healthRun}
+              </button>
+              <button
+                type="button"
+                onClick={() => onValidate(true)}
+                disabled={busy}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
+              >
+                {copy.healthOnline}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {validation.datasets.map((item) => (
+              <div key={item.dataset} className="rounded-lg border border-border/50 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm text-foreground">{item.label}</span>
+                  <Badge variant={HEALTH_BADGE[item.status].variant}>
+                    {copy[HEALTH_BADGE[item.status].labelKey]}
+                  </Badge>
+                </div>
+                <div className="mt-1 text-xs text-secondary-text">
+                  {copy.healthLatest} {item.latest ?? '—'} · {copy.healthIssues}{' '}
+                  {item.errors + item.warnings}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {issues.length ? (
+            <ul className="mt-4 space-y-1.5">
+              {issues.map((item, index) => (
+                <li key={`${item.dataset}-${item.rule}-${index}`} className="text-xs text-secondary-text">
+                  <Badge variant={item.severity === 'error' ? 'danger' : 'warning'}>
+                    {item.severity === 'error' ? copy.healthError : copy.healthWarn}
+                  </Badge>{' '}
+                  <span className="font-medium text-foreground">{item.dataset}</span> · {item.detail}
+                  {item.trade_date ? `（${item.trade_date}）` : ''}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-sm text-emerald-600">{copy.healthClean}</p>
+          )}
+
+          <p className="mt-3 text-xs text-muted-text">{copy.healthHint}</p>
+        </>
+      )}
+    </Card>
+  );
+};
+
 export const REVIEW_CARDS: ReadonlyArray<ReviewCardSlot> = [
+  { id: 'health', component: HealthCard },
   { id: 'composite', component: CompositeCard },
   { id: 'breadth', component: BreadthCard },
   { id: 'futures', component: FuturesCard },

@@ -2,6 +2,7 @@ import type {
   PersonalBacktestResponse,
   PersonalBreadthRow,
   PersonalCompositeResponse,
+  PersonalValidationResponse,
   PersonalCrowdingResponse,
   PersonalFlowsResponse,
   PersonalFuturesRankRow,
@@ -124,6 +125,10 @@ export const personalApi = {
   macro: (days = 120) =>
     request<PersonalMacroResponse>(`/market/macro?days=${days}`),
   composite: () => request<PersonalCompositeResponse>('/market/composite'),
+  marketValidate: (days = 400, online = false) =>
+    request<PersonalValidationResponse>(
+      `/market/validate?days=${days}&online=${online ? 'true' : 'false'}`,
+    ),
   marketSync: (body: PersonalMarketSyncRequest) =>
     request<PersonalMarketSyncResponse>('/market/sync', {
       method: 'POST',

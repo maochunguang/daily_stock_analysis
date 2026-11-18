@@ -178,7 +178,7 @@ UGREEN NAS（x86_64）实际部署与 compose 示例略有不同，以本节为�
 | 部署清单 | `docker-compose.yml`（同目录，含 server + personal-sync 两服务） |
 | 镜像 | `dsa-fork:latest`（本地 buildx amd64 构建，scp 传输） |
 | 访问 | `http://NAS_IP:18800/personal` |
-| 容器 | `daily_stock_analysis-2`（上游 `--schedule` 模式）+ `stock-personal-sync`（个人层 06:00 定时同步） |
+| 容器 | `daily_stock_analysis-2`（上游 `--schedule` 模式）+ `stock-personal-sync`（个人层 06:00/12:00 两轮同步 + 数据体检） |
 
 **更新镜像三步（数据/配置零丢失）：**
 
@@ -199,6 +199,25 @@ cd /volume2/docker/daily_stock_analysis && docker compose up -d --force-recreate
 手工 `docker run`**，改配置直接编辑 compose 文件后 `docker compose up -d`。
 
 `TUSHARE_TOKEN` 从项目目录 `.env` 由 compose 变量替换注入 personal-sync。
+
+数据体检（RM-41）部署到已运行环境时，需要一次性修复历史快照（老版本把
+06:00 抓到的上一交易日数据标成了当天，并把 ETF 份额按「份」入库）：
+
+```bash
+docker exec -i daily_stock_analysis-2 python - <<'PY'
+import sqlite3
+c = sqlite3.connect("/app/data/personal.db")
+c.execute("DELETE FROM etf_share")                 # 单位错误 + 日期错位
+c.execute("DELETE FROM sector_amount")             # 日期错位（仅 1 天快照）
+c.execute("DELETE FROM limit_up_stats WHERE trade_date >= date('now','localtime')")
+c.commit()
+PY
+docker exec daily_stock_analysis-2 python -m personal.cli.main sync --dataset sector
+docker exec daily_stock_analysis-2 python -m personal.cli.main sync --dataset etf_share
+docker exec daily_stock_analysis-2 python -m personal.cli.main sync --dataset calendar \
+  --start 2024-01-01 --end 2026-12-31          # 交易日历回填，校验/缺口检查依赖
+docker exec daily_stock_analysis-2 python -m personal.cli.main validate
+```
 
 数据源限制（回填时的实测结论）：
 

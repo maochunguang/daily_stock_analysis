@@ -20,6 +20,7 @@ from typing import Callable, Sequence
 
 from ..config import Settings
 from .market import (
+    last_completed_trade_date,
     sync_bond_yield,
     sync_etf_share,
     sync_futures_rank,
@@ -33,6 +34,7 @@ from .market import (
 )
 from .store import PersonalStore
 from .sync import DataSyncService, build_sources
+from .validate import validate_store
 
 DEFAULT_DATASETS: tuple[str, ...] = (
     "calendar",
@@ -82,12 +84,31 @@ def parse_at(value: str) -> dt_time:
     return dt_time(hour=hour, minute=minute)
 
 
+def parse_times(value: str) -> list[dt_time]:
+    """Parse ``HH:MM`` or a comma list (``06:00,12:00``) into distinct times."""
+    times: list[dt_time] = []
+    for part in str(value).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        parsed = parse_at(part)
+        if parsed not in times:
+            times.append(parsed)
+    if not times:
+        raise ValueError(f"invalid --at {value!r}; expected HH:MM[,HH:MM]")
+    return times
+
+
 def next_run_at(now: datetime, at: dt_time) -> datetime:
     """Next local datetime matching ``at`` (tomorrow when today's passed)."""
     candidate = now.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0)
     if candidate <= now:
         candidate += timedelta(days=1)
     return candidate
+
+
+def next_run_time(now: datetime, times: Sequence[dt_time]) -> datetime:
+    return min(next_run_at(now, at) for at in times)
 
 
 def run_scheduled_sync(
@@ -139,6 +160,8 @@ def run_scheduled_sync(
             )
             results.append(result)
 
+        _record_validation(store, log=log)
+
         if arms_dir:
             result = _import_arms(store, arms_dir, log=log)
             results.append(result)
@@ -146,6 +169,36 @@ def run_scheduled_sync(
         if own_store:
             store.close()
     return results
+
+
+def _record_validation(
+    store: PersonalStore, *, log: Callable[[str], None], days: int = 180
+) -> None:
+    """Post-run offline data check, persisted for the freshness card (RM-41)."""
+    from .models import QualityIssue
+
+    try:
+        report = validate_store(store, days=days)
+    except Exception as exc:  # noqa: BLE001 - validation must not fail the run
+        log(f"[schedule] validate: FAILED: {exc}")
+        return
+    issues = [
+        QualityIssue(
+            dataset=f"validate:{item.dataset}",
+            rule=item.rule,
+            severity=item.severity,
+            trade_date=item.trade_date,
+            detail=item.detail,
+        )
+        for item in report.findings
+        if item.severity in ("error", "warn")
+    ]
+    store.clear_quality_events("validate:")
+    store.record_quality_events(issues)
+    log(
+        f"[schedule] validate: score {report.score}, status {report.status}, "
+        f"{len(issues)} issue(s)"
+    )
 
 
 def _run_dataset(
@@ -157,24 +210,28 @@ def _run_dataset(
     today: date,
     log: Callable[[str], None],
 ) -> int:
+    # Only finalized sessions: at 06:00 this is yesterday, at noon still
+    # yesterday, after the close it is today. Prevents pre-close/partial
+    # snapshots (notably Eastmoney limit-up pools, which ignore future dates).
+    as_of = last_completed_trade_date(store)
     if dataset == "futures":
-        return sync_index_futures(store, start=today - timedelta(days=10), end=today).rows
+        return sync_index_futures(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "margin":
-        return sync_margin_balance(store, start=today - timedelta(days=10), end=today).rows
+        return sync_margin_balance(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "turnover":
-        return sync_turnover(store, start=today - timedelta(days=30), end=today).rows
+        return sync_turnover(store, start=as_of - timedelta(days=30), end=as_of).rows
     if dataset == "zt":
-        return sync_limit_up(store, start=today - timedelta(days=10), end=today).rows
+        return sync_limit_up(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "pcr":
-        return sync_option_pcr(store, start=today - timedelta(days=10), end=today).rows
+        return sync_option_pcr(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "cffex_rank":
-        return sync_futures_rank(store, start=today - timedelta(days=10), end=today).rows
+        return sync_futures_rank(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "sector":
-        return sync_sector_amount(store, trade_date=today).rows
+        return sync_sector_amount(store).rows
     if dataset == "etf_share":
-        return sync_etf_share(store, trade_date=today).rows
+        return sync_etf_share(store).rows
     if dataset == "bond":
-        return sync_bond_yield(store, start=today - timedelta(days=3650)).rows
+        return sync_bond_yield(store, start=as_of - timedelta(days=3650)).rows
     if dataset == "release":
         return sync_restricted_release(store, start=today, end=today + timedelta(days=45)).rows
 
@@ -193,7 +250,12 @@ def _run_dataset(
     )
     total = 0
     if dataset == "calendar":
-        results = [service.sync_calendar(today - timedelta(days=30), today + timedelta(days=60))]
+        # Seed enough history for validation/gap checks, not just the edges.
+        results = [
+            service.sync_calendar(
+                today - timedelta(days=730), today + timedelta(days=60)
+            )
+        ]
     elif dataset == "status":
         results = service.sync_trading_status(codes, today - timedelta(days=15), today)
     elif dataset == "adjust":
@@ -253,19 +315,19 @@ def run_schedule_loop(
     once: bool = False,
     log: Callable[[str], None] = print,
 ) -> None:
-    """Run the syncs once (--once) or sleep to the daily time and repeat."""
-    run_at = parse_at(at)
+    """Run the syncs once (--once) or sleep to the daily time(s) and repeat."""
+    run_times = parse_times(at)
     if once:
         log(f"[schedule] one-shot run (datasets: {', '.join(datasets)})")
         run_scheduled_sync(settings, datasets=datasets, arms_dir=arms_dir, log=log)
         return
 
     log(
-        f"[schedule] daily sync at {run_at.strftime('%H:%M')} "
+        f"[schedule] daily sync at {', '.join(item.strftime('%H:%M') for item in run_times)} "
         f"(datasets: {', '.join(datasets)}); Ctrl+C to stop"
     )
     while True:
-        target = next_run_at(datetime.now(), run_at)
+        target = next_run_time(datetime.now(), run_times)
         wait_seconds = max(1.0, (target - datetime.now()).total_seconds())
         log(f"[schedule] next run {target.isoformat(sep=' ', timespec='seconds')}")
         time_module.sleep(wait_seconds)

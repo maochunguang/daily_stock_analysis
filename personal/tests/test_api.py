@@ -177,3 +177,15 @@ def test_calendar_and_status_sync(client):
     stats = client.get("/api/status").json()["storage"]
     assert stats["trading_calendar"] > 0
     assert stats["trading_status"] > 0
+
+
+def test_market_validate_endpoint(client):
+    response = client.get("/api/market/validate?days=30")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "empty"
+    assert payload["score"] == 50
+    assert {item["dataset"] for item in payload["datasets"]} >= {
+        "turnover", "margin", "futures", "pcr", "sector", "etf_share", "bond",
+    }
+    assert all(item["status"] == "empty" for item in payload["datasets"])

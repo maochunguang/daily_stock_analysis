@@ -51,6 +51,7 @@ import type {
   PersonalStatus,
   PersonalSyncResponse,
   PersonalUpstreamRecent,
+  PersonalValidationResponse,
 } from '../types/personal';
 
 type TabKey = 'overview' | 'review' | 'data' | 'backtest' | 'plugins' | 'qmt';
@@ -319,6 +320,7 @@ const PersonalPage: React.FC = () => {
   const [reviewCrowding, setReviewCrowding] = useState<PersonalCrowdingResponse | null>(null);
   const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
   const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
+  const [reviewValidation, setReviewValidation] = useState<PersonalValidationResponse | null>(null);
   const [reviewLoaded, setReviewLoaded] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState('');
@@ -359,6 +361,7 @@ const PersonalPage: React.FC = () => {
         crowdingData,
         macroData,
         compositeData,
+        validationData,
       ] = await Promise.all([
         personalApi.breadth(30),
         personalApi.futures(30),
@@ -370,6 +373,7 @@ const PersonalPage: React.FC = () => {
         personalApi.crowding(30),
         personalApi.macro(120),
         personalApi.composite(),
+        personalApi.marketValidate(400),
       ]);
       setReviewBreadth(breadthData.rows);
       setReviewFutures(futuresData.rows);
@@ -381,6 +385,7 @@ const PersonalPage: React.FC = () => {
       setReviewCrowding(crowdingData);
       setReviewMacro(macroData);
       setReviewComposite(compositeData);
+      setReviewValidation(validationData);
       setReviewLoaded(true);
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : String(err));
@@ -409,6 +414,17 @@ const PersonalPage: React.FC = () => {
     },
     [],
   );
+
+  const handleValidate = useCallback(async (online: boolean) => {
+    setReviewBusy(true);
+    try {
+      setReviewValidation(await personalApi.marketValidate(400, online));
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (tab === 'review' && !reviewLoaded) {
@@ -841,8 +857,10 @@ const PersonalPage: React.FC = () => {
                 crowding={reviewCrowding}
                 macro={reviewMacro}
                 composite={reviewComposite}
+                validation={reviewValidation}
                 busy={reviewBusy}
                 onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
+                onValidate={(online) => void handleValidate(online)}
               />
             ))}
           </div>

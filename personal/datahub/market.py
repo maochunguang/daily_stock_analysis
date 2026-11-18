@@ -8,7 +8,7 @@ functions instead of ``DataSyncService``. Every sync records freshness into
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from .models import (
     BondYield,
@@ -35,6 +35,47 @@ from .store import PersonalStore
 #: per-day exchange APIs; keep a sane upper bound per run
 MARGIN_MAX_DAYS = 120
 DEFAULT_LOOKBACK_DAYS = 10
+#: A-share afternoon close; snapshot APIs before this still carry the prior close
+MARKET_CLOSE = time(15, 0)
+
+
+def last_completed_trade_date(
+    store: PersonalStore, now: datetime | None = None
+) -> date:
+    """Most recent trading day whose *close* data is final at ``now``.
+
+    Snapshot-only sources (ETF share, THS industry boards) return "latest"
+    values with no date parameter. Fetched at 06:00 they still hold the
+    previous session's close, so stamping ``date.today()`` shifts the series
+    one day forward. Use the trading calendar when available, otherwise fall
+    back to weekdays.
+    """
+    now = now or datetime.now()
+    today = now.date()
+    days = [
+        day
+        for day in store.get_trading_dates(
+            start=today - timedelta(days=20), end=today
+        )
+        if day <= today
+    ]
+    if not days:
+        day = today
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        days = [day]
+    if days[-1] == today and now.time() < MARKET_CLOSE:
+        days = days[:-1]
+    return days[-1] if days else today
+
+
+def _default_end(store: PersonalStore, end: date | None) -> date:
+    """Never pull an unfinished session: cap implicit end at last close.
+
+    Eastmoney 涨停池 ignores future dates and returns the latest pool, which
+    would otherwise duplicate yesterday's data under today's date.
+    """
+    return end or last_completed_trade_date(store)
 
 
 @dataclass(frozen=True)
@@ -64,7 +105,7 @@ def sync_index_futures(
     end: date | None = None,
     source: FuturesSource | None = None,
 ) -> MarketSyncResult:
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     source = source or FuturesSource()
     try:
@@ -90,7 +131,7 @@ def sync_margin_balance(
     end: date | None = None,
     source: MarginSource | None = None,
 ) -> MarketSyncResult:
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     if (end - start).days > MARGIN_MAX_DAYS:
         raise ValueError(
@@ -123,7 +164,7 @@ def sync_turnover(
     The SSE interface returns full history in one call; SZSE costs one request
     per day in range.
     """
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     _check_range(start, end)
     source = source or TurnoverSource()
@@ -139,7 +180,7 @@ def sync_limit_up(
     end: date | None = None,
     source: LimitUpSource | None = None,
 ) -> MarketSyncResult:
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     _check_range(start, end)
     source = source or LimitUpSource()
@@ -156,7 +197,7 @@ def sync_option_pcr(
     source: OptionPcrSource | None = None,
 ) -> MarketSyncResult:
     """ETF-option PCR — SSE official daily statistics (complete OI basis)."""
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     _check_range(start, end)
     source = source or OptionPcrSource()
@@ -172,7 +213,7 @@ def sync_futures_rank(
     end: date | None = None,
     source: CffexRankSource | None = None,
 ) -> MarketSyncResult:
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     _check_range(start, end)
     source = source or CffexRankSource()
@@ -187,8 +228,12 @@ def sync_sector_amount(
     trade_date: date | None = None,
     source: SectorSource | None = None,
 ) -> MarketSyncResult:
-    """Daily industry-turnover snapshot (crowding series accumulates from now)."""
-    day = trade_date or date.today()
+    """Daily industry-turnover snapshot (crowding series accumulates from now).
+
+    Snapshot API: before the 15:00 close it still serves the prior session, so
+    the default trade_date is the last *completed* trading day.
+    """
+    day = trade_date or last_completed_trade_date(store)
     source = source or SectorSource()
     rows = source.fetch_sector_amounts(day)
     count = store.upsert_sector_amount(rows)
@@ -201,8 +246,11 @@ def sync_etf_share(
     trade_date: date | None = None,
     source: EtfShareSource | None = None,
 ) -> MarketSyncResult:
-    """Daily broad-ETF share snapshot (share history accumulates from now)."""
-    day = trade_date or date.today()
+    """Daily broad-ETF share snapshot (share history accumulates from now).
+
+    Same snapshot-date rule as ``sync_sector_amount``.
+    """
+    day = trade_date or last_completed_trade_date(store)
     source = source or EtfShareSource()
     rows = source.fetch_etf_share(day)
     count = store.upsert_etf_share(rows)
@@ -217,7 +265,7 @@ def sync_bond_yield(
     source: BondSource | None = None,
 ) -> MarketSyncResult:
     """CN/US yields — upstream returns full history in one call."""
-    end = end or date.today()
+    end = _default_end(store, end)
     start = start or end - timedelta(days=3650)
     source = source or BondSource()
     rows = source.fetch_bond_yield(start, end)

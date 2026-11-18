@@ -380,8 +380,12 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             "zt": lambda store: sync_limit_up(store, start=start, end=end),
             "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
             "cffex_rank": lambda store: sync_futures_rank(store, start=start, end=end),
-            "sector": lambda store: sync_sector_amount(store, trade_date=end),
-            "etf_share": lambda store: sync_etf_share(store, trade_date=end),
+            "sector": lambda store: sync_sector_amount(
+                store, trade_date=end if request.end else None
+            ),
+            "etf_share": lambda store: sync_etf_share(
+                store, trade_date=end if request.end else None
+            ),
             "bond": lambda store: sync_bond_yield(store),
             "release": lambda store: sync_restricted_release(store, start=start, end=end),
         }
@@ -582,6 +586,21 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         store = PersonalStore(settings.personal_db)
         try:
             payload = composite_score(store)
+        finally:
+            store.close()
+        return _json_safe(payload.as_dict())
+
+    @app.get("/api/market/validate")
+    def market_validate(
+        days: int = Query(default=400, ge=0, le=5000),
+        online: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Indicator data health: identities, ranges, gaps, optional cross-source."""
+        from personal.datahub.validate import validate_store
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            payload = validate_store(store, days=days, online=online)
         finally:
             store.close()
         return _json_safe(payload.as_dict())

@@ -150,12 +150,14 @@ class EtfShareSource:
             if code not in wanted:
                 continue
             share = _to_float(row.get("最新份额"))
+            # 东财「最新份额」单位是份，模型/卡片统一用亿份
+            share_yi = round(share / 1e8, 2) if share is not None else None
             rows.append(
                 EtfShare(
                     trade_date=trade_date,
                     code=code,
                     name=wanted[code],
-                    share_yi=share,
+                    share_yi=share_yi,
                 )
             )
         return rows

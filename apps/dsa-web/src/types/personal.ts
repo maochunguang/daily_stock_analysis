@@ -290,3 +290,35 @@ export interface PersonalCompositeResponse {
   state: string;
   components: PersonalCompositeComponent[];
 }
+
+export interface PersonalValidationFinding {
+  dataset: string;
+  rule: string;
+  severity: 'error' | 'warn' | 'info';
+  detail: string;
+  trade_date: string | null;
+}
+
+export interface PersonalValidationDataset {
+  dataset: string;
+  label: string;
+  status: 'ok' | 'warn' | 'error' | 'empty';
+  rows: number;
+  latest: string | null;
+  expected_latest: string | null;
+  errors: number;
+  warnings: number;
+  findings: PersonalValidationFinding[];
+}
+
+export interface PersonalValidationResponse {
+  generated_at: string;
+  start: string;
+  end: string;
+  score: number;
+  status: 'ok' | 'warn' | 'error' | 'empty';
+  online: boolean;
+  counts: Record<string, number>;
+  datasets: PersonalValidationDataset[];
+  findings: PersonalValidationFinding[];
+}

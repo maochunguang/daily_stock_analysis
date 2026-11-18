@@ -94,7 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     schedule = subparsers.add_parser(
         "schedule", help="run scheduled incremental syncs daily (RM-05)"
     )
-    schedule.add_argument("--at", default="06:00", help="daily run time HH:MM (default 06:00)")
+    schedule.add_argument(
+        "--at",
+        default="06:00",
+        help="daily run time HH:MM or comma list (e.g. 06:00,12:00; default 06:00)",
+    )
     schedule.add_argument(
         "--datasets",
         default="calendar,status,bars,adjust,futures,turnover,margin,cffex_rank,zt,pcr,sector,etf_share,bond,release",
@@ -106,6 +110,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional easy-daily-trading cache/arms_index/daily to import breadth",
     )
     schedule.add_argument("--once", action="store_true", help="run all syncs now and exit")
+
+    validate = subparsers.add_parser(
+        "validate", help="check indicator accuracy: identities, ranges, gaps, cross-source (RM-41)"
+    )
+    validate.add_argument("--days", type=int, default=400, help="lookback window (0 = all)")
+    validate.add_argument(
+        "--dataset",
+        action="append",
+        default=[],
+        help="limit to one dataset (repeatable); default: all",
+    )
+    validate.add_argument(
+        "--online",
+        action="store_true",
+        help="also spot-check against independent sources (network)",
+    )
+    validate.add_argument("--json", action="store_true", help="print raw JSON")
 
     web = subparsers.add_parser("web", help="run the local Web console")
     web.add_argument("--host", default="127.0.0.1")
@@ -154,6 +175,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "schedule":
         return _schedule(settings, args)
+
+    if args.command == "validate":
+        return _validate(settings, args)
 
     if args.command == "web":
         return _web(args)
@@ -273,8 +297,12 @@ def _sync_market(settings, args) -> int:
         "zt": lambda store: sync_limit_up(store, start=start, end=end),
         "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
         "cffex_rank": lambda store: sync_futures_rank(store, start=start, end=end),
-        "sector": lambda store: sync_sector_amount(store, trade_date=end),
-        "etf_share": lambda store: sync_etf_share(store, trade_date=end),
+        "sector": lambda store: sync_sector_amount(
+            store, trade_date=end if args.end else None
+        ),
+        "etf_share": lambda store: sync_etf_share(
+            store, trade_date=end if args.end else None
+        ),
         "bond": lambda store: sync_bond_yield(store),
         "release": lambda store: sync_restricted_release(store, start=start, end=end),
     }
@@ -417,6 +445,62 @@ def _schedule(settings, args) -> int:
         print(f"schedule failed: {exc}")
         return 2
     return 0
+
+
+def _validate(settings, args) -> int:
+    import json
+
+    from personal.datahub.validate import validate_store
+
+    datasets = [item.strip() for item in args.dataset if item.strip() and item != "all"]
+    store = PersonalStore(settings.personal_db)
+    try:
+        report = validate_store(
+            store,
+            days=int(args.days),
+            datasets=datasets or None,
+            online=bool(args.online),
+        )
+    except ValueError as exc:
+        print(f"validate failed: {exc}")
+        return 2
+    finally:
+        store.close()
+
+    payload = report.as_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload["status"] != "error" else 1
+
+    print(
+        f"数据体检 {report.end}  score={report.score}/100  status={report.status}"
+    )
+    header = f"{'数据集':<14}{'状态':<7}{'最新':<12}{'应有':<12}{'行数':>7}  {'问题':>4}"
+    print(header)
+    print("-" * len(header))
+    for item in report.datasets:
+        latest = item.latest.isoformat() if item.latest else "-"
+        expected = item.expected_latest.isoformat() if item.expected_latest else "-"
+        print(
+            f"{item.dataset:<14}{item.status:<7}{latest:<12}{expected:<12}"
+            f"{item.rows:>7}  {item.errors + item.warnings:>4}"
+        )
+    findings = [item for item in report.findings if item.severity in ("error", "warn")]
+    if findings:
+        print("\n问题明细：")
+        for item in findings[:40]:
+            when = f" {item.trade_date}" if item.trade_date else ""
+            print(f"  [{item.severity}] {item.dataset}/{item.rule}{when}: {item.detail}")
+        if len(findings) > 40:
+            print(f"  … 另有 {len(findings) - 40} 条")
+    else:
+        print("\n未发现问题。")
+    info = [item for item in report.findings if item.severity == "info"]
+    if info:
+        print(f"\n参考（外部抽检/提示）：{len(info)} 条")
+        for item in info[:12]:
+            print(f"  [info] {item.dataset}/{item.rule}: {item.detail}")
+    return 0 if payload["status"] != "error" else 1
 
 
 def _web(args) -> int:
