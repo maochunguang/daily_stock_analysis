@@ -1455,3 +1455,45 @@ docker exec daily_stock_analysis-2 sh -c 'echo $ENV_FILE; ls -l /app/data/runtim
   remove the duplicate from startup config if WebUI should win.
 - The personal-sync sidecar does not need `ENV_FILE`; it uses
   `PERSONAL_STOCK_LIST` / `TUSHARE_TOKEN`.
+
+## [2026-11-18] CHG-0025 — ETF share sync: per-symbol fallback when Eastmoney list API is blocked
+
+### Metadata
+- id: CHG-0025
+- date: 2026-11-18
+- status: done
+- area: datahub
+- related: CHG-0021, CHG-0023
+
+### Summary
+`fund_etf_spot_em` pulls all ETFs through `push2delay.eastmoney.com/api/qt/clist/get`
+with pagination. After repeated backfills that endpoint started answering with
+`RemoteDisconnected` (list endpoint blocked while single-security quotes still
+worked), leaving `etf_share` empty. Added a fallback that asks the
+single-security quote API for `f84` (总股本 = fund shares for ETFs) once per
+watchlist ETF — 7 small requests instead of all pages, with one retry per symbol.
+Primary path still returns all rows when available.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/flows_source.py` | `_from_frame()` + `_from_quotes()` fallback, `_quote_share()` with retry |
+| `personal/tests/test_validate.py` | fallback test (7 codes, 亿份 conversion) |
+| `docs/AI_CONTEXT.md` | source row mentions the fallback |
+
+### Commands
+```bash
+python -m personal.cli.main sync --dataset etf_share
+```
+
+### Verification
+- Unit tests: 116 passed.
+- NAS: `etf_share: 7 rows (2026-11-18)`, values 94.58–1035.51 亿份 (510050 =
+  164.58 亿份), health score back to 100/100 with all 11 datasets `ok`.
+- Live fallback returned 6/7 symbols before the wider cooldown; the deployed
+  run returned all 7.
+
+### Notes
+- `f84`/`f85` on the quote API equal fund shares for ETFs (verified against the
+  `最新份额` values from the list API).
+- 0.2s spacing between symbols keeps the daily request volume modest.
