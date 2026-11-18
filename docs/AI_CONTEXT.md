@@ -182,7 +182,7 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset margin` | Margin balance (market + board scopes, T+1, ≤120d/run) |
 | `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
-| `python -m personal.cli.main schedule --at 06:00[,12:00] [--once]` | RM-05 daily scheduler (compose service personal-sync); runs post-sync validation |
+| `python -m personal.cli.main schedule --at 06:00,12:00,18:00 [--once]` | RM-05 daily scheduler (compose service personal-sync); runs post-sync validation |
 | `python -m personal.cli.main validate [--days N] [--dataset D] [--online] [--json]` | RM-41 indicator data health report |
 | `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |

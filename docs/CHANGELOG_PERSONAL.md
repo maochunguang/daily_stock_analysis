@@ -1497,3 +1497,48 @@ python -m personal.cli.main sync --dataset etf_share
 - `f84`/`f85` on the quote API equal fund shares for ETFs (verified against the
   `最新份额` values from the list API).
 - 0.2s spacing between symbols keeps the daily request volume modest.
+
+## [2026-11-18] CHG-0026 — 18:00 same-day sync for the deep-review page
+
+### Metadata
+- id: CHG-0026
+- date: 2026-11-18
+- status: done
+- area: datahub | web | docs
+- related: CHG-0020, CHG-0023
+
+### Summary
+Added a third daily personal-sync run at 18:00. The 06:00/12:00 runs cap at the
+last completed trading day, so same-day close data (futures basis, turnover,
+limit-up ladder, PCR, member rank, ETF shares, sector amounts, bond yields)
+only landed the next morning. At 18:00 (after the 15:00 close) `as_of` is today,
+so the evening run brings today's close data into the deep-review page the same
+night. Margin stays T+1 (published next morning) and is filled by the 12:00 run.
+
+### Files
+| Path | Change |
+|---|---|
+| `docker/docker-compose.yml` | personal-sync `--at 06:00,12:00,18:00` |
+| NAS `docker-compose.yml` | same (host-side edit, sidecar recreated) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | freshness hint mentions the three runs |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.7 explains each run's purpose |
+| `docs/AI_CONTEXT.md`, `docs/DOCKER_PERSONAL.md` | schedule rows updated |
+
+### Commands
+```bash
+python -m personal.cli.main schedule --once   # immediate full round
+```
+
+### Verification
+- Manual `schedule --once` at 22:30 (2026-11-18): breadth/futures/turnover/zt/
+  pcr/rank/sector/etf_share/bond all dated 2026-11-18 (futures basis IC -1.40%,
+  zt 41 家/炸板率 36.92%/4 板, PCR 50ETF 0.525), margin 2026-11-17 (T+1, expected);
+  post-run validation score 100.
+- Imported the same-day TRIN snapshot from easy-daily-trading (0.463 偏低) via
+  `import-arms` after copying the cache JSON to `data/arms_daily/daily/`.
+- Sidecar recreated and shows "next run 2026-11-19 06:00:00".
+
+### Notes
+- ETF share returned 0 rows in this run (Eastmoney still blocking the list
+  endpoint from this IP); the 11-18 rows synced earlier remain in the table and
+  the fallback retries on later runs.

@@ -178,7 +178,7 @@ UGREEN NAS（x86_64）实际部署与 compose 示例略有不同，以本节为�
 | 部署清单 | `docker-compose.yml`（同目录，含 server + personal-sync 两服务） |
 | 镜像 | `dsa-fork:latest`（本地 buildx amd64 构建，scp 传输） |
 | 访问 | `http://NAS_IP:18800/personal` |
-| 容器 | `daily_stock_analysis-2`（上游 `--schedule` 模式）+ `stock-personal-sync`（个人层 06:00/12:00 两轮同步 + 数据体检） |
+| 容器 | `daily_stock_analysis-2`（上游 `--schedule` 模式）+ `stock-personal-sync`（个人层 06:00/12:00/18:00 三轮同步 + 数据体检） |
 
 **更新镜像三步（数据/配置零丢失）：**
 
