@@ -230,6 +230,22 @@ class TestEtfShareUnits:
         assert len(rows) == 1
         assert rows[0].share_yi == 163.97
 
+    def test_falls_back_to_per_symbol_quotes(self, monkeypatch):
+        import personal.datahub.sources.flows_source as flows
+
+        monkeypatch.setattr(flows.time, "sleep", lambda _seconds: None)
+        source = EtfShareSource.__new__(EtfShareSource)
+        source._ak = lambda: (_ for _ in ()).throw(
+            flows.SourceUnavailable("list endpoint blocked")
+        )
+        source._quote_share = lambda code: 16_396_866_816.0
+        rows = source.fetch_etf_share(date(2026, 11, 17))
+        assert len(rows) == 7
+        assert {row.code for row in rows} == {
+            "510050", "510300", "510500", "512100", "159915", "588000", "159949",
+        }
+        assert rows[0].share_yi == 163.97
+
 
 class TestOnlineChecks:
     def test_futures_close_mismatch_flagged(self, store):

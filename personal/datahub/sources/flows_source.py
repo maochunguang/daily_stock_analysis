@@ -11,8 +11,11 @@
 
 from __future__ import annotations
 
+import json
 import time
+import urllib.request
 from datetime import date
+from urllib.parse import urlencode
 
 from ..models import EtfShare, MarketTurnover, SectorAmount
 from .base import SourceUnavailable
@@ -136,11 +139,28 @@ class EtfShareSource:
         return ak
 
     def fetch_etf_share(self, trade_date: date) -> list[EtfShare]:
-        ak = self._ak()
-        fetch = _first_attr(ak, "fund_etf_spot_em", "fund_etf_hist_em")
-        if fetch.__name__ != "fund_etf_spot_em":
-            raise SourceUnavailable("fund_etf_spot_em unavailable")
-        frame = fetch()
+        """Broad-ETF shares in 亿份.
+
+        Primary path is the Eastmoney list API (all ETFs in one paginated pull).
+        That endpoint can reject/close long paginations (observed as
+        ``RemoteDisconnected``); the fallback asks the single-security quote API
+        for ``f84`` (总股本/基金份额) per ETF — 7 small requests instead of all
+        pages, and it kept working while the list endpoint was blocked.
+        """
+        try:
+            ak = self._ak()
+            fetch = _first_attr(ak, "fund_etf_spot_em", "fund_etf_hist_em")
+            if fetch.__name__ != "fund_etf_spot_em":
+                raise SourceUnavailable("fund_etf_spot_em unavailable")
+            frame = fetch()
+            rows = self._from_frame(frame, trade_date)
+        except Exception:  # noqa: BLE001 - fall back to per-symbol quotes
+            rows = []
+        if rows:
+            return rows
+        return self._from_quotes(trade_date)
+
+    def _from_frame(self, frame, trade_date: date) -> list[EtfShare]:
         if frame is None or frame.empty:
             return []
         wanted = {code: label for code, label in BROAD_ETFS}
@@ -161,6 +181,56 @@ class EtfShareSource:
                 )
             )
         return rows
+
+    def _from_quotes(self, trade_date: date) -> list[EtfShare]:
+        rows: list[EtfShare] = []
+        for code, label in BROAD_ETFS:
+            share = self._quote_share(code)
+            if share:
+                rows.append(
+                    EtfShare(
+                        trade_date=trade_date,
+                        code=code,
+                        name=label,
+                        share_yi=round(share / 1e8, 2),
+                    )
+                )
+            time.sleep(0.2)  # 逐只请求，保持礼貌
+        return rows
+
+    def _quote_share(self, code: str) -> float | None:
+        market = "1" if code.startswith(("5", "6", "9")) else "0"
+        params = urlencode(
+            {
+                "secid": f"{market}.{code}",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fields": "f58,f84,f85",
+                "invt": "2",
+                "fltt": "2",
+            }
+        )
+        request = urllib.request.Request(
+            f"https://push2.eastmoney.com/api/qt/stock/get?{params}",
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                ),
+                "Referer": "https://quote.eastmoney.com/",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001 - one retry, then give up on this symbol
+            time.sleep(0.5)
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                return None
+        data = payload.get("data") or {}
+        return _to_float(data.get("f84")) or _to_float(data.get("f85"))
 
 
 class SectorSource:
