@@ -111,6 +111,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     schedule.add_argument("--once", action="store_true", help="run all syncs now and exit")
 
+    broker_import = subparsers.add_parser(
+        "broker-import",
+        help="import a broker deal statement (交割单 CSV/TSV/XLSX) into the ledger",
+    )
+    broker_import.add_argument("--file", required=True, help="statement file path")
+    broker_import.add_argument(
+        "--map",
+        action="append",
+        default=[],
+        dest="column_map",
+        metavar="原始列=字段",
+        help="force a column mapping, e.g. --map 成交日期=trade_date (repeatable)",
+    )
+    broker_import.add_argument(
+        "--no-journal",
+        dest="journal",
+        action="store_false",
+        default=True,
+        help="skip decision-snapshot journal entries",
+    )
+
+    broker_positions = subparsers.add_parser(
+        "broker-positions", help="show computed broker positions (持仓/成本/盈亏)"
+    )
+
+    journal = subparsers.add_parser(
+        "journal", help="show trade journal with decision snapshots"
+    )
+    journal.add_argument("--days", type=int, default=30, help="lookback days")
+    journal.add_argument("--code", default="", help="filter by code")
+
     validate = subparsers.add_parser(
         "validate", help="check indicator accuracy: identities, ranges, gaps, cross-source (RM-41)"
     )
@@ -163,6 +194,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "sync":
         return _sync(settings, args)
+
+    if args.command == "broker-import":
+        return _broker_import(settings, args)
+
+    if args.command == "broker-positions":
+        return _broker_positions(settings)
+
+    if args.command == "journal":
+        return _journal(settings, args)
 
     if args.command == "replay":
         return _replay(settings, args)
@@ -290,9 +330,12 @@ def _sync_market(settings, args) -> int:
 
     end = date.fromisoformat(args.end) if args.end else date.today()
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=10)
+    codes_arg = list(args.code) or list(settings.stock_list)
     dispatch = {
         "futures": lambda store: sync_index_futures(store, start=start, end=end),
-        "margin": lambda store: sync_margin_balance(store, start=start, end=end),
+        "margin": lambda store: sync_margin_balance(
+            store, start=start, end=end, stock_codes=codes_arg
+        ),
         "turnover": lambda store: sync_turnover(store, start=start, end=end),
         "zt": lambda store: sync_limit_up(store, start=start, end=end),
         "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
@@ -501,6 +544,136 @@ def _validate(settings, args) -> int:
         for item in info[:12]:
             print(f"  [info] {item.dataset}/{item.rule}: {item.detail}")
     return 0 if payload["status"] != "error" else 1
+
+
+def _broker_import(settings, args) -> int:
+    import json
+    from pathlib import Path
+
+    from personal.datahub.broker import import_statement
+
+    path = Path(args.file)
+    if not path.exists():
+        print(f"file not found: {path}")
+        return 2
+    column_map = {}
+    for item in args.column_map:
+        raw, _, field_name = item.partition("=")
+        if not raw or not field_name:
+            print(f"bad --map (want 原始列=字段): {item}")
+            return 2
+        column_map[raw.strip()] = field_name.strip()
+    content = path.read_bytes()
+    store = PersonalStore(settings.personal_db)
+    try:
+        summary = import_statement(
+            store,
+            path.name,
+            content,
+            column_map=column_map or None,
+            with_journal=bool(args.journal),
+        )
+    except ValueError as exc:
+        print(f"import failed: {exc}")
+        return 2
+    finally:
+        store.close()
+
+    payload = summary.as_dict()
+    print(
+        f"{path.name}: imported {payload['imported']} rows, "
+        f"skipped {payload['skipped_total']}, journal +{payload['journal_added']}"
+    )
+    if payload["unrecognized_headers"]:
+        print(f"unrecognized headers: {', '.join(payload['unrecognized_headers'])}")
+    for warning in payload["warnings"]:
+        print(f"  ! {warning}")
+    if payload["skipped"]:
+        print("skipped rows (first 10):")
+        for issue in payload["skipped"][:10]:
+            print(f"  line {issue['line_no']}: {issue['reason']} :: {issue['raw']}")
+    print(f"column map: {json.dumps(payload['column_map'], ensure_ascii=False)}")
+    held = [position for position in payload["positions"] if (position.get("quantity") or 0) > 0]
+    if held:
+        print(f"持仓 {len(held)} 只：")
+        for position in held:
+            print(
+                f"  {position['code']} {position['name']:<6} qty={position['quantity']:g} "
+                f"cost={position.get('avg_cost') or '—'} realized={position['realized_pnl']}"
+            )
+    return 0
+
+
+def _broker_positions(settings) -> int:
+    from personal.datahub.broker import compute_positions
+
+    store = PersonalStore(settings.personal_db)
+    try:
+        trades = store.get_broker_trades()
+    finally:
+        store.close()
+    if not trades:
+        print("no broker trades imported yet (broker-import first)")
+        return 1
+    positions, warnings = compute_positions(trades)
+    for warning in warnings:
+        print(f"  ! {warning}")
+    print(f"{'代码':<8}{'名称':<8}{'数量':>10}{'成本':>10}{'已实现盈亏':>12}{'分红':>10}{'费用':>10}")
+    print("-" * 68)
+    for position in positions:
+        if position.quantity == 0 and not position.realized_pnl:
+            continue
+        print(
+            f"{position.code:<8}{position.name or '':<8}{position.quantity:>10g}"
+            f"{position.avg_cost if position.avg_cost is not None else '—':>10}"
+            f"{position.realized_pnl:>12g}{position.dividend_cash:>10g}"
+            f"{position.fees_total:>10g}"
+        )
+    return 0
+
+
+def _journal(settings, args) -> int:
+    import json
+    from datetime import timedelta
+
+    store = PersonalStore(settings.personal_db)
+    try:
+        rows = store.list_journal(
+            limit=100,
+            start=date.today() - timedelta(days=int(args.days)),
+            code=args.code or None,
+        )
+    finally:
+        store.close()
+    if not rows:
+        print("journal empty")
+        return 1
+    for row in rows:
+        snapshot = row.get("snapshot")
+        if snapshot and isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except ValueError:
+                snapshot = None
+        chips = []
+        if isinstance(snapshot, dict):
+            composite = snapshot.get("composite") or {}
+            if composite.get("score") is not None:
+                chips.append(f"综合分 {composite['score']} ({composite.get('state', '')})")
+            breadth = snapshot.get("breadth") or {}
+            if breadth.get("trin") is not None:
+                chips.append(f"TRIN {breadth['trin']} {breadth.get('band', '')}")
+            for component in composite.get("components", []):
+                if component.get("metric") in ("pcr_vol", "futures_net_ratio"):
+                    chips.append(f"{component['label']} 分位 {component['percentile']}%")
+        reason = row.get("reason") or ""
+        print(
+            f"{row['trade_date']} {row['code']} {row['side']:<4} "
+            f"qty={row['quantity']:g} price={row['price']:g} amount={row['amount']:g} "
+            f"[{row.get('source') or 'manual'}] {reason} "
+            f"{' | '.join(chips)}"
+        )
+    return 0
 
 
 def _web(args) -> int:

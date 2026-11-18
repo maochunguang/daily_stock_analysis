@@ -72,10 +72,10 @@ index c3a1338..1bd1728 100644
    { path: '/settings', element: <SettingsPage /> },
 diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
 new file mode 100644
-index 0000000..17ed050
+index 0000000..9a415cf
 --- /dev/null
 +++ b/apps/dsa-web/src/api/personal.ts
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,153 @@
 +import type {
 +  PersonalBacktestResponse,
 +  PersonalBreadthRow,
@@ -95,6 +95,11 @@ index 0000000..17ed050
 +  PersonalStatus,
 +  PersonalSyncResponse,
 +  PersonalUpstreamRecent,
++  BrokerImportSummary,
++  BrokerJournalRow,
++  BrokerPositionRow,
++  MarginStockEntry,
++  PersonalBrokerImportRequest,
 +} from '../types/personal';
 +
 +const BASE = '/personal-api/api';
@@ -212,6 +217,17 @@ index 0000000..17ed050
 +      method: 'POST',
 +      body: JSON.stringify(body),
 +    }),
++  marginStocks: (days = 30) =>
++    request<{ stocks: MarginStockEntry[] }>(`/market/stocks?days=${days}`),
++  brokerImport: (body: PersonalBrokerImportRequest) =>
++    request<BrokerImportSummary>('/broker/import', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  brokerPositions: () =>
++    request<{ positions: BrokerPositionRow[] }>('/broker/positions'),
++  brokerJournal: (limit = 100) =>
++    request<{ journal: BrokerJournalRow[] }>(`/broker/journal?limit=${limit}`),
 +};
 diff --git a/apps/dsa-web/src/components/layout/ShellHeader.tsx b/apps/dsa-web/src/components/layout/ShellHeader.tsx
 index e740de6..9507b45 100644
@@ -244,12 +260,352 @@ index 1fad650..f8b9957 100644
    { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
    { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
    { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
+diff --git a/apps/dsa-web/src/components/personal/LedgerPanel.tsx b/apps/dsa-web/src/components/personal/LedgerPanel.tsx
+new file mode 100644
+index 0000000..8429140
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/LedgerPanel.tsx
+@@ -0,0 +1,334 @@
++import type React from 'react';
++import { useCallback, useEffect, useRef, useState } from 'react';
++import { Upload } from 'lucide-react';
++import { Badge, Button, Card } from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import { personalApi } from '../../api/personal';
++import type {
++  BrokerImportSummary,
++  BrokerJournalRow,
++  BrokerPositionRow,
++  BrokerSnapshot,
++} from '../../types/personal';
++
++const TABLE_HEAD_CLASS =
++  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS =
++  'border-b border-border/40 py-2 pr-4 text-sm text-foreground whitespace-nowrap';
++
++const COPY = {
++  zh: {
++    title: '账本（交割单 / 持仓 / 决策快照）',
++    importTitle: '导入券商交割单',
++    importHint:
++      '支持 CSV/TSV/XLSX（GBK/UTF-8 自动识别）。列名不匹配时在下方填映射；导入自动去重、算成本并生成决策快照',
++    choose: '选择文件',
++    importBtn: '导入',
++    importing: '导入中…',
++    imported: '导入成功',
++    rowsLabel: '行',
++    journalLabel: '日志',
++    skippedLabel: '跳过',
++    warningsLabel: '注意',
++    positionsTitle: '持仓（移动加权成本，含费）',
++    journalTitle: '交易日志与决策快照',
++    code: '代码',
++    name: '名称',
++    quantity: '数量',
++    avgCost: '成本',
++    realized: '已实现盈亏',
++    dividend: '分红',
++    fees: '费用',
++    first: '首笔',
++    last: '最近',
++    side: '方向',
++    price: '价格',
++    amount: '金额',
++    reason: '理由',
++    snapshot: '当时市场',
++    date: '日期',
++    buy: '买入',
++    sell: '卖出',
++    noData: '暂无数据，先导入交割单',
++    importFailed: '导入失败',
++    emptyJournal: '暂无交易日志',
++  },
++  en: {
++    title: 'Ledger (statements / positions / decision snapshots)',
++    importTitle: 'Import broker statement',
++    importHint:
++      'CSV/TSV/XLSX (GBK/UTF-8 auto). Map columns below if headers differ; import dedupes, computes cost and saves decision snapshots',
++    choose: 'Choose file',
++    importBtn: 'Import',
++    importing: 'Importing…',
++    imported: 'Imported',
++    rowsLabel: 'rows',
++    journalLabel: 'journal',
++    skippedLabel: 'skipped',
++    warningsLabel: 'warnings',
++    positionsTitle: 'Positions (moving-average cost incl. fees)',
++    journalTitle: 'Journal with decision snapshots',
++    code: 'Code',
++    name: 'Name',
++    quantity: 'Qty',
++    avgCost: 'Cost',
++    realized: 'Realized P&L',
++    dividend: 'Dividend',
++    fees: 'Fees',
++    first: 'First',
++    last: 'Last',
++    side: 'Side',
++    price: 'Price',
++    amount: 'Amount',
++    reason: 'Reason',
++    snapshot: 'Market at trade',
++    date: 'Date',
++    buy: 'Buy',
++    sell: 'Sell',
++    noData: 'No data yet — import a statement first',
++    importFailed: 'Import failed',
++    emptyJournal: 'Journal is empty',
++  },
++} as const;
++
++function parseSnapshot(row: BrokerJournalRow): BrokerSnapshot | null {
++  if (!row.snapshot) return null;
++  if (typeof row.snapshot === 'object') return row.snapshot as BrokerSnapshot;
++  try {
++    return JSON.parse(row.snapshot) as BrokerSnapshot;
++  } catch {
++    return null;
++  }
++}
++
++export const LedgerPanel: React.FC = () => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const fileRef = useRef<HTMLInputElement>(null);
++  const [positions, setPositions] = useState<BrokerPositionRow[]>([]);
++  const [journal, setJournal] = useState<BrokerJournalRow[]>([]);
++  const [summary, setSummary] = useState<BrokerImportSummary | null>(null);
++  const [error, setError] = useState('');
++  const [busy, setBusy] = useState(false);
++  const [loaded, setLoaded] = useState(false);
++
++  const reload = useCallback(async () => {
++    try {
++      const [positionsData, journalData] = await Promise.all([
++        personalApi.brokerPositions(),
++        personalApi.brokerJournal(200),
++      ]);
++      setPositions(positionsData.positions);
++      setJournal(journalData.journal);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    }
++  }, []);
++
++  useEffect(() => {
++    void reload().finally(() => setLoaded(true));
++  }, [reload]);
++
++  const handleFile = useCallback(
++    async (file: File) => {
++      setBusy(true);
++      setError('');
++      setSummary(null);
++      try {
++        const buffer = await file.arrayBuffer();
++        const bytes = new Uint8Array(buffer);
++        let binary = '';
++        for (let i = 0; i < bytes.length; i += 0x8000) {
++          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
++        }
++        const payload = {
++          filename: file.name,
++          content_b64: btoa(binary),
++        };
++        const result = await personalApi.brokerImport(payload);
++        setSummary(result);
++        await reload();
++      } catch (err) {
++        setError(err instanceof Error ? err.message : String(err));
++      } finally {
++        setBusy(false);
++        if (fileRef.current) fileRef.current.value = '';
++      }
++    },
++    [reload],
++  );
++
++  const held = positions.filter((row) => row.quantity > 0);
++  const closed = positions.filter(
++    (row) => row.quantity === 0 && (row.realized_pnl !== 0 || row.dividend_cash !== 0),
++  );
++
++  return (
++    <div className="grid gap-4 xl:grid-cols-2">
++      <Card title={copy.importTitle} variant="bordered" className="xl:col-span-2">
++        <p className="text-sm text-secondary-text">{copy.importHint}</p>
++        <div className="mt-3 flex flex-wrap items-center gap-3">
++          <input
++            ref={fileRef}
++            type="file"
++            accept=".csv,.tsv,.txt,.xlsx,.xlsm"
++            className="hidden"
++            onChange={(event) => {
++              const file = event.target.files?.[0];
++              if (file) void handleFile(file);
++            }}
++          />
++          <Button
++            variant="primary"
++            disabled={busy}
++            onClick={() => fileRef.current?.click()}
++          >
++            <Upload className="mr-1.5 h-4 w-4" />
++            {busy ? copy.importing : `${copy.choose} / ${copy.importBtn}`}
++          </Button>
++          {summary ? (
++            <span className="text-sm text-emerald-600">
++              {copy.imported}: {summary.imported} {copy.rowsLabel} · {copy.journalLabel} +
++              {summary.journal_added}
++              {summary.skipped_total ? ` · ${copy.skippedLabel} ${summary.skipped_total}` : ''}
++            </span>
++          ) : null}
++        </div>
++        {summary?.unrecognized_headers?.length ? (
++          <p className="mt-2 text-xs text-amber-600">
++            unmapped: {summary.unrecognized_headers.join(', ')}
++          </p>
++        ) : null}
++        {summary?.warnings?.length ? (
++          <ul className="mt-2 space-y-1 text-xs text-secondary-text">
++            {summary.warnings.map((warning, index) => (
++              <li key={index}>! {warning}</li>
++            ))}
++          </ul>
++        ) : null}
++        {error ? (
++          <p className="mt-2 text-sm text-rose-600">
++            {copy.importFailed}: {error}
++          </p>
++        ) : null}
++      </Card>
++
++      <Card title={copy.positionsTitle} variant="bordered" className="xl:col-span-2">
++        {!loaded ? (
++          <p className="text-sm text-secondary-text">…</p>
++        ) : held.length === 0 && closed.length === 0 ? (
++          <p className="text-sm text-secondary-text">{copy.noData}</p>
++        ) : (
++          <div className="overflow-x-auto">
++            <table className="w-full">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.code}</th>
++                  <th className="py-2 pr-4">{copy.name}</th>
++                  <th className="py-2 pr-4 text-right">{copy.quantity}</th>
++                  <th className="py-2 pr-4 text-right">{copy.avgCost}</th>
++                  <th className="py-2 pr-4 text-right">{copy.realized}</th>
++                  <th className="py-2 pr-4 text-right">{copy.dividend}</th>
++                  <th className="py-2 pr-4 text-right">{copy.fees}</th>
++                  <th className="py-2 text-right">{copy.last}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {[...held, ...closed].map((row) => (
++                  <tr key={row.code}>
++                    <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                    <td className={TABLE_CELL_CLASS}>{row.name || '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.quantity.toLocaleString()}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {row.avg_cost?.toFixed(3) ?? '—'}
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      <span className={row.realized_pnl < 0 ? 'text-rose-600' : 'text-emerald-600'}>
++                        {row.realized_pnl.toFixed(2)}
++                      </span>
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {row.dividend_cash ? row.dividend_cash.toFixed(2) : '—'}
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.fees_total.toFixed(2)}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.last_trade_date ?? '—'}</td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        )}
++      </Card>
++
++      <Card title={copy.journalTitle} variant="bordered" className="xl:col-span-2">
++        {!loaded ? (
++          <p className="text-sm text-secondary-text">…</p>
++        ) : journal.length === 0 ? (
++          <p className="text-sm text-secondary-text">{copy.emptyJournal}</p>
++        ) : (
++          <div className="overflow-x-auto">
++            <table className="w-full">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.date}</th>
++                  <th className="py-2 pr-4">{copy.code}</th>
++                  <th className="py-2 pr-4">{copy.side}</th>
++                  <th className="py-2 pr-4 text-right">{copy.quantity}</th>
++                  <th className="py-2 pr-4 text-right">{copy.price}</th>
++                  <th className="py-2 pr-4 text-right">{copy.amount}</th>
++                  <th className="py-2 pr-4">{copy.reason}</th>
++                  <th className="py-2">{copy.snapshot}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {journal.map((row) => {
++                  const snapshot = parseSnapshot(row);
++                  const composite = snapshot?.composite;
++                  const breadth = snapshot?.breadth;
++                  return (
++                    <tr key={row.id}>
++                      <td className={TABLE_CELL_CLASS}>{row.trade_date}</td>
++                      <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <Badge variant={row.side === 'buy' ? 'success' : 'danger'}>
++                          {row.side === 'buy' ? copy.buy : copy.sell}
++                        </Badge>
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{row.quantity.toLocaleString()}</td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{row.price.toFixed(3)}</td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{row.amount.toFixed(2)}</td>
++                      <td className={TABLE_CELL_CLASS}>{row.reason || '—'}</td>
++                      <td className={TABLE_CELL_CLASS}>
++                        {composite?.score !== null && composite?.score !== undefined ? (
++                          <span className="inline-flex flex-wrap items-center gap-1.5">
++                            <Badge variant={composite.score >= 60 ? 'danger' : composite.score <= 40 ? 'info' : 'default'}>
++                              {composite.score} {composite.state}
++                            </Badge>
++                            {breadth?.trin !== null && breadth?.trin !== undefined ? (
++                              <Badge variant="default">{`TRIN ${breadth.trin.toFixed(2)} ${breadth.band}`}</Badge>
++                            ) : null}
++                            {composite.components
++                              .filter((component) =>
++                                ['pcr_vol', 'futures_net_ratio'].includes(component.metric),
++                              )
++                              .map((component) => (
++                                <Badge key={component.metric} variant="warning">
++                                  {`${component.label} ${component.percentile ?? '—'}%`}
++                                </Badge>
++                              ))}
++                          </span>
++                        ) : (
++                          '—'
++                        )}
++                      </td>
++                    </tr>
++                  );
++                })}
++              </tbody>
++            </table>
++          </div>
++        )}
++      </Card>
++    </div>
++  );
++};
 diff --git a/apps/dsa-web/src/components/personal/ReviewCards.tsx b/apps/dsa-web/src/components/personal/ReviewCards.tsx
 new file mode 100644
-index 0000000..70dc0ce
+index 0000000..a397ab5
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/ReviewCards.tsx
-@@ -0,0 +1,1341 @@
+@@ -0,0 +1,1446 @@
 +import type React from 'react';
 +import { Landmark, RefreshCw, ShieldCheck, TrendingDown } from 'lucide-react';
 +import {
@@ -276,6 +632,7 @@ index 0000000..70dc0ce
 +  PersonalMarginRow,
 +  PersonalPcrRow,
 +  PersonalValidationResponse,
++  MarginStockEntry,
 +} from '../../types/personal';
 +
 +/**
@@ -374,6 +731,13 @@ index 0000000..70dc0ce
 +    metricLabel: '指标',
 +    kindLabel: '类型',
 +    pending: '等待回填',
++    code: '代码',
++    name: '名称',
++    marginStocksTitle: '持仓股两融',
++    marginStocksHint: '融资余额升 = 杠杆资金进场；骤降 = 去杠杆（数据随定时同步积累，代码=自选股∪交割单持仓）',
++    rzyeYi: '融资余额(亿)',
++    buyYi: '融资买入(亿)',
++    chg1: '余额日变化',
 +    healthTitle: '数据体检',
 +    healthScore: '健康分',
 +    healthOk: '正常',
@@ -478,6 +842,13 @@ index 0000000..70dc0ce
 +    metricLabel: 'Metric',
 +    kindLabel: 'Kind',
 +    pending: 'backfilling',
++    code: 'Code',
++    name: 'Name',
++    marginStocksTitle: 'Held-stock margin detail',
++    marginStocksHint: 'Rising margin balance = leveraged money in; sharp drop = deleveraging (codes = watchlist ∪ ledger holdings)',
++    rzyeYi: 'Margin balance (×1e8)',
++    buyYi: 'Margin buy (×1e8)',
++    chg1: 'Balance chg',
 +    healthTitle: 'Data health check',
 +    healthScore: 'Health',
 +    healthOk: 'OK',
@@ -512,6 +883,7 @@ index 0000000..70dc0ce
 +  crowding: PersonalCrowdingResponse | null;
 +  macro: PersonalMacroResponse | null;
 +  composite: PersonalCompositeResponse | null;
++  marginStocks: MarginStockEntry[];
 +  validation: PersonalValidationResponse | null;
 +  busy: boolean;
 +  onRefreshMarket: (dataset: 'futures' | 'margin') => void;
@@ -1483,6 +1855,94 @@ index 0000000..70dc0ce
 +  );
 +};
 +
++/* ------------------------------------------------------------------ */
++/* 持仓股两融（RM-42）                                                  */
++/* ------------------------------------------------------------------ */
++const MARGIN_STOCK_COLORS = ['#38bdf8', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444', '#6366f1'];
++
++export const MarginStocksCard: ReviewCardComponent = ({ marginStocks }) => {
++  const copy = useReviewCopy();
++  const stocks = marginStocks ?? [];
++  const dates = Array.from(
++    new Set(stocks.flatMap((stock) => stock.series.map((point) => point.trade_date))),
++  ).sort();
++  const chartData = dates.slice(-30).map((dateValue) => {
++    const point: Record<string, string | number | null> = { date: dateValue.slice(5) };
++    stocks.forEach((stock) => {
++      const match = stock.series.find((item) => item.trade_date === dateValue);
++      point[stock.code] = match?.rzye != null ? Number((match.rzye / 1e8).toFixed(2)) : null;
++    });
++    return point;
++  });
++
++  return (
++    <Card title={copy.marginStocksTitle} variant="bordered" className="xl:col-span-2">
++      {stocks.length === 0 ? (
++        <p className="text-sm text-secondary-text">{copy.noData}</p>
++      ) : (
++        <>
++          <div className="overflow-x-auto">
++            <table className="w-full">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.code}</th>
++                  <th className="py-2 pr-4">{copy.name}</th>
++                  <th className="py-2 pr-4 text-right">{copy.rzyeYi}</th>
++                  <th className="py-2 pr-4 text-right">{copy.chg1}</th>
++                  <th className="py-2 text-right">{copy.buyYi}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {stocks.map((stock) => (
++                  <tr key={stock.code}>
++                    <td className={TABLE_CELL_CLASS}>{stock.code}</td>
++                    <td className={TABLE_CELL_CLASS}>{stock.name || '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {stock.rzye != null ? (stock.rzye / 1e8).toFixed(2) : '—'}
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      <span className={stock.rzye_chg_pct != null && stock.rzye_chg_pct < 0 ? 'text-rose-600' : 'text-emerald-600'}>
++                        {signed(stock.rzye_chg_pct, 2, '%')}
++                      </span>
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {stock.rzye_buy != null ? (stock.rzye_buy / 1e8).toFixed(2) : '—'}
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++          {chartData.length > 1 && stocks.length <= 6 ? (
++            <div className="mt-4 h-44 w-full">
++              <ResponsiveContainer width="100%" height="100%">
++                <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
++                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
++                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
++                  <YAxis tick={{ fontSize: 11 }} width={56} />
++                  <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
++                  <Legend wrapperStyle={{ fontSize: 11 }} />
++                  {stocks.map((stock, index) => (
++                    <Line
++                      key={stock.code}
++                      type="monotone"
++                      dataKey={stock.code}
++                      stroke={MARGIN_STOCK_COLORS[index % MARGIN_STOCK_COLORS.length]}
++                      dot={false}
++                      strokeWidth={1.6}
++                    />
++                  ))}
++                </LineChart>
++              </ResponsiveContainer>
++            </div>
++          ) : null}
++          <p className="mt-3 text-xs text-muted-text">{copy.marginStocksHint}</p>
++        </>
++      )}
++    </Card>
++  );
++};
++
 +const HEALTH_BADGE: Record<
 +  PersonalValidationResponse['status'],
 +  { variant: 'success' | 'warning' | 'danger' | 'info'; labelKey: 'healthOk' | 'healthWarn' | 'healthError' | 'healthEmpty' }
@@ -1584,6 +2044,7 @@ index 0000000..70dc0ce
 +  { id: 'futures', component: FuturesCard },
 +  { id: 'rank', component: FuturesRankCard },
 +  { id: 'margin', component: MarginCard },
++  { id: 'marginstocks', component: MarginStocksCard },
 +  { id: 'limitup', component: LimitUpCard },
 +  { id: 'pcr', component: PcrCard },
 +  { id: 'flows', component: FlowsCard },
@@ -1593,10 +2054,10 @@ index 0000000..70dc0ce
 +];
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
-index 0000000..0c5d341
+index 0000000..faa66a1
 --- /dev/null
 +++ b/apps/dsa-web/src/pages/PersonalPage.tsx
-@@ -0,0 +1,1203 @@
+@@ -0,0 +1,1214 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useMemo, useState } from 'react';
 +import {
@@ -1632,6 +2093,7 @@ index 0000000..0c5d341
 +  StatCard,
 +} from '../components/common';
 +import { useUiLanguage } from '../contexts/UiLanguageContext';
++import { LedgerPanel } from '../components/personal/LedgerPanel';
 +import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 +import type {
 +  PersonalBacktestResponse,
@@ -1651,9 +2113,10 @@ index 0000000..0c5d341
 +  PersonalSyncResponse,
 +  PersonalUpstreamRecent,
 +  PersonalValidationResponse,
++  MarginStockEntry,
 +} from '../types/personal';
 +
-+type TabKey = 'overview' | 'review' | 'data' | 'backtest' | 'plugins' | 'qmt';
++type TabKey = 'overview' | 'review' | 'ledger' | 'data' | 'backtest' | 'plugins' | 'qmt';
 +
 +const INPUT_CLASS =
 +  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
@@ -1669,6 +2132,7 @@ index 0000000..0c5d341
 +    tabs: {
 +      overview: '总览',
 +      review: '深度复盘',
++      ledger: '账本',
 +      data: '数据同步',
 +      backtest: '个人回测',
 +      plugins: '插件',
@@ -1753,6 +2217,7 @@ index 0000000..0c5d341
 +    tabs: {
 +      overview: 'Overview',
 +      review: 'Deep Review',
++      ledger: 'Ledger',
 +      data: 'Data',
 +      backtest: 'Backtest',
 +      plugins: 'Plugins',
@@ -1920,6 +2385,7 @@ index 0000000..0c5d341
 +  const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
 +  const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
 +  const [reviewValidation, setReviewValidation] = useState<PersonalValidationResponse | null>(null);
++  const [reviewMarginStocks, setReviewMarginStocks] = useState<MarginStockEntry[]>([]);
 +  const [reviewLoaded, setReviewLoaded] = useState(false);
 +  const [reviewBusy, setReviewBusy] = useState(false);
 +  const [reviewError, setReviewError] = useState('');
@@ -1961,6 +2427,7 @@ index 0000000..0c5d341
 +        macroData,
 +        compositeData,
 +        validationData,
++        marginStocksData,
 +      ] = await Promise.all([
 +        personalApi.breadth(30),
 +        personalApi.futures(30),
@@ -1973,6 +2440,7 @@ index 0000000..0c5d341
 +        personalApi.macro(120),
 +        personalApi.composite(),
 +        personalApi.marketValidate(400),
++        personalApi.marginStocks(30),
 +      ]);
 +      setReviewBreadth(breadthData.rows);
 +      setReviewFutures(futuresData.rows);
@@ -1985,6 +2453,7 @@ index 0000000..0c5d341
 +      setReviewMacro(macroData);
 +      setReviewComposite(compositeData);
 +      setReviewValidation(validationData);
++      setReviewMarginStocks(marginStocksData.stocks);
 +      setReviewLoaded(true);
 +    } catch (err) {
 +      setReviewError(err instanceof Error ? err.message : String(err));
@@ -2456,6 +2925,7 @@ index 0000000..0c5d341
 +                crowding={reviewCrowding}
 +                macro={reviewMacro}
 +                composite={reviewComposite}
++                marginStocks={reviewMarginStocks}
 +                validation={reviewValidation}
 +                busy={reviewBusy}
 +                onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
@@ -2465,6 +2935,8 @@ index 0000000..0c5d341
 +          </div>
 +        )
 +      ) : null}
++
++      {tab === 'ledger' ? <LedgerPanel /> : null}
 +
 +      {tab === 'data' ? (
 +        <Card title={copy.tabs.data} variant="bordered">
@@ -2802,10 +3274,10 @@ index 0000000..0c5d341
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..e2e4f0c
+index 0000000..edffd19
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,420 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -3129,4 +3601,100 @@ index 0000000..e2e4f0c
 +  counts: Record<string, number>;
 +  datasets: PersonalValidationDataset[];
 +  findings: PersonalValidationFinding[];
++}
++
++export interface BrokerPositionRow {
++  code: string;
++  name: string;
++  quantity: number;
++  avg_cost: number | null;
++  cost_value: number | null;
++  realized_pnl: number;
++  dividend_cash: number;
++  fees_total: number;
++  buy_count: number;
++  sell_count: number;
++  first_trade_date: string | null;
++  last_trade_date: string | null;
++  updated_at?: string;
++}
++
++export interface BrokerSnapshotComponent {
++  metric: string;
++  label: string;
++  kind: 'pro' | 'contrarian';
++  percentile: number | null;
++  value: number | null;
++}
++
++export interface BrokerSnapshot {
++  trade_date: string;
++  composite: {
++    score: number | null;
++    state: string;
++    components: BrokerSnapshotComponent[];
++  };
++  breadth?: {
++    trin: number | null;
++    band: string;
++    adv_ratio: number | null;
++    interpretation: string;
++  };
++  limit_up?: { zt_count: number; zb_rate: number | null; max_streak: number };
++  turnover_yi?: number;
++  sector_top?: { board: string; share_pct: number | null };
++  margin_stock?: {
++    rzye: number | null;
++    rzye_buy: number | null;
++    rzye_chg_5d_pct?: number;
++  };
++}
++
++export interface BrokerJournalRow {
++  id: number;
++  trade_date: string;
++  code: string;
++  side: string;
++  quantity: number;
++  price: number;
++  amount: number;
++  reason: string | null;
++  source: string | null;
++  snapshot: BrokerSnapshot | string | null;
++}
++
++export interface BrokerImportSummary {
++  filename: string;
++  imported: number;
++  skipped_total: number;
++  skipped: Array<{ line_no: number; reason: string; raw: string }>;
++  warnings: string[];
++  positions: BrokerPositionRow[];
++  journal_added: number;
++  column_map: Record<string, string>;
++  unrecognized_headers: string[];
++}
++
++export interface PersonalBrokerImportRequest {
++  filename: string;
++  content_b64: string;
++  column_map?: Record<string, string>;
++}
++
++export interface MarginStockPoint {
++  trade_date: string;
++  rzye: number | null;
++  rzye_buy: number | null;
++  rqye: number | null;
++}
++
++export interface MarginStockEntry {
++  code: string;
++  name: string;
++  trade_date: string;
++  rzye: number | null;
++  rzye_buy: number | null;
++  rqye: number | null;
++  rzye_chg_pct: number | null;
++  series: MarginStockPoint[];
 +}

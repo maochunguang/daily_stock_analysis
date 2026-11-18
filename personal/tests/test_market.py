@@ -38,25 +38,32 @@ class _FakeFuturesSource:
 
 class _FakeMarginSource:
     def fetch_margin_balance(self, start, end):
-        return [
-            MarginBalance(
-                trade_date=date(2026, 11, 16),
-                scope_type="market",
-                scope="沪市",
-                rzye=1177935693951,
-                rqye=18743277821,
-                rzrqye=1196678971772,
-                rzye_buy=90323568835,
-                source="fake",
-            ),
-            MarginBalance(
-                trade_date=date(2026, 11, 16),
-                scope_type="board",
-                scope="科创板",
-                rzye=1_000_000_000_000,
-                source="fake",
-            ),
-        ]
+        rows, _ = self.fetch_margin_all(start, end, ())
+        return rows
+
+    def fetch_margin_all(self, start, end, stock_codes=()):
+        return (
+            [
+                MarginBalance(
+                    trade_date=date(2026, 11, 16),
+                    scope_type="market",
+                    scope="沪市",
+                    rzye=1177935693951,
+                    rqye=18743277821,
+                    rzrqye=1196678971772,
+                    rzye_buy=90323568835,
+                    source="fake",
+                ),
+                MarginBalance(
+                    trade_date=date(2026, 11, 16),
+                    scope_type="board",
+                    scope="科创板",
+                    rzye=1_000_000_000_000,
+                    source="fake",
+                ),
+            ],
+            [],
+        )
 
 
 class TestBoardClassification:

@@ -24,6 +24,7 @@ import type {
   PersonalMarginRow,
   PersonalPcrRow,
   PersonalValidationResponse,
+  MarginStockEntry,
 } from '../../types/personal';
 
 /**
@@ -122,6 +123,13 @@ const REVIEW_COPY = {
     metricLabel: '指标',
     kindLabel: '类型',
     pending: '等待回填',
+    code: '代码',
+    name: '名称',
+    marginStocksTitle: '持仓股两融',
+    marginStocksHint: '融资余额升 = 杠杆资金进场；骤降 = 去杠杆（数据随定时同步积累，代码=自选股∪交割单持仓）',
+    rzyeYi: '融资余额(亿)',
+    buyYi: '融资买入(亿)',
+    chg1: '余额日变化',
     healthTitle: '数据体检',
     healthScore: '健康分',
     healthOk: '正常',
@@ -226,6 +234,13 @@ const REVIEW_COPY = {
     metricLabel: 'Metric',
     kindLabel: 'Kind',
     pending: 'backfilling',
+    code: 'Code',
+    name: 'Name',
+    marginStocksTitle: 'Held-stock margin detail',
+    marginStocksHint: 'Rising margin balance = leveraged money in; sharp drop = deleveraging (codes = watchlist ∪ ledger holdings)',
+    rzyeYi: 'Margin balance (×1e8)',
+    buyYi: 'Margin buy (×1e8)',
+    chg1: 'Balance chg',
     healthTitle: 'Data health check',
     healthScore: 'Health',
     healthOk: 'OK',
@@ -260,6 +275,7 @@ export interface ReviewCardProps {
   crowding: PersonalCrowdingResponse | null;
   macro: PersonalMacroResponse | null;
   composite: PersonalCompositeResponse | null;
+  marginStocks: MarginStockEntry[];
   validation: PersonalValidationResponse | null;
   busy: boolean;
   onRefreshMarket: (dataset: 'futures' | 'margin') => void;
@@ -1231,6 +1247,94 @@ export const CompositeCard: ReviewCardComponent = ({ composite }) => {
   );
 };
 
+/* ------------------------------------------------------------------ */
+/* 持仓股两融（RM-42）                                                  */
+/* ------------------------------------------------------------------ */
+const MARGIN_STOCK_COLORS = ['#38bdf8', '#f59e0b', '#8b5cf6', '#10b981', '#ef4444', '#6366f1'];
+
+export const MarginStocksCard: ReviewCardComponent = ({ marginStocks }) => {
+  const copy = useReviewCopy();
+  const stocks = marginStocks ?? [];
+  const dates = Array.from(
+    new Set(stocks.flatMap((stock) => stock.series.map((point) => point.trade_date))),
+  ).sort();
+  const chartData = dates.slice(-30).map((dateValue) => {
+    const point: Record<string, string | number | null> = { date: dateValue.slice(5) };
+    stocks.forEach((stock) => {
+      const match = stock.series.find((item) => item.trade_date === dateValue);
+      point[stock.code] = match?.rzye != null ? Number((match.rzye / 1e8).toFixed(2)) : null;
+    });
+    return point;
+  });
+
+  return (
+    <Card title={copy.marginStocksTitle} variant="bordered" className="xl:col-span-2">
+      {stocks.length === 0 ? (
+        <p className="text-sm text-secondary-text">{copy.noData}</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className={TABLE_HEAD_CLASS}>
+                  <th className="py-2 pr-4">{copy.code}</th>
+                  <th className="py-2 pr-4">{copy.name}</th>
+                  <th className="py-2 pr-4 text-right">{copy.rzyeYi}</th>
+                  <th className="py-2 pr-4 text-right">{copy.chg1}</th>
+                  <th className="py-2 text-right">{copy.buyYi}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stocks.map((stock) => (
+                  <tr key={stock.code}>
+                    <td className={TABLE_CELL_CLASS}>{stock.code}</td>
+                    <td className={TABLE_CELL_CLASS}>{stock.name || '—'}</td>
+                    <td className={`${TABLE_CELL_CLASS} text-right`}>
+                      {stock.rzye != null ? (stock.rzye / 1e8).toFixed(2) : '—'}
+                    </td>
+                    <td className={`${TABLE_CELL_CLASS} text-right`}>
+                      <span className={stock.rzye_chg_pct != null && stock.rzye_chg_pct < 0 ? 'text-rose-600' : 'text-emerald-600'}>
+                        {signed(stock.rzye_chg_pct, 2, '%')}
+                      </span>
+                    </td>
+                    <td className={`${TABLE_CELL_CLASS} text-right`}>
+                      {stock.rzye_buy != null ? (stock.rzye_buy / 1e8).toFixed(2) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {chartData.length > 1 && stocks.length <= 6 ? (
+            <div className="mt-4 h-44 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} width={56} />
+                  <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  {stocks.map((stock, index) => (
+                    <Line
+                      key={stock.code}
+                      type="monotone"
+                      dataKey={stock.code}
+                      stroke={MARGIN_STOCK_COLORS[index % MARGIN_STOCK_COLORS.length]}
+                      dot={false}
+                      strokeWidth={1.6}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : null}
+          <p className="mt-3 text-xs text-muted-text">{copy.marginStocksHint}</p>
+        </>
+      )}
+    </Card>
+  );
+};
+
 const HEALTH_BADGE: Record<
   PersonalValidationResponse['status'],
   { variant: 'success' | 'warning' | 'danger' | 'info'; labelKey: 'healthOk' | 'healthWarn' | 'healthError' | 'healthEmpty' }
@@ -1332,6 +1436,7 @@ export const REVIEW_CARDS: ReadonlyArray<ReviewCardSlot> = [
   { id: 'futures', component: FuturesCard },
   { id: 'rank', component: FuturesRankCard },
   { id: 'margin', component: MarginCard },
+  { id: 'marginstocks', component: MarginStocksCard },
   { id: 'limitup', component: LimitUpCard },
   { id: 'pcr', component: PcrCard },
   { id: 'flows', component: FlowsCard },

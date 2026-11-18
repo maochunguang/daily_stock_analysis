@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 115 |
+| `test_count` | 128 |
 | `last_updated` | 2026-11-16 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -96,10 +96,12 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
 | `personal/datahub/market.py` | Market-level syncs: index futures + margin balance |
 | `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
-| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits (SSE detail pagination) |
+| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows for watchlist/holdings codes (RM-42) |
 | `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
 | `personal/datahub/validate.py` | RM-41 data passport: identities, ranges, trading days, jumps, cross-metric ratios, optional external spot checks |
+| `personal/datahub/broker.py` | RM-12/15 broker statement import: alias-mapped CSV/TSV/XLSX parse, moving-average cost positions, idempotent upsert |
+| `personal/datahub/decision.py` | RM-12 decision snapshot: market state (composite/breadth/limit-up/sector/per-stock margin) at each trade |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares (EM list API with per-symbol `f84` fallback, CHG-0025) + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
@@ -159,7 +161,10 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `data_quality_event` | auto id; quality warnings/errors |
 | `backtest_run` | `run_id`; config + metrics JSON |
 | `backtest_trade` | run trades |
-| `trade_journal` | manual trade log |
+| `trade_journal` | trade log (manual or broker-imported) with `source` + `snapshot` JSON (RM-12) |
+| `broker_trade` | `row_hash` unique; parsed statement rows (RM-15) |
+| `broker_position` | `code`; moving-average cost / realized P&L / dividends / fees |
+| `margin_stock` | `(trade_date, code)`; per-stock margin rows for watchlist ∪ holdings (RM-42) |
 
 **Read rule:** `PersonalStore.get_bars()` never mixes sources. It selects one
 source: among `preferred_sources`, the one with the most rows in the requested
@@ -184,6 +189,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
 | `python -m personal.cli.main schedule --at 06:00,12:00,18:00 [--once]` | RM-05 daily scheduler (compose service personal-sync); runs post-sync validation |
 | `python -m personal.cli.main validate [--days N] [--dataset D] [--online] [--json]` | RM-41 indicator data health report |
+| `python -m personal.cli.main broker-import --file F [--map k=v] [--no-journal]` | RM-12/15 broker statement import (dedupe + cost + snapshot) |
+| `python -m personal.cli.main broker-positions` / `journal [--days N] [--code C]` | Ledger positions / trade journal with snapshots |
 | `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
@@ -211,6 +218,9 @@ the page route is `/personal`.
 | GET | `/api/market/macro?days=N` | CN/US spreads + release calendar |
 | GET | `/api/market/composite` | Composite market-state score |
 | GET | `/api/market/validate?days=N&online=bool` | RM-41 data health report (11 datasets, offline by default) |
+| POST | `/api/broker/import` | Broker statement import (JSON body: filename + content_b64 + column_map) |
+| GET | `/api/broker/positions`, `/api/broker/journal?limit=` | Ledger positions / journal with decision snapshots |
+| GET | `/api/margin/stocks?days=N&code=` | RM-42 per-stock margin detail (watchlist ∪ ledger holdings) |
 | GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
 | GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
 | POST | `/api/market/sync` | Sync futures/margin (default last 10 days) |

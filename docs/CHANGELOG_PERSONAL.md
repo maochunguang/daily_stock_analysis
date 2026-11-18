@@ -1542,3 +1542,84 @@ python -m personal.cli.main schedule --once   # immediate full round
 - ETF share returned 0 rows in this run (Eastmoney still blocking the list
   endpoint from this IP); the 11-18 rows synced earlier remain in the table and
   the fallback retries on later runs.
+
+## [2026-11-18] CHG-0027 — Broker ledger: statement import, decision snapshots, per-stock margin
+
+### Metadata
+- id: CHG-0027
+- date: 2026-11-18
+- status: done
+- area: datahub | web | docs
+- related: RM-12, RM-15, RM-42, CHG-0023
+
+### Summary
+Three capabilities that turn the market-monitor layer into a personal operating
+system:
+
+1. **交割单导入** (`personal/datahub/broker.py`): parses broker deal statements
+   (CSV/TSV/XLSX, GBK/UTF-8 auto-detected) via a broad header-alias map plus
+   explicit `column_map` overrides; normalizes sides (buy/sell/dividend/interest/
+   fee/other; zero-qty rows like 配号/申购 never enter positions); sums fee
+   columns; dedupes by row hash. Positions use moving-average cost including
+   fees, with realized P&L and oversell warnings.
+2. **决策快照** (`personal/datahub/decision.py`): every imported buy/sell gets a
+   journal entry whose `snapshot` JSON records the market state at that trade —
+   composite score + component percentiles (as of that date), TRIN band,
+   limit-up structure, sector crowding top-1, turnover, and the stock's own
+   margin balance with its 5-period change.
+3. **持仓股两融 (RM-42)**: the exchange detail rows (previously aggregated into
+   board rows and discarded) are now also kept per stock for
+   `自选股 ∪ 交割单持仓`; synced with the margin dataset using the same per-day
+   requests, exposed via `/api/margin/stocks` and a new review card.
+
+New UI: `/personal` → **账本** tab (import / positions / journal with snapshot
+chips) and the 持仓股两融 review card.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/models.py` | `BrokerTrade`, `BrokerPosition`, `MarginStockRow` |
+| `personal/datahub/store.py` | `broker_trade`/`broker_position`/`margin_stock` tables; `trade_journal` column migration (`source`/`snapshot`/`broker_trade_id`); accessors |
+| `personal/datahub/broker.py` | New: parser, classifier, cost engine, import pipeline |
+| `personal/datahub/decision.py` | New: `snapshot_market_state()` |
+| `personal/datahub/sources/margin_source.py` | `fetch_margin_all(start, end, stock_codes)` + SSE/SZSE stock-row extractors |
+| `personal/datahub/market.py` | `sync_margin_balance(..., stock_codes)` upserts `margin_stock` |
+| `personal/datahub/schedule.py`, `personal/api/app.py` | margin dataset passes `自选股 ∪ 持仓` codes |
+| `personal/api/app.py` | `/api/broker/import` (JSON base64 body), `/api/broker/positions`, `/api/broker/journal`, `/api/margin/stocks` |
+| `personal/cli/main.py` | `broker-import` / `broker-positions` / `journal`; margin sync accepts `--code` |
+| `apps/dsa-web/src/components/personal/LedgerPanel.tsx` | New 账本 tab panel |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | `MarginStocksCard` + registry + copy |
+| `apps/dsa-web/src/pages/PersonalPage.tsx`, `api/personal.ts`, `types/personal.ts` | ledger tab, marginStocks slice, client methods, types |
+| `personal/tests/test_broker.py` | 12 tests: parse/classify/cost/dedupe/snapshot/API |
+| docs | guide §4.8 + card table, AI_CONTEXT, roadmap RM-12/15/42 |
+
+### Commands
+```bash
+python -m personal.cli.main broker-import --file 交割单.csv
+python -m personal.cli.main broker-positions
+python -m personal.cli.main journal --days 60 --code 600519
+python -m personal.cli.main sync --dataset margin --code 600519 --code 300274
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- `pytest personal/tests`: 128 passed.
+- End-to-end smoke on a synthetic 中信建投-style statement (GBK CSV, 8 rows):
+  sides/fee sums correct; 600519 realized 5687.94 (= 155764.44 − 150076.5),
+  300274 remains 200 @ 80.044 avg, dividend 842 booked; re-import is idempotent
+  (journal unchanged); journal snapshot contains breadth/limit_up/sector_top for
+  the trade date.
+- `npm run build` passes with the new tab and card.
+
+### Notes / Migration
+- Quantity unit is 股; statements exported in 手 need conversion before import.
+- Statement rows without 日期/代码 are skipped and reported.
+- Per-stock margin covers SSE/SZSE listed 融资标的 only; SSE rows have no 融券余额
+  column in the public detail (kept null).
+- Importing fills history for the snapshot only as far as stored indicator data
+  allows; earlier missing legs are null, not fabricated.
+
+### Next
+- Manual journal entries with reason editing; link analyses/decision signals.
+- Per-stock daily bars so the ledger can show market value.
+- Margin-stock history backfill for newly imported holdings (120-day chunks).

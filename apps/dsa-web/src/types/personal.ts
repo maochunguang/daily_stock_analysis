@@ -322,3 +322,99 @@ export interface PersonalValidationResponse {
   datasets: PersonalValidationDataset[];
   findings: PersonalValidationFinding[];
 }
+
+export interface BrokerPositionRow {
+  code: string;
+  name: string;
+  quantity: number;
+  avg_cost: number | null;
+  cost_value: number | null;
+  realized_pnl: number;
+  dividend_cash: number;
+  fees_total: number;
+  buy_count: number;
+  sell_count: number;
+  first_trade_date: string | null;
+  last_trade_date: string | null;
+  updated_at?: string;
+}
+
+export interface BrokerSnapshotComponent {
+  metric: string;
+  label: string;
+  kind: 'pro' | 'contrarian';
+  percentile: number | null;
+  value: number | null;
+}
+
+export interface BrokerSnapshot {
+  trade_date: string;
+  composite: {
+    score: number | null;
+    state: string;
+    components: BrokerSnapshotComponent[];
+  };
+  breadth?: {
+    trin: number | null;
+    band: string;
+    adv_ratio: number | null;
+    interpretation: string;
+  };
+  limit_up?: { zt_count: number; zb_rate: number | null; max_streak: number };
+  turnover_yi?: number;
+  sector_top?: { board: string; share_pct: number | null };
+  margin_stock?: {
+    rzye: number | null;
+    rzye_buy: number | null;
+    rzye_chg_5d_pct?: number;
+  };
+}
+
+export interface BrokerJournalRow {
+  id: number;
+  trade_date: string;
+  code: string;
+  side: string;
+  quantity: number;
+  price: number;
+  amount: number;
+  reason: string | null;
+  source: string | null;
+  snapshot: BrokerSnapshot | string | null;
+}
+
+export interface BrokerImportSummary {
+  filename: string;
+  imported: number;
+  skipped_total: number;
+  skipped: Array<{ line_no: number; reason: string; raw: string }>;
+  warnings: string[];
+  positions: BrokerPositionRow[];
+  journal_added: number;
+  column_map: Record<string, string>;
+  unrecognized_headers: string[];
+}
+
+export interface PersonalBrokerImportRequest {
+  filename: string;
+  content_b64: string;
+  column_map?: Record<string, string>;
+}
+
+export interface MarginStockPoint {
+  trade_date: string;
+  rzye: number | null;
+  rzye_buy: number | null;
+  rqye: number | null;
+}
+
+export interface MarginStockEntry {
+  code: string;
+  name: string;
+  trade_date: string;
+  rzye: number | null;
+  rzye_buy: number | null;
+  rqye: number | null;
+  rzye_chg_pct: number | null;
+  series: MarginStockPoint[];
+}

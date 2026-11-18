@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import uuid
 from dataclasses import asdict
@@ -58,6 +59,14 @@ class ReplayRequest(BaseModel):
     include: Literal["both", "analyses", "signals"] = "both"
     save: bool = False
     adjust: Optional[Literal["hfq", "qfq", "none"]] = None
+
+
+class BrokerImportRequest(BaseModel):
+    """Statement upload as base64 (avoids a multipart dependency)."""
+
+    filename: str
+    content_b64: str
+    column_map: Optional[dict[str, str]] = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -375,7 +384,12 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         start = _parse_date(request.start, end - timedelta(days=10))
         dispatch = {
             "futures": lambda store: sync_index_futures(store, start=start, end=end),
-            "margin": lambda store: sync_margin_balance(store, start=start, end=end),
+            "margin": lambda store: sync_margin_balance(
+                store,
+                start=start,
+                end=end,
+                stock_codes=[*settings.stock_list, *store.broker_position_codes()],
+            ),
             "turnover": lambda store: sync_turnover(store, start=start, end=end),
             "zt": lambda store: sync_limit_up(store, start=start, end=end),
             "pcr": lambda store: sync_option_pcr(store, start=start, end=end),
@@ -604,6 +618,110 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         finally:
             store.close()
         return _json_safe(payload.as_dict())
+
+    # ------------------------------------------------------------------
+    # Broker ledger (交割单 / 持仓 / 决策快照) — RM-12/15/42
+    # ------------------------------------------------------------------
+    @app.post("/api/broker/import")
+    def broker_import(request: BrokerImportRequest) -> dict[str, Any]:
+        import base64
+        import binascii
+
+        from personal.datahub.broker import import_statement
+
+        try:
+            content = base64.b64decode(request.content_b64, validate=False)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid base64: {exc}")
+        if not content:
+            raise HTTPException(status_code=400, detail="empty file")
+        store = PersonalStore(settings.personal_db)
+        try:
+            summary = import_statement(
+                store,
+                request.filename,
+                content,
+                column_map=request.column_map,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        finally:
+            store.close()
+        return _json_safe(summary.as_dict())
+
+    @app.get("/api/broker/positions")
+    def broker_positions() -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.get_broker_positions()
+        finally:
+            store.close()
+        return {"positions": _json_safe(rows)}
+
+    @app.get("/api/broker/journal")
+    def broker_journal(
+        limit: int = Query(default=100, ge=1, le=1000),
+        code: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.list_journal(limit=limit, code=code)
+        finally:
+            store.close()
+        for row in rows:
+            if row.get("snapshot"):
+                try:
+                    row["snapshot"] = json.loads(row["snapshot"])
+                except (TypeError, ValueError):
+                    pass
+        return {"journal": _json_safe(rows)}
+
+    @app.get("/api/margin/stocks")
+    def margin_stocks(
+        days: int = Query(default=30, ge=1, le=1000),
+        code: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        """持仓股两融：latest snapshot per code + per-code rzye series."""
+        store = PersonalStore(settings.personal_db)
+        try:
+            end = date.today()
+            start = end - timedelta(days=days)
+            rows = store.get_margin_stock(code=code, start=start, end=end)
+        finally:
+            store.close()
+        by_code: dict[str, list[dict[str, Any]]] = {}
+        names: dict[str, str] = {}
+        for row in rows:
+            names.setdefault(row.code, row.name or "")
+            by_code.setdefault(row.code, []).append(
+                {
+                    "trade_date": row.trade_date.isoformat(),
+                    "rzye": row.rzye,
+                    "rzye_buy": row.rzye_buy,
+                    "rqye": row.rqye,
+                }
+            )
+        latest = []
+        for code_value, series in sorted(by_code.items()):
+            last = series[-1]
+            change = None
+            if len(series) >= 2 and series[-2]["rzye"] and last["rzye"]:
+                change = round(
+                    (last["rzye"] - series[-2]["rzye"]) / series[-2]["rzye"] * 100, 2
+                )
+            latest.append(
+                {
+                    "code": code_value,
+                    "name": names.get(code_value, ""),
+                    "trade_date": last["trade_date"],
+                    "rzye": last["rzye"],
+                    "rzye_buy": last["rzye_buy"],
+                    "rqye": last["rqye"],
+                    "rzye_chg_pct": change,
+                    "series": series,
+                }
+            )
+        return {"stocks": _json_safe(latest)}
 
     @app.get("/api/backtest/runs")
     def runs() -> dict[str, Any]:

@@ -217,7 +217,14 @@ def _run_dataset(
     if dataset == "futures":
         return sync_index_futures(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "margin":
-        return sync_margin_balance(store, start=as_of - timedelta(days=10), end=as_of).rows
+        # 持仓股两融：自选股 ∪ 交割单持仓
+        codes_margin = list(dict.fromkeys([*codes, *store.broker_position_codes()]))
+        return sync_margin_balance(
+            store,
+            start=as_of - timedelta(days=10),
+            end=as_of,
+            stock_codes=codes_margin,
+        ).rows
     if dataset == "turnover":
         return sync_turnover(store, start=as_of - timedelta(days=30), end=as_of).rows
     if dataset == "zt":

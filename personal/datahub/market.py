@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from typing import Sequence
 
 from .models import (
     BondYield,
@@ -130,7 +131,13 @@ def sync_margin_balance(
     start: date | None = None,
     end: date | None = None,
     source: MarginSource | None = None,
+    stock_codes: Sequence[str] = (),
 ) -> MarketSyncResult:
+    """Margin balance sync; with ``stock_codes`` also keeps per-stock rows.
+
+    持仓股两融（RM-42）：代码列表通常为 自选股 ∪ 交割单持仓，与市场行共用
+    同一次逐日请求。
+    """
     end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
     if (end - start).days > MARGIN_MAX_DAYS:
@@ -139,8 +146,11 @@ def sync_margin_balance(
             "(per-day exchange detail requests); narrow --start/--end"
         )
     source = source or MarginSource()
-    rows = source.fetch_margin_balance(start, end)
+    codes = tuple(dict.fromkeys(code.strip() for code in stock_codes if code and code.strip()))
+    rows, stock_rows = source.fetch_margin_all(start, end, codes)
     count = store.upsert_margin_balance(rows)
+    if stock_rows:
+        count += store.upsert_margin_stock(stock_rows)
     latest = max((row.trade_date for row in rows), default=None)
     return MarketSyncResult(
         dataset="margin",

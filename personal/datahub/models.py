@@ -428,3 +428,86 @@ class RestrictedRelease:
             self.shares,
             self.market_value_yi,
         )
+
+
+@dataclass(frozen=True)
+class BrokerTrade:
+    """One parsed row of a broker deal statement (交割单/对账单).
+
+    ``side`` is normalized: buy / sell / dividend / interest / fee / other.
+    Monetary values are in yuan. ``row_hash`` dedupes re-imports of the same
+    file (and identical rows across files).
+    """
+
+    trade_date: date
+    code: str
+    side: str
+    name: str = ""
+    category: str = ""
+    quantity: float | None = None
+    price: float | None = None
+    amount: float | None = None
+    fees: float | None = None
+    cash_delta: float | None = None
+    source_file: str = ""
+    line_no: int = 0
+    row_hash: str = ""
+
+    def to_row(self) -> tuple:
+        return (
+            self.row_hash,
+            self.source_file,
+            self.line_no,
+            self.trade_date.isoformat(),
+            self.code,
+            self.name,
+            self.side,
+            self.category,
+            self.quantity,
+            self.price,
+            self.amount,
+            self.fees,
+            self.cash_delta,
+        )
+
+
+@dataclass(frozen=True)
+class BrokerPosition:
+    """Per-code position computed from broker trades (moving-average cost)."""
+
+    code: str
+    name: str = ""
+    quantity: float = 0.0
+    avg_cost: float | None = None
+    cost_value: float | None = None
+    realized_pnl: float = 0.0
+    dividend_cash: float = 0.0
+    fees_total: float = 0.0
+    buy_count: int = 0
+    sell_count: int = 0
+    first_trade_date: date | None = None
+    last_trade_date: date | None = None
+
+
+@dataclass(frozen=True)
+class MarginStockRow:
+    """Per-stock margin-financing row for watchlist/holdings codes (yuan)."""
+
+    trade_date: date
+    code: str
+    name: str = ""
+    rzye: float | None = None
+    rzye_buy: float | None = None
+    rqye: float | None = None
+    source: str = "exchange_margin"
+
+    def to_row(self) -> tuple:
+        return (
+            self.trade_date.isoformat(),
+            self.code,
+            self.name,
+            self.rzye,
+            self.rzye_buy,
+            self.rqye,
+            self.source,
+        )

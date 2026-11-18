@@ -33,6 +33,7 @@ import {
   StatCard,
 } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { LedgerPanel } from '../components/personal/LedgerPanel';
 import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 import type {
   PersonalBacktestResponse,
@@ -52,9 +53,10 @@ import type {
   PersonalSyncResponse,
   PersonalUpstreamRecent,
   PersonalValidationResponse,
+  MarginStockEntry,
 } from '../types/personal';
 
-type TabKey = 'overview' | 'review' | 'data' | 'backtest' | 'plugins' | 'qmt';
+type TabKey = 'overview' | 'review' | 'ledger' | 'data' | 'backtest' | 'plugins' | 'qmt';
 
 const INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
@@ -70,6 +72,7 @@ const COPY = {
     tabs: {
       overview: '总览',
       review: '深度复盘',
+      ledger: '账本',
       data: '数据同步',
       backtest: '个人回测',
       plugins: '插件',
@@ -154,6 +157,7 @@ const COPY = {
     tabs: {
       overview: 'Overview',
       review: 'Deep Review',
+      ledger: 'Ledger',
       data: 'Data',
       backtest: 'Backtest',
       plugins: 'Plugins',
@@ -321,6 +325,7 @@ const PersonalPage: React.FC = () => {
   const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
   const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
   const [reviewValidation, setReviewValidation] = useState<PersonalValidationResponse | null>(null);
+  const [reviewMarginStocks, setReviewMarginStocks] = useState<MarginStockEntry[]>([]);
   const [reviewLoaded, setReviewLoaded] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState('');
@@ -362,6 +367,7 @@ const PersonalPage: React.FC = () => {
         macroData,
         compositeData,
         validationData,
+        marginStocksData,
       ] = await Promise.all([
         personalApi.breadth(30),
         personalApi.futures(30),
@@ -374,6 +380,7 @@ const PersonalPage: React.FC = () => {
         personalApi.macro(120),
         personalApi.composite(),
         personalApi.marketValidate(400),
+        personalApi.marginStocks(30),
       ]);
       setReviewBreadth(breadthData.rows);
       setReviewFutures(futuresData.rows);
@@ -386,6 +393,7 @@ const PersonalPage: React.FC = () => {
       setReviewMacro(macroData);
       setReviewComposite(compositeData);
       setReviewValidation(validationData);
+      setReviewMarginStocks(marginStocksData.stocks);
       setReviewLoaded(true);
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : String(err));
@@ -857,6 +865,7 @@ const PersonalPage: React.FC = () => {
                 crowding={reviewCrowding}
                 macro={reviewMacro}
                 composite={reviewComposite}
+                marginStocks={reviewMarginStocks}
                 validation={reviewValidation}
                 busy={reviewBusy}
                 onRefreshMarket={(dataset) => void handleMarketSync(dataset)}
@@ -866,6 +875,8 @@ const PersonalPage: React.FC = () => {
           </div>
         )
       ) : null}
+
+      {tab === 'ledger' ? <LedgerPanel /> : null}
 
       {tab === 'data' ? (
         <Card title={copy.tabs.data} variant="bordered">

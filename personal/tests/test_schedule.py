@@ -60,7 +60,7 @@ class TestRunScheduledSync:
                 latest_date=date(2026, 11, 17), message="",
             )
 
-        def fake_margin(store, *, start, end):
+        def fake_margin(store, *, start, end, stock_codes=()):
             return MarketSyncResult(
                 dataset="margin", start=start, end=end, rows=35,
                 latest_date=date(2026, 11, 16), message="",

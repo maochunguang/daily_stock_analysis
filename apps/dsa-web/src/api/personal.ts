@@ -17,6 +17,11 @@ import type {
   PersonalStatus,
   PersonalSyncResponse,
   PersonalUpstreamRecent,
+  BrokerImportSummary,
+  BrokerJournalRow,
+  BrokerPositionRow,
+  MarginStockEntry,
+  PersonalBrokerImportRequest,
 } from '../types/personal';
 
 const BASE = '/personal-api/api';
@@ -134,4 +139,15 @@ export const personalApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  marginStocks: (days = 30) =>
+    request<{ stocks: MarginStockEntry[] }>(`/market/stocks?days=${days}`),
+  brokerImport: (body: PersonalBrokerImportRequest) =>
+    request<BrokerImportSummary>('/broker/import', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  brokerPositions: () =>
+    request<{ positions: BrokerPositionRow[] }>('/broker/positions'),
+  brokerJournal: (limit = 100) =>
+    request<{ journal: BrokerJournalRow[] }>(`/broker/journal?limit=${limit}`),
 };

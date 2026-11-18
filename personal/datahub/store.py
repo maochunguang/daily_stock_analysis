@@ -17,6 +17,8 @@ from typing import Any, Iterable, Iterator, Optional, Sequence
 from .models import (
     AdjustFactor,
     BondYield,
+    BrokerPosition,
+    BrokerTrade,
     DailyBar,
     EtfShare,
     EtfSnapshot,
@@ -25,6 +27,7 @@ from .models import (
     IndexFutures,
     LimitUpStats,
     MarginBalance,
+    MarginStockRow,
     MarketBreadth,
     MarketTurnover,
     OptionPcr,
@@ -306,6 +309,53 @@ CREATE TABLE IF NOT EXISTS trade_journal (
   notes TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS broker_trade (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  row_hash TEXT NOT NULL UNIQUE,
+  source_file TEXT NOT NULL DEFAULT '',
+  line_no INTEGER NOT NULL DEFAULT 0,
+  trade_date TEXT NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT,
+  side TEXT NOT NULL,
+  category TEXT,
+  quantity REAL,
+  price REAL,
+  amount REAL,
+  fees REAL,
+  cash_delta REAL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_broker_trade_date ON broker_trade(trade_date);
+
+CREATE TABLE IF NOT EXISTS broker_position (
+  code TEXT PRIMARY KEY,
+  name TEXT,
+  quantity REAL NOT NULL DEFAULT 0,
+  avg_cost REAL,
+  cost_value REAL,
+  realized_pnl REAL NOT NULL DEFAULT 0,
+  dividend_cash REAL NOT NULL DEFAULT 0,
+  fees_total REAL NOT NULL DEFAULT 0,
+  buy_count INTEGER NOT NULL DEFAULT 0,
+  sell_count INTEGER NOT NULL DEFAULT 0,
+  first_trade_date TEXT,
+  last_trade_date TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS margin_stock (
+  trade_date TEXT NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT,
+  rzye REAL,
+  rzye_buy REAL,
+  rqye REAL,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (trade_date, code)
+);
 """
 
 
@@ -372,7 +422,28 @@ class PersonalStore:
     def initialize(self) -> None:
         with self._transaction() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
 
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Lightweight column migration for databases created earlier."""
+        wanted = {
+            "trade_journal": (
+                ("source", "TEXT NOT NULL DEFAULT 'manual'"),
+                ("snapshot", "TEXT"),
+                ("broker_trade_id", "INTEGER"),
+            ),
+        }
+        for table, columns in wanted.items():
+            existing = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if not existing:
+                continue
+            for column, ddl in columns:
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     def close(self) -> None:
         self._conn.close()
 
@@ -1390,6 +1461,9 @@ class PersonalStore:
         target_price: Optional[float] = None,
         mistake_type: Optional[str] = None,
         notes: Optional[str] = None,
+        source: str = "manual",
+        snapshot: Optional[str] = None,
+        broker_trade_id: Optional[int] = None,
     ) -> int:
         with self._transaction() as conn:
             cursor = conn.execute(
@@ -1397,8 +1471,9 @@ class PersonalStore:
                 INSERT INTO trade_journal
                   (trade_date, code, side, quantity, price, amount, reason,
                    analysis_id, decision_signal_id, order_id, stop_loss,
-                   target_price, mistake_type, notes, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   target_price, mistake_type, notes, source, snapshot,
+                   broker_trade_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade_date.isoformat(),
@@ -1415,10 +1490,262 @@ class PersonalStore:
                     target_price,
                     mistake_type,
                     notes,
+                    source,
+                    snapshot,
+                    broker_trade_id,
                     _now_iso(),
                 ),
             )
             return int(cursor.lastrowid)
+
+    def journal_has_broker_trade(self, broker_trade_id: int) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM trade_journal WHERE broker_trade_id = ? LIMIT 1",
+            (int(broker_trade_id),),
+        ).fetchone()
+        return row is not None
+
+    def list_journal(
+        self,
+        *,
+        limit: int = 100,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        code: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(int(limit))
+        rows = self._conn.execute(
+            "SELECT * FROM trade_journal" + where
+            + " ORDER BY trade_date DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Broker statements (交割单)
+    # ------------------------------------------------------------------
+    def upsert_broker_trades(self, trades: Iterable[BrokerTrade]) -> int:
+        rows = [trade.to_row() + (_now_iso(),) for trade in trades]
+        if not rows:
+            return 0
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO broker_trade
+                  (row_hash, source_file, line_no, trade_date, code, name,
+                   side, category, quantity, price, amount, fees, cash_delta,
+                   created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(row_hash) DO UPDATE SET
+                  source_file=excluded.source_file,
+                  line_no=excluded.line_no,
+                  name=excluded.name,
+                  category=excluded.category,
+                  quantity=excluded.quantity,
+                  price=excluded.price,
+                  amount=excluded.amount,
+                  fees=excluded.fees,
+                  cash_delta=excluded.cash_delta
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def get_broker_trades(
+        self,
+        *,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        code: Optional[str] = None,
+    ) -> list[BrokerTrade]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._conn.execute(
+            "SELECT * FROM broker_trade" + where
+            + " ORDER BY trade_date, id",
+            params,
+        ).fetchall()
+        return [
+            BrokerTrade(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                code=row["code"],
+                side=row["side"],
+                name=row["name"] or "",
+                category=row["category"] or "",
+                quantity=row["quantity"],
+                price=row["price"],
+                amount=row["amount"],
+                fees=row["fees"],
+                cash_delta=row["cash_delta"],
+                source_file=row["source_file"] or "",
+                line_no=row["line_no"] or 0,
+                row_hash=row["row_hash"] or "",
+            )
+            for row in rows
+        ]
+
+    def broker_trade_ids(self) -> list[int]:
+        return [
+            int(row["id"])
+            for row in self._conn.execute("SELECT id FROM broker_trade").fetchall()
+        ]
+
+    def upsert_broker_positions(
+        self, positions: Iterable[BrokerPosition]
+    ) -> int:
+        now = _now_iso()
+        rows = [
+            (
+                position.code,
+                position.name,
+                position.quantity,
+                position.avg_cost,
+                position.cost_value,
+                position.realized_pnl,
+                position.dividend_cash,
+                position.fees_total,
+                position.buy_count,
+                position.sell_count,
+                position.first_trade_date.isoformat()
+                if position.first_trade_date
+                else None,
+                position.last_trade_date.isoformat()
+                if position.last_trade_date
+                else None,
+                now,
+            )
+            for position in positions
+        ]
+        if not rows:
+            return 0
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO broker_position
+                  (code, name, quantity, avg_cost, cost_value, realized_pnl,
+                   dividend_cash, fees_total, buy_count, sell_count,
+                   first_trade_date, last_trade_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                  name=excluded.name,
+                  quantity=excluded.quantity,
+                  avg_cost=excluded.avg_cost,
+                  cost_value=excluded.cost_value,
+                  realized_pnl=excluded.realized_pnl,
+                  dividend_cash=excluded.dividend_cash,
+                  fees_total=excluded.fees_total,
+                  buy_count=excluded.buy_count,
+                  sell_count=excluded.sell_count,
+                  first_trade_date=excluded.first_trade_date,
+                  last_trade_date=excluded.last_trade_date,
+                  updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def get_broker_positions(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM broker_position ORDER BY cost_value DESC, code"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def broker_position_codes(self) -> list[str]:
+        return [
+            row["code"]
+            for row in self._conn.execute(
+                "SELECT code FROM broker_position WHERE quantity > 0 ORDER BY code"
+            ).fetchall()
+        ]
+
+    # ------------------------------------------------------------------
+    # Per-stock margin (持仓股两融)
+    # ------------------------------------------------------------------
+    def upsert_margin_stock(self, rows: Iterable[MarginStockRow]) -> int:
+        now = _now_iso()
+        values = [row.to_row() + (now,) for row in rows]
+        if not values:
+            return 0
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO margin_stock
+                  (trade_date, code, name, rzye, rzye_buy, rqye, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date, code) DO UPDATE SET
+                  name=excluded.name,
+                  rzye=excluded.rzye,
+                  rzye_buy=excluded.rzye_buy,
+                  rqye=excluded.rqye,
+                  source=excluded.source,
+                  updated_at=excluded.updated_at
+                """,
+                values,
+            )
+        return len(values)
+
+    def get_margin_stock(
+        self,
+        *,
+        code: Optional[str] = None,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        limit: int = 0,
+    ) -> list[MarginStockRow]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM margin_stock" + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = "SELECT * FROM margin_stock" + where + " ORDER BY trade_date"
+        return [
+            MarginStockRow(
+                trade_date=date.fromisoformat(row["trade_date"]),
+                code=row["code"],
+                name=row["name"] or "",
+                rzye=row["rzye"],
+                rzye_buy=row["rzye_buy"],
+                rqye=row["rqye"],
+                source=row["source"] or "",
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
 
 
 def _bar_from_row(row: sqlite3.Row) -> DailyBar:

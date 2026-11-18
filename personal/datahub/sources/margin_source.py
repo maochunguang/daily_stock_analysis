@@ -25,8 +25,9 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import date
+from typing import Sequence
 
-from ..models import MarginBalance
+from ..models import MarginBalance, MarginStockRow
 from .base import SourceUnavailable
 
 SSE_DETAIL_URL = "https://query.sse.com.cn/marketdata/tradedata/queryMargin.do"
@@ -75,8 +76,21 @@ class MarginSource:
         return ak
 
     def fetch_margin_balance(self, start: date, end: date) -> list[MarginBalance]:
+        rows, _ = self.fetch_margin_all(start, end, ())
+        return rows
+
+    def fetch_margin_all(
+        self, start: date, end: date, stock_codes: Sequence[str] = ()
+    ) -> tuple[list[MarginBalance], list[MarginStockRow]]:
+        """Market/board rows plus per-stock rows for ``stock_codes``.
+
+        持仓股两融（RM-42）：明细本来只聚合成板块就丢弃，这里按代码留档，
+        与市场行共用同一次逐日请求，不额外增加交易所调用。
+        """
         ak = self._ak()
         rows: list[MarginBalance] = []
+        stock_rows: list[MarginStockRow] = []
+        wanted = {code.strip() for code in stock_codes if code and code.strip()}
 
         sse_summary = self._sse_summary(ak, start, end)
 
@@ -123,6 +137,13 @@ class MarginSource:
                         )
                     )
 
+            if wanted:
+                stock_rows.extend(_stock_rows_sse(detail or [], day, wanted, self.name))
+                if szse_detail is not None:
+                    stock_rows.extend(
+                        _stock_rows_szse(szse_detail, day, wanted, self.name)
+                    )
+
             if not has_any:
                 continue
 
@@ -160,7 +181,7 @@ class MarginSource:
             rows.extend(board_rows)
             # 两融明细按日轮询（SSE 翻页 + 深市两接口），礼貌节流
             time.sleep(0.3)
-        return rows
+        return rows, stock_rows
 
     # ------------------------------------------------------------------
     # SSE
@@ -259,6 +280,50 @@ class MarginSource:
         if frame is None or frame.empty:
             return None
         return frame
+
+
+def _stock_rows_sse(
+    detail: list[dict], day: date, wanted: set[str], source: str
+) -> list[MarginStockRow]:
+    rows: list[MarginStockRow] = []
+    for row in detail:
+        code = str(row.get("stockCode") or "").strip()
+        if code not in wanted:
+            continue
+        rows.append(
+            MarginStockRow(
+                trade_date=day,
+                code=code,
+                name=str(row.get("stockName") or "").strip(),
+                rzye=_to_float(row.get("rzye")),
+                rzye_buy=_to_float(row.get("rzmre")),
+                rqye=_to_float(row.get("rqye")),
+                source=source,
+            )
+        )
+    return rows
+
+
+def _stock_rows_szse(
+    frame, day: date, wanted: set[str], source: str
+) -> list[MarginStockRow]:
+    rows: list[MarginStockRow] = []
+    for _, row in frame.iterrows():
+        code = str(row.get("证券代码") or "").strip()
+        if code not in wanted:
+            continue
+        rows.append(
+            MarginStockRow(
+                trade_date=day,
+                code=code,
+                name=str(row.get("证券简称") or "").strip(),
+                rzye=_to_float(row.get("融资余额")),
+                rzye_buy=_to_float(row.get("融资买入额")),
+                rqye=_to_float(row.get("融券余额")),
+                source=source,
+            )
+        )
+    return rows
 
 
 def _sum_by_board(rows: list[dict]) -> dict[str, dict[str, float]]:

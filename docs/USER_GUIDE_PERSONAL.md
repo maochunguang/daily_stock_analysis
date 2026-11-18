@@ -343,7 +343,7 @@ python -m personal.cli.main info
 
 ### 4.6 深度复盘
 
-`/personal` → **深度复盘** tab，12 张卡片（机构式多指标印证；卡片注册表
+`/personal` → **深度复盘** tab，13 张卡片（机构式多指标印证；卡片注册表
 `REVIEW_CARDS` 里加一项即新增指标）：
 
 | 卡片 | 内容 | 性质 | 数据更新 |
@@ -357,6 +357,7 @@ python -m personal.cli.main info
 | 涨停梯队 | 涨停/首板/最高连板、**炸板率**、**昨涨停今收益**（亏钱效应） | 结构 | 同上 |
 | 期权 PCR | 50ETF 认沽/认购成交量 PCR + 持仓量 PCR（上交所官方统计） | 定价（逆向） | 同上（无第三方限频） |
 | 资金面 | **两融交易占比**（>10% 过热 / <7% 冰点）、7 只宽基 ETF 份额及日变化、全市场成交额 | 资金 | 同上 |
+| 持仓股两融 | 自选股 ∪ 交割单持仓的融资余额/买入额、日变化与 30 日曲线（RM-42） | 杠杆（个股） | 同上（margin 数据集） |
 | 行业拥挤度 | 成交占比最高的 15 个行业 + 各自 250 日分位（>90% 拥挤警戒） | 结构 | 同上（快照自建积累） |
 | 宏观锚 | 中美 10Y/2Y 利差曲线 + 未来 60 天解禁日历 | 宏观 | 同上（利差含全量历史） |
 | 更多指标（规划中） | 北向活跃度、新基金发行、龙虎榜席位 | — | — |
@@ -441,6 +442,42 @@ Docker Compose 提供 **personal-sync** 副服务（与 server 共享 `data/pers
 - 手动立即跑一轮：`docker compose exec personal-sync python -m personal.cli.main schedule --once`
 - 调整时间：修改 compose 中 `--at 06:00`（如 `--at 05:00`），`docker compose up -d personal-sync` 生效。
 
+### 4.8 账本：交割单、持仓与决策快照（RM-12/15/42）
+
+`/personal` → **账本** tab，三块内容：
+
+**导入券商交割单**
+
+- 支持券商导出的 CSV/TSV/XLSX（GBK/UTF-8 自动探测），常见表头别名自动映射
+  （交易日期/成交日期、证券代码、业务名称、成交数量/价格/金额、手续费/印花税/
+  过户费、清算金额/发生金额）；对不上的表头会在结果里列出
+- 方向归一：买入/卖出（含融资买入、担保品买入卖出、买券还券/卖券还款）、
+  红利入账、利息归本；**配号/申购未成交/撤单等 0 数量行不进持仓**
+- 同一文件重复导入按行内容哈希幂等去重；费用列自动求和
+- 持仓用**含费移动加权平均成本**，卖出自动算已实现盈亏；卖出超过持仓会给出警告
+
+**持仓表**：数量/成本/已实现盈亏/累计分红/费用合计/最近交易日（市值需日线数据，
+个人层尚未同步持仓股日线时显示为空）。
+
+**交易日志与决策快照**：每笔买卖自动存档**当时的市场状态**（综合分与状态、TRIN
+及判读、期权 PCR 分位、期指净空分位、行业拥挤 top1、该股两融余额及 5 期变化），
+攒一段时间后即可统计「什么市场状态下我的操作胜率高」。
+
+CLI：
+
+```bash
+# 导入（列名对不上时强制映射）
+python -m personal.cli.main broker-import --file 交割单.csv
+python -m personal.cli.main broker-import --file 对账单.xlsx \
+  --map 成交日期=trade_date --map 业务名称=category
+# 查持仓与日志
+python -m personal.cli.main broker-positions
+python -m personal.cli.main journal --days 60 --code 600519
+```
+
+注意：数量单位按**股**解析（券商按手导出需先换算）；历史持仓只能从交割单重建，
+导入范围建议覆盖建仓以来的完整记录。
+
 ## 5. CLI 参考
 
 通用形式：
@@ -460,6 +497,9 @@ python -m personal.cli.main <command> [options]
 | `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
 | `schedule` | 定时增量同步（默认 06:00 每日循环，可多时点） | `--at HH:MM[,HH:MM]`、`--datasets`、`--arms-dir`、`--once`（立即跑一轮并退出） |
 | `validate` | 指标数据体检（恒等式/取值域/交易日/跳变/跨指标/外部抽检） | `--days N`（默认 400，0=全部）、`--dataset NAME`（可重复）、`--online`、`--json` |
+| `broker-import` | 导入券商交割单（去重/成本/决策快照） | `--file 路径`、`--map 原始列=字段`（可重复）、`--no-journal` |
+| `broker-positions` | 查看交割单算出的持仓/成本/盈亏 | — |
+| `journal` | 查看交易日志与决策快照 | `--days N`（默认 30）、`--code` |
 | `plugins` | 列出插件和加载错误 | — |
 | `web` | 启动独立控制台 | `--host`、`--port`、`--reload` |
 
