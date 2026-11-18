@@ -101,7 +101,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
 | `personal/datahub/validate.py` | RM-41 data passport: identities, ranges, trading days, jumps, cross-metric ratios, optional external spot checks |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
-| `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares + THS sector crowding |
+| `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares (EM list API with per-symbol `f84` fallback, CHG-0025) + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
 | `personal/datahub/sources/option_source.py` | ETF-option PCR via SSE official daily stats (complete volume+OI basis, no vendor rate limit) |
 | `personal/datahub/sources/cffex_source.py` | CFFEX top-20 member position rank (official GBK CSV) |
