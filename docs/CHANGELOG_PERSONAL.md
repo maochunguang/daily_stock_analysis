@@ -1365,16 +1365,23 @@ cd apps/dsa-web && npm run build
 - `pytest personal/tests`: 115 passed.
 - Local run against a copy of the NAS DB: 8/11 datasets `ok`; only the known
   ETF unit rows (old data) and the future-dated snapshot rows flagged `error`,
-  exactly the two bugs this change fixes.
-- External spot checks measured before coding: SSE margin detail/summary ratio
-  97.0%, SZSE 99.1%, CFFEX main-contract close/OI identical to Sina snapshot,
-  ChinaBond 10Y vs Eastmoney 0.16bp.
+  exactly the two bugs this change fixes. After the simulated repair: 100/100.
+- NAS after migration (2026-11-18 18:00): 10/11 datasets `ok`, health 95;
+  only `etf_share` is `empty` because Eastmoney push2 rate-limited the IP after
+  repeated runs (the 06:00 schedule fills it). Calendar backfilled with 727
+  trading days (2024-01-01..2026-12-31), margin now has 11-17, zt/sector have
+  real 11-18 rows.
+- NAS `validate --online`: margin details 97.0%/99.1%, CFFEX four products
+  0.00% close difference, ChinaBond 10Y 0.0bp, Legulegu skipped on date mismatch.
 - `npm run build`: PersonalPage bundle rebuilt successfully.
 
 ### Notes / Migration
 - Existing installs must delete the one-day `etf_share` / `sector_amount` rows
   and the future-dated `limit_up_stats` row, then re-sync; see
   `docs/DOCKER_PERSONAL.md` §9.
+- Freshness allows one trading-day lag for every market dataset because data
+  for day D is fetched by the next 06:00 run (12:00 adds late-published margin);
+  a real failure is reported after two missed sessions.
 - Validation only judges trading-day alignment inside the stored calendar
   coverage; backfill `calendar` (2 years) to enable full-history checks.
 - Online spot checks are manual only (`--online`), never part of the scheduled
