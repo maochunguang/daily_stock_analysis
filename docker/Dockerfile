@@ -1,3 +1,5 @@
+# BuildKit frontend: 依赖外网拉取 docker/dockerfile:1.7，网络不稳时会构建失败；
+# Docker 内置前端已支持本文件用到的特性，注释掉以离线构建。
 # syntax=docker/dockerfile:1.7
 
 # ===================================
