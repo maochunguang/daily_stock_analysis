@@ -55,13 +55,15 @@ DATASET_LABELS: dict[str, str] = {
     "release": "解禁日历",
 }
 
-#: 允许落后「最近已收盘交易日」的交易日数（发布时点差异）
+#: 允许落后「最近已收盘交易日」的交易日数。
+#: 收盘后当天数据要等下一轮 06:00 同步才入库，所以统一留 1 个交易日缓冲；
+#: 连续两轮没更新才会报 stale。
 MAX_LAG_DAYS: dict[str, int] = {
-    "turnover": 0,
+    "turnover": 1,
     "margin": 1,  # 交易所两融数据次日早间发布
-    "futures": 0,
-    "cffex_rank": 0,
-    "pcr": 0,
+    "futures": 1,
+    "cffex_rank": 1,
+    "pcr": 1,
     "zt": 1,
     "sector": 1,
     "etf_share": 1,
@@ -845,8 +847,8 @@ def _check_bond(store, start, end, calendar):
                 latest_row.trade_date,
             )
         )
-    findings.extend(_non_trading("bond", dates, calendar))
-    findings.extend(_gaps("bond", dates, calendar, max_missing_ratio=0.05))
+    # 东财收益率序列按自然日给出（含美债独立交易日与调休日），
+    # 不能按 A 股交易日历判定非交易日，也不做交易日缺口检查。
     findings.extend(_jump("bond", cn_series, max_pct=0.05, label="中国10Y"))
     findings.extend(_jump("bond", us_series, max_pct=0.05, label="美国10Y"))
     latest = max(dates, default=None)
