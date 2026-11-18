@@ -145,6 +145,12 @@ python -m personal.cli.main info
 - Docker/NAS：直接写 `.env` 或 Compose 的 `environment`。
 - **不要提交** `config/personal.env`、`.env`、`data/*.db`。
 
+> **Docker 下 WebUI 保存的配置（LLM 密钥、自选股）：** 上游会写到 `ENV_FILE`。
+> NAS 部署把 `ENV_FILE` 指向 `data/runtime.env`（bind 挂载），重建容器不会丢；
+> 首次启用时用 `cp .env data/runtime.env` 播种。不要把宿主机 `.env` 单文件
+> 挂载到 `/app/.env`（会阻止原子写入）。详见
+> [DOCKER_PERSONAL.md](DOCKER_PERSONAL.md) §9。
+
 ### 3.2 常用变量
 
 | 变量 | 默认值 | 说明 |

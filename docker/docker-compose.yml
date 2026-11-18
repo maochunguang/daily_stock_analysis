@@ -36,6 +36,9 @@ x-common: &common
 
   environment:
     - TZ=Asia/Shanghai
+    # WebUI 保存的配置写入数据卷（重建容器不丢）。注意：env_file 注入的同名
+    # 键在重启时仍会覆盖该文件；要让 WebUI 值生效，请从 ../.env 移除同名键。
+    - ENV_FILE=/app/data/runtime.env
 
     # Web/API service bind address (must be 0.0.0.0 inside container)
     - WEBUI_HOST=0.0.0.0

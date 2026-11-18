@@ -319,6 +319,10 @@ instrument name; limit prices from previous close + board rules.
   (Docker Desktop 29.9.3, Compose v5.7.0): build, `/personal`, personal APIs,
   demo backtest and persistence across restart all pass. See
   `docs/DOCKER_PERSONAL.md` §10.
+- WebUI-saved settings (LLM keys, `STOCK_LIST`) live in upstream's `ENV_FILE`,
+  not in the DB. In Docker set `ENV_FILE` to a file on a writable volume
+  (NAS: `/app/data/runtime.env`); the default `/app/.env` is container-local and
+  is lost on `--force-recreate`. Never bind-mount host `.env` over `/app/.env`.
 - Upstream DB `data/stock_analysis.db` is created only after the first upstream
   analysis; before that the personal page shows “上游 DSA 未生成”.
 

@@ -1391,3 +1391,67 @@ cd apps/dsa-web && npm run build
 - Add more external comparisons when a stable second source exists (turnover,
   PCR, sector amounts).
 - Consider persisting validation history (currently latest snapshot only).
+
+## [2026-11-18] CHG-0024 — Fix WebUI config loss on container recreate (LLM keys / watchlist)
+
+### Metadata
+- id: CHG-0024
+- date: 2026-11-18
+- status: done
+- area: docs | docker
+- related: CHG-0020, CHG-0023
+
+### Summary
+The upstream WebUI persists settings (LLM keys, `STOCK_LIST`, notification and
+search keys) into its active `.env` file, which defaults to `/app/.env` — inside
+the container writable layer. The NAS compose only mounted `data/logs/reports`
+and used the host `.env` for `${VAR}` interpolation, so every
+`docker compose up --force-recreate` discarded the container-local `.env` and
+the app came back with an empty watchlist and no LLM channels.
+
+Fix: set `ENV_FILE=/app/data/runtime.env` for the server (inside the bind-mounted
+`data/` volume) and seed that file once from the host `.env`. The app now reads
+and writes a persistent config file; `refreshing the image` no longer touches it.
+Host `.env` remains only for compose variable substitution (`TUSHARE_TOKEN`).
+Binding the host `.env` over `/app/.env` is explicitly avoided because Docker
+single-file mount points break the config service's atomic replace.
+
+### Files
+| Path | Change |
+|---|---|
+| `docker/docker-compose.yml` | `ENV_FILE=/app/data/runtime.env` for all services + precedence note |
+| `docs/DOCKER_PERSONAL.md` | New §"WebUI 配置持久化": incident cause, current layout, verification, forbidden pattern |
+| `docs/USER_GUIDE_PERSONAL.md` | §3.1 note on Docker WebUI config persistence |
+| `docs/AI_CONTEXT.md` | Deployment limitation recorded |
+| NAS `docker-compose.yml` | Server environment adds `ENV_FILE`; `data/runtime.env` seeded (host-side change) |
+
+### Commands
+```bash
+# NAS (one-time migration)
+cp .env data/runtime.env && chmod 600 data/runtime.env
+# compose: server environment -> ENV_FILE=/app/data/runtime.env
+docker compose up -d --force-recreate server
+# verify
+docker exec daily_stock_analysis-2 sh -c 'echo $ENV_FILE; ls -l /app/data/runtime.env'
+```
+
+### Verification
+- Before: `Config.get_instance().stock_list == []`, `llm_channels == []`,
+  `litellm_model == ""`, no `/app/.env` in the container.
+- After seeding + recreate: `stock_list` has 11 codes, `llm_channels` has 1
+  (MiniMax), `litellm_model = openai/MiniMax-M2.7-highspeed`,
+  `ConfigManager().env_path = /app/data/runtime.env`.
+- Wrote via the real `SystemConfigService.update()` path as the container user
+  (uid 1000), then `--force-recreate` again: the 11-code watchlist and LLM
+  channel/model still present.
+- `runtime.env` is mode 600, owned by the app user; app can write it.
+
+### Notes / Migration
+- Keys previously entered only through the WebUI are not recoverable; the host
+  `.env` (2026-05 snapshot) was used as the seed (watchlist + MiniMax channel).
+  Re-enter any newer keys once in the WebUI — they now persist.
+- If the same key exists in compose `env_file`/`environment`, the startup value
+  overrides `runtime.env` on restart (upstream `setup_env(override=False)`);
+  remove the duplicate from startup config if WebUI should win.
+- The personal-sync sidecar does not need `ENV_FILE`; it uses
+  `PERSONAL_STOCK_LIST` / `TUSHARE_TOKEN`.

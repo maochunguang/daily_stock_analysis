@@ -174,7 +174,7 @@ UGREEN NAS（x86_64）实际部署与 compose 示例略有不同，以本节为�
 | 项 | 值 |
 |---|---|
 | 项目目录 | `/volume2/docker/daily_stock_analysis/` |
-| 持久化 | `data/ logs/ reports/ .env`（bind 挂载 + 本地文件，重建容器不丢） |
+| 持久化 | `data/ logs/ reports/ .env`（bind 挂载 + 本地文件，重建容器不丢）；WebUI 配置在 `data/runtime.env` |
 | 部署清单 | `docker-compose.yml`（同目录，含 server + personal-sync 两服务） |
 | 镜像 | `dsa-fork:latest`（本地 buildx amd64 构建，scp 传输） |
 | 访问 | `http://NAS_IP:18800/personal` |
@@ -199,6 +199,36 @@ cd /volume2/docker/daily_stock_analysis && docker compose up -d --force-recreate
 手工 `docker run`**，改配置直接编辑 compose 文件后 `docker compose up -d`。
 
 `TUSHARE_TOKEN` 从项目目录 `.env` 由 compose 变量替换注入 personal-sync。
+
+### WebUI 配置（LLM 密钥 / 自选股）持久化
+
+**事故原因（2026-11-18 修复）**：上游把 WebUI 保存的配置写入 `ENV_FILE`
+（默认 `/app/.env`），该路径在容器可写层，`docker compose up --force-recreate`
+后连同镜像层一起被丢弃——所以 LLM 密钥、自选股会偶发“消失”。宿主机 `.env`
+之前只被 compose 用于 `${VAR}` 替换，并没有注入或挂载进容器。
+
+**现行做法（与上游官方建议一致）**：
+
+| 项 | 值 |
+|---|---|
+| 活跃配置文件 | `ENV_FILE=/app/data/runtime.env`（在 `data/` bind 挂载里） |
+| 首次迁移 | `cp .env data/runtime.env && chmod 600 data/runtime.env` |
+| 配置来源 | 之后以 WebUI 保存为准；宿主机 `.env` 只保留 compose 变量（如 `TUSHARE_TOKEN`） |
+| 禁止 | 不要把宿主机 `.env` 单文件挂载到 `/app/.env`（Docker mount point 会阻止原子替换） |
+
+容器内确认：
+
+```bash
+docker exec daily_stock_analysis-2 sh -c 'echo $ENV_FILE; ls -l /app/data/runtime.env'
+docker exec -i daily_stock_analysis-2 python - <<'PY'
+from src.config import Config
+c = Config.get_instance()
+print(len(c.stock_list), len(c.llm_channels or []), c.litellm_model)
+PY
+```
+
+重建容器后上面三个值应保持不变。若某键同时存在于宿主机 compose 的
+`env_file`/`environment`，启动环境变量会覆盖 `runtime.env`，需要从启动配置里移除同名键。
 
 数据体检（RM-41）部署到已运行环境时，需要一次性修复历史快照（老版本把
 06:00 抓到的上一交易日数据标成了当天，并把 ETF 份额按「份」入库）：
