@@ -152,4 +152,10 @@ class TestRunScheduledSync:
             store.close()
 
     def test_default_datasets_cover_market(self):
-        assert set(DEFAULT_DATASETS) >= {"futures", "margin", "bars", "calendar"}
+        assert set(DEFAULT_DATASETS) >= {
+            "futures",
+            "valuation",
+            "margin",
+            "bars",
+            "calendar",
+        }

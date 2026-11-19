@@ -125,6 +125,63 @@ def sync_index_futures(
     )
 
 
+def sync_index_valuation(
+    store: PersonalStore,
+    *,
+    source=None,
+) -> MarketSyncResult:
+    """Refresh weekly PE history for the deep-review valuation card.
+
+    Every index is replaced atomically after a successful fetch.  If one
+    index fails, already-fetched indexes stay updated but the run is reported
+    as failed so the scheduler retries and the freshness table does not hide
+    a partial series.
+    """
+
+    from .sources.valuation_source import (
+        INDEX_VALUATION_TARGETS,
+        LeguleguValuationSource,
+        keep_week_latest,
+    )
+
+    source = source or LeguleguValuationSource()
+    total = 0
+    dates: list[date] = []
+    errors: list[str] = []
+    for code, _name in INDEX_VALUATION_TARGETS:
+        try:
+            rows = keep_week_latest(source.fetch_index_valuation(code))
+            if len(rows) < 52:
+                raise SourceUnavailable(
+                    f"only {len(rows)} weekly observations; refusing to replace history"
+                )
+            total += store.replace_index_valuations(
+                code, rows, source=getattr(source, "name", "legulegu")
+            )
+            dates.extend(row.trade_date for row in rows)
+        except Exception as exc:  # noqa: BLE001 - keep other indexes moving
+            errors.append(f"{code}: {exc}")
+
+    if not dates:
+        raise SourceUnavailable(
+            "no index valuation rows fetched"
+            + (f" ({'; '.join(errors)})" if errors else "")
+        )
+    result = MarketSyncResult(
+        dataset="valuation",
+        start=min(dates),
+        end=max(dates),
+        rows=total,
+        latest_date=max(dates),
+        message="; ".join(errors),
+    )
+    if errors:
+        raise SourceUnavailable(
+            f"partial valuation sync ({total} rows): {'; '.join(errors)}"
+        )
+    return result
+
+
 def sync_margin_balance(
     store: PersonalStore,
     *,

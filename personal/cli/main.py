@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "bars", "adjust", "calendar", "status", "futures", "margin",
             "turnover", "zt", "pcr", "cffex_rank", "sector", "etf_share",
-            "bond", "release",
+            "bond", "release", "valuation",
         ),
     )
     sync.add_argument("--code", action="append", default=[])
@@ -289,7 +289,7 @@ def _info(settings) -> int:
 def _sync(settings, args) -> int:
     if args.dataset in (
         "futures", "margin", "turnover", "zt", "pcr", "cffex_rank",
-        "sector", "etf_share", "bond", "release",
+        "sector", "etf_share", "bond", "release", "valuation",
     ):
         return _sync_market(settings, args)
     codes = list(args.code) or list(settings.stock_list)
@@ -358,6 +358,7 @@ def _sync_market(settings, args) -> int:
         sync_etf_share,
         sync_futures_rank,
         sync_index_futures,
+        sync_index_valuation,
         sync_limit_up,
         sync_margin_balance,
         sync_option_pcr,
@@ -380,12 +381,14 @@ def _sync_market(settings, args) -> int:
                     *codes_arg,
                     *store.broker_position_codes(),
                     *store.account_position_codes(),
+                    *store.margin_stock_codes(),
                 ]
             )
         )
 
     dispatch = {
         "futures": lambda store: sync_index_futures(store, start=start, end=end),
+        "valuation": lambda store: sync_index_valuation(store),
         "margin": lambda store: sync_margin_balance(
             store, start=start, end=end, stock_codes=margin_codes(store)
         ),

@@ -19,6 +19,8 @@ import type {
   PersonalFlowsResponse,
   PersonalFuturesRankRow,
   PersonalFuturesRow,
+  PersonalIndexValuationCheckResponse,
+  PersonalIndexValuationResponse,
   PersonalLimitUpRow,
   PersonalMacroResponse,
   PersonalMarginRow,
@@ -130,6 +132,43 @@ const REVIEW_COPY = {
     rzyeYi: '融资余额(亿)',
     buyYi: '融资买入(亿)',
     chg1: '余额日变化',
+    valuationTitle: '指数估值分位（PE-TTM）',
+    valuationPe: 'PE-TTM',
+    valuationEqual: '等权',
+    valuation1y: '近1年',
+    valuation3y: '近3年',
+    valuation5y: '近5年',
+    valuationSamples: '样本',
+    valuationUpdated: '更新',
+    valuationWeek: '周',
+    valuationMonth: '月',
+    valuationLow: '低估区',
+    valuationLowMid: '偏低',
+    valuationMid: '中性',
+    valuationHighMid: '偏高',
+    valuationHigh: '高估区',
+    valuationNoData: '暂无估值数据，先同步 valuation 数据集',
+    valuationStale: '数据陈旧',
+    valuationStaleUnit: '天',
+    valuationInsufficient: '样本不足',
+    valuationCheck: '交叉校验',
+    valuationChecking: '校验中…',
+    valuationCheckTitle: '官方交叉校验',
+    valuationCheckLegu: '乐咕值',
+    valuationCheckOfficial: '官方值',
+    valuationCheckDiff: '偏差',
+    valuationCheckStatus: '状态',
+    valuationCheckOk: '一致',
+    valuationCheckWarn: '口径差异',
+    valuationCheckError: '需复核',
+    valuationCheckUnavailable: '不可用',
+    valuationCheckLatest: '最新',
+    valuationCheckFailed: '交叉校验失败',
+    valuationCheckNote:
+      '官方源仅提供当前值（中证近 20 日、国证最新），用于水平校验，不参与历史分位；偏差不等于数据错误。',
+    valuationHighRatio: '最高',
+    valuationHint:
+      '分位 = 当前 PE-TTM 在窗口内周频样本中的百分位（排名）；括号内为“当前 PE ÷ 该窗口最高 PE”。分位低只代表排名低，例如 2% 分位表示约 2% 的样本低于当前值，不等于当前值是最高的 2%。PE-TTM 为加权滚动市盈率，来源乐咕乐股；仅反映历史位置，不构成买卖建议。',
     healthTitle: '数据体检',
     healthScore: '健康分',
     healthOk: '正常',
@@ -241,6 +280,43 @@ const REVIEW_COPY = {
     rzyeYi: 'Margin balance (×1e8)',
     buyYi: 'Margin buy (×1e8)',
     chg1: 'Balance chg',
+    valuationTitle: 'Index valuation percentile (PE-TTM)',
+    valuationPe: 'PE-TTM',
+    valuationEqual: 'Equal-wt',
+    valuation1y: '1Y',
+    valuation3y: '3Y',
+    valuation5y: '5Y',
+    valuationSamples: 'Samples',
+    valuationUpdated: 'Updated',
+    valuationWeek: 'w',
+    valuationMonth: 'm',
+    valuationLow: 'Cheap',
+    valuationLowMid: 'Low',
+    valuationMid: 'Neutral',
+    valuationHighMid: 'High',
+    valuationHigh: 'Expensive',
+    valuationNoData: 'No valuation data yet — sync the valuation dataset first',
+    valuationStale: 'Stale data',
+    valuationStaleUnit: 'd',
+    valuationInsufficient: 'Insufficient samples',
+    valuationCheck: 'Cross-check',
+    valuationChecking: 'Checking…',
+    valuationCheckTitle: 'Official cross-check',
+    valuationCheckLegu: 'Legu',
+    valuationCheckOfficial: 'Official',
+    valuationCheckDiff: 'Diff',
+    valuationCheckStatus: 'Status',
+    valuationCheckOk: 'Consistent',
+    valuationCheckWarn: 'Methodology diff',
+    valuationCheckError: 'Review',
+    valuationCheckUnavailable: 'Unavailable',
+    valuationCheckLatest: 'latest',
+    valuationCheckFailed: 'Cross-check failed',
+    valuationCheckNote:
+      'Official sources publish only the current value (CSI: last 20 sessions; CNI: latest). Used for level checks, not percentile history; a difference is not automatically a data error.',
+    valuationHighRatio: 'of high',
+    valuationHint:
+      'Percentile = rank of the current PE-TTM among weekly samples in the window; the parenthesised value is current PE ÷ that window’s highest PE. A low percentile means a low rank, not that PE is that percentage of the high (2% percentile ≠ 2% of the high). PE-TTM is the cap-weighted rolling PE from Legulegu; historical position only — not investment advice.',
     healthTitle: 'Data health check',
     healthScore: 'Health',
     healthOk: 'OK',
@@ -257,6 +333,7 @@ const REVIEW_COPY = {
   },
 } as const;
 
+// eslint-disable-next-line react-refresh/only-export-components -- display labels are co-located with the card registry
 export const FUTURES_SYMBOL_LABELS: Record<string, string> = {
   IF: '沪深300',
   IH: '上证50',
@@ -275,10 +352,15 @@ export interface ReviewCardProps {
   crowding: PersonalCrowdingResponse | null;
   macro: PersonalMacroResponse | null;
   composite: PersonalCompositeResponse | null;
+  valuation: PersonalIndexValuationResponse | null;
+  valuationCheck: PersonalIndexValuationCheckResponse | null;
+  valuationCheckBusy: boolean;
+  valuationCheckError: string;
+  onCheckValuation: () => void;
   marginStocks: MarginStockEntry[];
   validation: PersonalValidationResponse | null;
   busy: boolean;
-  onRefreshMarket: (dataset: 'futures' | 'margin') => void;
+  onRefreshMarket: (dataset: 'futures' | 'margin' | 'valuation') => void;
   onValidate: (online: boolean) => void;
 }
 
@@ -676,6 +758,272 @@ export const MarginCard: ReviewCardComponent = ({ margin, busy, onRefreshMarket 
       )}
 
       <p className="mt-3 text-xs text-muted-text">{copy.marginHint}</p>
+    </Card>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* 指数估值分位（PE-TTM）                                                */
+/* ------------------------------------------------------------------ */
+
+function valuationZoneMeta(
+  percentile: number | null,
+  copy: ReturnType<typeof useReviewCopy>,
+): { label: string; text: string; bar: string } {
+  if (percentile === null) {
+    return {
+      label: copy.valuationInsufficient,
+      text: 'text-secondary-text',
+      bar: 'bg-secondary-text/40',
+    };
+  }
+  if (percentile <= 20) {
+    return { label: copy.valuationLow, text: 'text-success', bar: 'bg-success' };
+  }
+  if (percentile <= 40) {
+    return { label: copy.valuationLowMid, text: 'text-success', bar: 'bg-success/60' };
+  }
+  if (percentile <= 60) {
+    return { label: copy.valuationMid, text: 'text-cyan', bar: 'bg-cyan/60' };
+  }
+  if (percentile <= 80) {
+    return { label: copy.valuationHighMid, text: 'text-warning', bar: 'bg-warning' };
+  }
+  return { label: copy.valuationHigh, text: 'text-danger', bar: 'bg-danger' };
+}
+
+export const IndexValuationCard: ReviewCardComponent = ({
+  valuation,
+  valuationCheck,
+  valuationCheckBusy,
+  valuationCheckError,
+  busy,
+  onRefreshMarket,
+  onCheckValuation,
+}) => {
+  const copy = useReviewCopy();
+  const { language } = useUiLanguage();
+  if (!valuation || !valuation.available) {
+    return (
+      <Card title={copy.valuationTitle} variant="bordered" className="xl:col-span-2">
+        <p className="text-sm text-secondary-text">{copy.valuationNoData}</p>
+        <p className="mt-2 text-xs text-muted-text">{copy.valuationHint}</p>
+      </Card>
+    );
+  }
+
+  const rows = valuation.rows.filter((row) => row.available);
+  const staleRows = rows.filter((row) => (row.stale_days ?? 0) > 7);
+  const windows = [
+    ['1y', copy.valuation1y],
+    ['3y', copy.valuation3y],
+    ['5y', copy.valuation5y],
+  ] as const;
+  const freqSuffix = (freq: string) =>
+    freq === 'weekly' ? copy.valuationWeek : freq === 'monthly' ? copy.valuationMonth : '';
+  const checkBadge = (status: string) => {
+    if (status === 'ok') return { variant: 'success' as const, label: copy.valuationCheckOk };
+    if (status === 'warn') return { variant: 'warning' as const, label: copy.valuationCheckWarn };
+    if (status === 'error') return { variant: 'danger' as const, label: copy.valuationCheckError };
+    return { variant: 'default' as const, label: copy.valuationCheckUnavailable };
+  };
+
+  return (
+    <Card title={copy.valuationTitle} variant="bordered" className="xl:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-secondary-text">
+          {valuation.as_of ? `${copy.valuationUpdated} ${valuation.as_of}` : ''}
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onCheckValuation}
+            disabled={valuationCheckBusy}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
+          >
+            <ShieldCheck className={`h-3.5 w-3.5 ${valuationCheckBusy ? 'animate-pulse' : ''}`} />
+            {valuationCheckBusy ? copy.valuationChecking : copy.valuationCheck}
+          </button>
+          <button
+            type="button"
+            onClick={() => onRefreshMarket('valuation')}
+            disabled={busy}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 px-2.5 text-xs font-medium text-secondary-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+            {busy ? copy.refreshing : copy.refresh}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[720px]">
+          <thead>
+            <tr className={TABLE_HEAD_CLASS}>
+              <th className="py-2 pr-4">{copy.name}</th>
+              <th className="py-2 pr-4 text-right">{copy.valuationPe}</th>
+              {windows.map(([key, label]) => (
+                <th key={key} className="py-2 pr-4 text-right">
+                  {label}
+                </th>
+              ))}
+              <th className="py-2 pr-4 text-right">{copy.valuationSamples}</th>
+              <th className="py-2 text-right">{copy.valuationUpdated}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const oneYear = row.windows['1y'];
+              return (
+                <tr key={row.code}>
+                  <td className={TABLE_CELL_CLASS}>
+                    <div className="font-medium text-foreground">{row.name}</div>
+                    <div className="text-xs text-muted-text">{row.code}</div>
+                  </td>
+                  <td className={`${TABLE_CELL_CLASS} text-right`}>
+                    <div className="font-semibold text-foreground">
+                      {row.pe_ttm?.toFixed(2) ?? '—'}
+                    </div>
+                    <div className="text-[10px] text-muted-text">
+                      {copy.valuationEqual} {row.pe_ttm_equal?.toFixed(2) ?? '—'}
+                    </div>
+                  </td>
+                  {windows.map(([key]) => {
+                    const window = row.windows[key];
+                    const meta = valuationZoneMeta(window?.percentile ?? null, copy);
+                    const percentile = window?.percentile ?? null;
+                    const highRatio =
+                      row.pe_ttm != null && window?.pe_max != null && window.pe_max > 0
+                        ? (row.pe_ttm / window.pe_max) * 100
+                        : null;
+                    const ratioText =
+                      highRatio === null
+                        ? ''
+                        : language === 'zh'
+                          ? `（最高 ${highRatio.toFixed(1)}%）`
+                          : ` (${highRatio.toFixed(1)}% of high)`;
+                    return (
+                      <td key={key} className={`${TABLE_CELL_CLASS} text-right`}>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className={`text-sm font-medium ${meta.text}`}>
+                            {percentile === null ? '—' : `${percentile.toFixed(1)}%`}
+                            {ratioText ? (
+                              <span className="text-[10px] font-normal text-muted-text">
+                                {ratioText}
+                              </span>
+                            ) : null}
+                          </span>
+                          <div className="h-1 w-14 overflow-hidden rounded-full bg-border/50">
+                            <div
+                              className={`h-full rounded-full ${meta.bar}`}
+                              style={{ width: `${percentile === null ? 0 : Math.max(2, percentile)}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-muted-text">{meta.label}</span>
+                        </div>
+                      </td>
+                    );
+                  })}
+                  <td className={`${TABLE_CELL_CLASS} text-right text-xs text-secondary-text`}>
+                    {oneYear ? `${oneYear.samples}${freqSuffix(row.sample_freq)}` : '—'}
+                  </td>
+                  <td className={`${TABLE_CELL_CLASS} text-right text-xs text-secondary-text`}>
+                    {row.as_of ?? '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {valuationCheckError ? (
+        <p className="mt-3 text-xs text-danger">
+          {copy.valuationCheckFailed}: {valuationCheckError}
+        </p>
+      ) : null}
+
+      {valuationCheck ? (
+        <div className="mt-4 border-t border-border/50 pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-foreground">{copy.valuationCheckTitle}</h4>
+            <span className="text-xs text-muted-text">{valuationCheck.checked_at}</span>
+          </div>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[760px]">
+              <thead>
+                <tr className={TABLE_HEAD_CLASS}>
+                  <th className="py-2 pr-4">{copy.name}</th>
+                  <th className="py-2 pr-4 text-right">{copy.valuationCheckLegu}</th>
+                  <th className="py-2 pr-4 text-right">{copy.valuationCheckOfficial}</th>
+                  <th className="py-2 pr-4 text-right">{copy.valuationCheckDiff}</th>
+                  <th className="py-2">{copy.valuationCheckStatus}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {valuationCheck.rows.map((row) => {
+                  const badge = checkBadge(row.status);
+                  return (
+                    <tr key={row.code}>
+                      <td className={TABLE_CELL_CLASS}>
+                        <div className="font-medium text-foreground">{row.name}</div>
+                        <div className="text-[10px] text-muted-text">
+                          {row.legu_label ?? '—'} / {row.official_metric ?? '—'}
+                        </div>
+                      </td>
+                      <td className={`${TABLE_CELL_CLASS} text-right`}>
+                        {row.legu_pe?.toFixed(2) ?? '—'}
+                      </td>
+                      <td className={`${TABLE_CELL_CLASS} text-right`}>
+                        <div>{row.official_pe?.toFixed(2) ?? '—'}</div>
+                        <div className="text-[10px] text-muted-text">
+                          {row.official_source ?? '—'} ·{' '}
+                          {row.official_date ?? copy.valuationCheckLatest}
+                        </div>
+                      </td>
+                      <td
+                        className={`${TABLE_CELL_CLASS} text-right ${
+                          row.diff_pct === null
+                            ? 'text-secondary-text'
+                            : Math.abs(row.diff_pct) <= 5
+                              ? 'text-success'
+                              : 'text-warning'
+                        }`}
+                      >
+                        {row.diff_pct === null
+                          ? '—'
+                          : `${row.diff_pct > 0 ? '+' : ''}${row.diff_pct.toFixed(1)}%`}
+                      </td>
+                      <td className={TABLE_CELL_CLASS}>
+                        <Badge variant={badge.variant}>{badge.label}</Badge>
+                        <div className="mt-1 text-[10px] text-muted-text">{row.detail}</div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {valuationCheck.warnings.length ? (
+            <ul className="mt-2 space-y-1">
+              {valuationCheck.warnings.map((warning, index) => (
+                <li key={`${warning}-${index}`} className="text-xs text-warning">
+                  {warning}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <p className="mt-2 text-xs text-muted-text">{valuationCheck.note}</p>
+        </div>
+      ) : null}
+
+      {staleRows.length ? (
+        <p className="mt-3 text-xs text-warning">
+          {copy.valuationStale} {staleRows[0].stale_days} {copy.valuationStaleUnit}:{' '}
+          {staleRows.map((row) => row.name).join(', ')}
+        </p>
+      ) : null}
+      <p className="mt-3 text-xs text-muted-text">{copy.valuationHint}</p>
     </Card>
   );
 };
@@ -1429,9 +1777,11 @@ export const HealthCard: ReviewCardComponent = ({ validation, onValidate, busy }
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components -- registry is the page's extension point
 export const REVIEW_CARDS: ReadonlyArray<ReviewCardSlot> = [
   { id: 'health', component: HealthCard },
   { id: 'composite', component: CompositeCard },
+  { id: 'valuation', component: IndexValuationCard },
   { id: 'breadth', component: BreadthCard },
   { id: 'futures', component: FuturesCard },
   { id: 'rank', component: FuturesRankCard },

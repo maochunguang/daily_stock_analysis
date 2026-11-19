@@ -26,6 +26,7 @@ from .market import (
     sync_etf_share,
     sync_futures_rank,
     sync_index_futures,
+    sync_index_valuation,
     sync_limit_up,
     sync_margin_balance,
     sync_option_pcr,
@@ -43,6 +44,7 @@ DEFAULT_DATASETS: tuple[str, ...] = (
     "bars",
     "adjust",
     "futures",
+    "valuation",
     "turnover",
     "margin",
     "cffex_rank",
@@ -215,16 +217,20 @@ def _run_dataset(
     # yesterday, after the close it is today. Prevents pre-close/partial
     # snapshots (notably Eastmoney limit-up pools, which ignore future dates).
     as_of = last_completed_trade_date(store)
+    if dataset == "valuation":
+        return sync_index_valuation(store).rows
     if dataset == "futures":
         return sync_index_futures(store, start=as_of - timedelta(days=10), end=as_of).rows
     if dataset == "margin":
-        # 持仓股两融：自选股 ∪ 交割单持仓 ∪ 截图账户快照持仓
+        # 持仓股两融：自选股 ∪ 交割单持仓 ∪ 截图账户快照持仓 ∪ 已留档代码
+        # （最后一组用于回填历史上缺少名称的沪市明细行）
         codes_margin = list(
             dict.fromkeys(
                 [
                     *codes,
                     *store.broker_position_codes(),
                     *store.account_position_codes(),
+                    *store.margin_stock_codes(),
                 ]
             )
         )

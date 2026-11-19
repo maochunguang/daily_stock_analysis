@@ -65,7 +65,7 @@ class SyncRequest(BaseModel):
 class MarketSyncRequest(BaseModel):
     dataset: Literal[
         "futures", "margin", "turnover", "zt", "pcr", "cffex_rank",
-        "sector", "etf_share", "bond", "release",
+        "sector", "etf_share", "bond", "release", "valuation",
     ] = "futures"
     start: Optional[str] = None
     end: Optional[str] = None
@@ -598,6 +598,34 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             ]
         }
 
+    @app.get("/api/market/index-valuation")
+    def market_index_valuation() -> dict[str, Any]:
+        """Latest PE-TTM and 1/3/5-year percentile for broad indexes."""
+
+        from personal.analytics.index_valuation import index_valuation_report
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            return index_valuation_report(store)
+        finally:
+            store.close()
+
+    @app.get("/api/market/index-valuation/check")
+    def market_index_valuation_check() -> dict[str, Any]:
+        """Cross-check Legulegu levels against CSI/CNI official current values."""
+
+        from personal.analytics.index_valuation import valuation_cross_check
+        from personal.datahub.sources.valuation_check_source import (
+            fetch_official_valuations,
+        )
+
+        store = PersonalStore(settings.personal_db)
+        try:
+            official = fetch_official_valuations()
+            return valuation_cross_check(store, official)
+        finally:
+            store.close()
+
     @app.post("/api/market/sync")
     def market_sync(request: MarketSyncRequest) -> dict[str, Any]:
         from personal.datahub.market import (
@@ -605,6 +633,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             sync_etf_share,
             sync_futures_rank,
             sync_index_futures,
+            sync_index_valuation,
             sync_limit_up,
             sync_margin_balance,
             sync_option_pcr,
@@ -617,6 +646,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         start = _parse_date(request.start, end - timedelta(days=10))
         dispatch = {
             "futures": lambda store: sync_index_futures(store, start=start, end=end),
+            "valuation": lambda store: sync_index_valuation(store),
             "margin": lambda store: sync_margin_balance(
                 store,
                 start=start,
@@ -627,6 +657,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                             *settings.stock_list,
                             *store.broker_position_codes(),
                             *store.account_position_codes(),
+                            *store.margin_stock_codes(),
                         ]
                     )
                 ),
@@ -1171,7 +1202,10 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
         by_code: dict[str, list[dict[str, Any]]] = {}
         names: dict[str, str] = {}
         for row in rows:
-            names.setdefault(row.code, row.name or "")
+            if row.name:
+                # Rows are ordered oldest -> newest; keep the latest non-empty
+                # name so legacy SSE rows with a blank name do not mask it.
+                names[row.code] = row.name
             by_code.setdefault(row.code, []).append(
                 {
                     "trade_date": row.trade_date.isoformat(),

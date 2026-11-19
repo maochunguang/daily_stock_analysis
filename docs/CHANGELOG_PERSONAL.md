@@ -1804,3 +1804,228 @@ cd apps/dsa-web && npm run build
   positions (explicitly user-confirmed, never automatic overwrite).
 - OCR aliases for more brokers/apps; screenshot date/account metadata detection.
 - Continuous cash/NAV import (CSV/QMT) for TWR/XIRR in a later batch.
+
+## [2026-11-19] CHG-0030 — Index valuation percentile card for deep review
+
+### Metadata
+- id: CHG-0030
+- date: 2026-11-19
+- status: done
+- area: datahub | analytics | web | docs
+- related: RM-46, CHG-0018, CHG-0023
+
+### Summary
+Added a deep-review card that shows daily PE-TTM and trailing 1/3/5-year
+percentiles for 沪深300 (`000300.SH`), 创业板指 (`399006.SZ`), 创业板50
+(`399673.SZ`) and 科创50 (`000688.SH`). The free Legulegu endpoint only exposes
+daily history to paid users, so the stored series is **weekly** (about 52
+points/year, 156/3y, 260/5y); the current week keeps the latest trading-day
+value and is collapsed to one sample per ISO week to avoid over-weighting
+recent days. Percentiles are computed locally over the personal database; the
+card shows the weighted PE-TTM (`addTtmPe`) plus equal-weight PE for reference,
+and each percentile is followed by the current/window-high ratio (e.g. `1.9%
+(最高 49.3%)`) so rank and magnitude cannot be confused.
+
+The scheduler now refreshes the `valuation` dataset in every 06:00/12:00/18:00
+round. A manual refresh button re-runs only this dataset.
+
+Added an on-demand **official cross-check**: CSI `市盈率1（总股本）` for
+沪深300/科创50 is compared with Legulegu static PE, and CNI `PE滚动` for
+创业板指/创业板50 is compared with Legulegu TTM PE. The card shows the official
+value, date/source, percentage difference and a status (`一致` ≤5%,
+`口径差异` 5%-15%, `需复核` >15%). Official endpoints only expose current
+values, so they validate the level but never replace the weekly history.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/models.py` | New `IndexValuation` model |
+| `personal/datahub/store.py` | `index_valuation` table (code/date/source), replace/get/upsert methods, stats |
+| `personal/datahub/sources/valuation_source.py` | New: Legulegu weekly fetch, cookie/token, payload parsing, ISO-week dedupe |
+| `personal/datahub/sources/valuation_check_source.py` | New: CSI/CNI official current PE fetch for cross-check |
+| `personal/datahub/market.py` | `sync_index_valuation` with per-index atomic replace and partial-failure reporting |
+| `personal/analytics/index_valuation.py` | New: 1/3/5-year window percentile, sample floors, sample frequency, stale days, metric-aware cross-check |
+| `personal/api/app.py` | `GET /api/market/index-valuation`, `GET /api/market/index-valuation/check`; `valuation` in market sync |
+| `personal/datahub/schedule.py` | `valuation` dataset in the default daily run |
+| `personal/cli/main.py` | `sync --dataset valuation` |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | New `IndexValuationCard` + registry entry + cross-check table |
+| `apps/dsa-web/src/pages/PersonalPage.tsx`, `api/personal.ts`, `types/personal.ts` | Load/refresh/cross-check/type wiring |
+| `personal/tests/test_index_valuation.py`, `personal/tests/test_schedule.py` | Parser/store/percentile/sync/API/cross-check tests |
+| `apps/dsa-web/src/components/personal/__tests__/IndexValuationCard.test.tsx`, `src/api/__tests__/personal.test.ts` | Card render/refresh/cross-check + exact route tests |
+| `patches/0001-personal-web-integration.patch` | Regenerated with the card, page wiring and API types |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.6 card/caliber/cross-check, §4.7 dataset, §7.1 table |
+| `docs/AI_CONTEXT.md`, `docs/ROADMAP_PERSONAL.md`, `docs/PERSONAL_EXTENSION_ARCHITECTURE.md`, `docs/DOCKER_PERSONAL.md` | Modules/routes/tables/limitations, RM-46, valuation flow and weekly-source note |
+
+### Commands
+```bash
+python -m personal.cli.main sync --dataset valuation
+python -m personal.cli.main sync --dataset valuation --start 2026-11-01 --end 2026-11-19
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- Real Legulegu fetch (4 indexes, 3,141 weekly rows) parsed and stored in a
+  temporary DB. Latest 2026-11-19: 沪深300 PE 12.69, 1y/3y/5y percentiles
+  19.2%/63.9%/74.5%; 创业板指 22.12, 1.9%/3.9%/2.4%; 创业板50 19.72,
+  1.9%/0.6%/0.4%; 科创50 60.19, 7.7%/57.4%/74.1%.
+- Weekly sample counts 52/155/255; `sample_freq=weekly`; stale_days=0.
+- `pytest personal/tests`: **178 passed**.
+- `compileall personal` passes.
+- `npm run build` passes; `npm run lint` passes.
+- Targeted Vitest: 9 passed (API endpoint + card render/empty/refresh/cross-check).
+- Full Vitest: 1,391 passed, 2 pre-existing unrelated failures
+  (`DesktopUpdateIndicator` native `title` governance; DecisionSignalsPage
+  timeline refresh test); 2 skipped.
+- API test: `GET /api/market/index-valuation` returns 4 rows and percentiles;
+  `GET /api/market/index-valuation/check` returns metric-aware statuses.
+- Real official cross-check on 2026-11-19: 沪深300 乐咕静态 13.25 vs 中证 PE1
+  13.77 (-3.8%, 一致); 科创50 95.85 vs 85.57 (+12.0%, 口径差异); 创业板指
+  22.12 vs 国证 22.69 (-2.5%, 一致); 创业板50 19.72 vs 20.12 (-2.0%, 一致).
+- Ratio display: 创业板指 1y `1.9%（最高 49.3%）`; the hint explicitly states
+  percentile is rank, not current/high ratio.
+- Container E2E: built a local image, seeded a temp `personal.db` via
+  `sync --dataset valuation`, opened `/personal` in the browser; the
+  「指数估值分位」card rendered all four indexes with PE, equal-weight PE,
+  1/3/5-year percentiles, 52-week sample count, and update date; the
+  cross-check table rendered official values and status badges.
+- NAS deployment (linux/amd64): built the image, `docker load` +
+  `docker compose up -d --force-recreate`; both containers reached healthy,
+  `GET /personal-api/api/market/index-valuation` returned 200, and the
+  deep-review page rendered the card and cross-check.
+- NAS ratio display verified in the rendered DOM: 沪深300 `19.2%（最高 91.2%）`,
+  创业板指 `1.9%（最高 49.3%）`, 创业板50 `1.9%（最高 44.7%）`,
+  科创50 `7.7%（最高 49.5%）`.
+
+### Notes / Migration
+- New table is created automatically by `CREATE TABLE IF NOT EXISTS`; no backfill
+  migration needed. The first sync fetches full history per index.
+- Percentile floors: 1y 10, 3y 30, 5y 50 observations. Below that the UI shows
+  `样本不足` instead of a misleading percentile.
+- A single index failure marks the whole dataset run failed in `sync_state`
+  (so the scheduler retries) while successful indexes remain updated.
+- `addTtmPe` is the cap-weighted rolling PE; `ttmPe` is equal-weight. The card
+  labels the main PE as PE-TTM and shows 等权 as a secondary line. Historical
+  position, not a buy/sell signal.
+- Stale rows (>7 days) get a warning at the bottom of the card.
+- Cross-check is metric-aware: CSI PE1 (total-share) is compared with
+  Legulegu static PE; CNI PE滚动 is compared with Legulegu TTM. Comparing the
+  card's TTM value against CSI's PE1 would be misleading.
+- Status thresholds: ≤5% consistent, 5%-15% methodology difference, >15%
+  review. A difference is not automatically a data bug (weights/share base/
+  earnings timing). Cross-check is on demand and does not affect the scheduled
+  valuation sync.
+- CSI is fetched directly from the official `indicator/{code}indicator.xls`
+  because the Docker image pins akshare 1.19.x, which lacks
+  `index_value_csindex`; `pandas`+`xlrd` are already present. CNI still uses
+  the installed akshare `index_all_cni`.
+
+### Next
+- Optional intraday/daily official PE source if a permitted feed becomes
+  available; currently weekly is the free-tier basis.
+- Add percentile history/valuation zone to the composite market-state score
+  after observing a few weeks of data.
+
+## [2026-11-19] CHG-0031 — Fix missing Shanghai margin names
+
+### Metadata
+- id: CHG-0031
+- date: 2026-11-19
+- status: done
+- area: datahub | api | docs
+- related: RM-42, CHG-0027
+
+### Summary
+The 「持仓股两融」card showed blank names for Shanghai codes. The SSE margin
+detail endpoint names the field `securityAbbr`, but the adapter only read
+`stockName`, so every Shanghai row was stored with an empty name. The adapter
+now falls back to `securityAbbr`. The API also keeps the latest non-empty name
+instead of taking the first (oldest) row, so legacy blank rows do not mask a
+newly backfilled name. Margin sync now includes codes already present in
+`margin_stock`, allowing old rows for codes removed from the watchlist to be
+refreshed rather than staying blank forever.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/margin_source.py` | Read `stockName` or `securityAbbr` |
+| `personal/datahub/store.py` | `margin_stock_codes()` for legacy-code refresh |
+| `personal/api/app.py` | Latest non-empty name wins; margin sync includes legacy codes |
+| `personal/datahub/schedule.py`, `personal/cli/main.py` | Margin code union includes existing margin history |
+| `personal/tests/test_market.py` | SSE `securityAbbr` fallback test |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.6 name-source note |
+| docs | CHANGELOG, AI_CONTEXT |
+
+### Commands
+```bash
+docker exec daily_stock_analysis-2 python -m personal.cli.main sync --dataset margin
+docker exec daily_stock_analysis-2 python -m personal.cli.main sync --dataset margin --code 510300 --code 600519
+```
+
+### Verification
+- `pytest personal/tests`: **178 passed**.
+- NAS API after backfill: 000063 中兴通讯, 510300 300ETF, 563230 卫星ETF,
+  600197 伊力特, 600519 贵州茅台, 603160 汇顶科技, 688008 澜起科技,
+  688525 佰维存储; no blank names remain.
+- NAS deep-review 持仓股两融 table renders all names; valuation card and
+  official cross-check also render after deployment.
+
+### Notes / Migration
+- Existing rows were backfilled by re-running the 10-day margin sync; the
+  `--code` form was used for legacy codes that are no longer in the current
+  watchlist.
+- SSE abbreviations are exchange short names (e.g. 510300 → `300ETF`), not
+  fund full names; the card now shows a name rather than `—`.
+
+## [2026-11-19] CHG-0032 — Documentation: AI context completeness for RM-46
+
+### Metadata
+- id: CHG-0032
+- date: 2026-11-19
+- status: done
+- area: docs
+- related: CHG-0030, CHG-0031
+
+### Summary
+No code changes. This entry records the documentation pass that makes the
+index-valuation change set fully machine-readable: a dedicated RM-46 section in
+`docs/AI_CONTEXT.md` (storage, metrics, formulas, freshness, cross-check
+mapping, API/CLI/frontend entry points, operational semantics), the Legulegu
+source row in the data-source matrix, the valuation flow/caliber block in the
+architecture document, the optional cross-check degradation note in the Docker
+guide, and CHG-0030/0031/0032 in the changelog index. It also adds the NAS
+deployment and rendered-ratio verification that was previously only in the
+session record.
+
+### Files
+| Path | Change |
+|---|---|
+| `docs/AI_CONTEXT.md` | New "Index valuation (RM-46)" section; Legulegu source row; market-sync body; changelog index entries |
+| `docs/PERSONAL_EXTENSION_ARCHITECTURE.md` | Valuation caliber bullets: rank vs ratio, sample floors, metric-matched cross-check, status thresholds |
+| `docs/DOCKER_PERSONAL.md` | Cross-check failure is isolated to `不可用` and never affects the weekly series |
+| `docs/CHANGELOG_PERSONAL.md` | CHG-0030 files/verification amended; new CHG-0032 |
+
+### Commands
+```bash
+python -m pytest personal/tests -q --collect-only
+grep -n "Index valuation (RM-46)" docs/AI_CONTEXT.md
+```
+
+### Verification
+- `pytest personal/tests -q --collect-only`: **178 tests collected**, matching
+  `test_count` in `docs/AI_CONTEXT.md`.
+- Documentation paths and route names checked against
+  `personal/api/app.py`, `personal/analytics/index_valuation.py`,
+  `personal/datahub/sources/valuation_source.py`,
+  `personal/datahub/sources/valuation_check_source.py`,
+  `apps/dsa-web/src/components/personal/ReviewCards.tsx` and
+  `apps/dsa-web/src/types/personal.ts`.
+- No code paths changed; build/test results from CHG-0030/0031 remain valid.
+
+### Notes
+- `docs/AI_CONTEXT.md` is the single machine-readable entry point; the
+  changelog holds the historical change set.
+- Older changelog entries intentionally keep their historical test counts; only
+  the current snapshot and the latest entries use 178.
+
+### Next
+- Commit/push and redeploy remain separate user decisions.

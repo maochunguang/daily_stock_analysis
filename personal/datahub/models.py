@@ -215,6 +215,40 @@ class IndexFutures:
 
 
 @dataclass(frozen=True)
+class IndexValuation:
+    """One observation of an index's PE history (weighted TTM by default).
+
+    ``pe_ttm`` is the index's weighted rolling PE (乐咕乐股 ``addTtmPe``);
+    ``pe_ttm_equal`` is the equal-weight series and ``pe_ttm_median`` the
+    constituent median. Weekly observations are enough for 1/3/5-year
+    percentiles; the latest row inside the current week is kept as-is.
+    """
+
+    code: str
+    trade_date: date
+    name: str = ""
+    pe_ttm: float | None = None
+    pe_ttm_equal: float | None = None
+    pe_static: float | None = None
+    pe_ttm_median: float | None = None
+    close: float | None = None
+    source: str = "unknown"
+
+    def to_row(self) -> tuple:
+        return (
+            self.code,
+            self.trade_date.isoformat(),
+            self.name,
+            self.pe_ttm,
+            self.pe_ttm_equal,
+            self.pe_static,
+            self.pe_ttm_median,
+            self.close,
+            self.source,
+        )
+
+
+@dataclass(frozen=True)
 class MarginBalance:
     """One day of margin-financing balances for a market or board scope.
 

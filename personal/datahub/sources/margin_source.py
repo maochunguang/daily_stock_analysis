@@ -294,7 +294,9 @@ def _stock_rows_sse(
             MarginStockRow(
                 trade_date=day,
                 code=code,
-                name=str(row.get("stockName") or "").strip(),
+                name=str(
+                    row.get("stockName") or row.get("securityAbbr") or ""
+                ).strip(),
                 rzye=_to_float(row.get("rzye")),
                 rzye_buy=_to_float(row.get("rzmre")),
                 rqye=_to_float(row.get("rqye")),

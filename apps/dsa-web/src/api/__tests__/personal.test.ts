@@ -43,6 +43,32 @@ describe('personalApi account/plan endpoints', () => {
     );
   });
 
+  it('uses the index valuation endpoint for the deep-review card', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ rows: [], available: false, source: 'legulegu' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await personalApi.indexValuation();
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      '/personal-api/api/market/index-valuation',
+    );
+  });
+
+  it('uses the index valuation cross-check endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ rows: [], warnings: [], note: '' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await personalApi.indexValuationCheck();
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      '/personal-api/api/market/index-valuation/check',
+    );
+  });
+
   it('builds journal outcome query params', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ rows: [], summary: {}, horizon: 20 }),

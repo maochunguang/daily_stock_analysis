@@ -50,6 +50,8 @@ import type {
   PersonalMacroResponse,
   PersonalPcrRow,
   PersonalFuturesRow,
+  PersonalIndexValuationCheckResponse,
+  PersonalIndexValuationResponse,
   PersonalMarginRow,
   PersonalPlugin,
   PersonalRun,
@@ -332,6 +334,11 @@ const PersonalPage: React.FC = () => {
   const [reviewCrowding, setReviewCrowding] = useState<PersonalCrowdingResponse | null>(null);
   const [reviewMacro, setReviewMacro] = useState<PersonalMacroResponse | null>(null);
   const [reviewComposite, setReviewComposite] = useState<PersonalCompositeResponse | null>(null);
+  const [reviewValuation, setReviewValuation] = useState<PersonalIndexValuationResponse | null>(null);
+  const [reviewValuationCheck, setReviewValuationCheck] =
+    useState<PersonalIndexValuationCheckResponse | null>(null);
+  const [valuationCheckBusy, setValuationCheckBusy] = useState(false);
+  const [valuationCheckError, setValuationCheckError] = useState('');
   const [reviewValidation, setReviewValidation] = useState<PersonalValidationResponse | null>(null);
   const [reviewMarginStocks, setReviewMarginStocks] = useState<MarginStockEntry[]>([]);
   const [reviewLoaded, setReviewLoaded] = useState(false);
@@ -374,6 +381,7 @@ const PersonalPage: React.FC = () => {
         crowdingData,
         macroData,
         compositeData,
+        valuationData,
         validationData,
         marginStocksData,
       ] = await Promise.all([
@@ -387,6 +395,7 @@ const PersonalPage: React.FC = () => {
         personalApi.crowding(30),
         personalApi.macro(120),
         personalApi.composite(),
+        personalApi.indexValuation(),
         personalApi.marketValidate(400),
         personalApi.marginStocks(30),
       ]);
@@ -400,6 +409,7 @@ const PersonalPage: React.FC = () => {
       setReviewCrowding(crowdingData);
       setReviewMacro(macroData);
       setReviewComposite(compositeData);
+      setReviewValuation(valuationData);
       setReviewValidation(validationData);
       setReviewMarginStocks(marginStocksData.stocks);
       setReviewLoaded(true);
@@ -411,13 +421,15 @@ const PersonalPage: React.FC = () => {
   }, []);
 
   const handleMarketSync = useCallback(
-    async (dataset: 'futures' | 'margin') => {
+    async (dataset: 'futures' | 'margin' | 'valuation') => {
       setReviewBusy(true);
       try {
         await personalApi.marketSync({ dataset, start: isoDaysAgo(10), end: isoDaysAgo(0) });
         if (dataset === 'futures') {
           const data = await personalApi.futures(30);
           setReviewFutures(data.rows);
+        } else if (dataset === 'valuation') {
+          setReviewValuation(await personalApi.indexValuation());
         } else {
           const data = await personalApi.margin(30);
           setReviewMargin(data.rows);
@@ -439,6 +451,18 @@ const PersonalPage: React.FC = () => {
       setReviewError(err instanceof Error ? err.message : String(err));
     } finally {
       setReviewBusy(false);
+    }
+  }, []);
+
+  const handleCheckValuation = useCallback(async () => {
+    setValuationCheckBusy(true);
+    setValuationCheckError('');
+    try {
+      setReviewValuationCheck(await personalApi.indexValuationCheck());
+    } catch (err) {
+      setValuationCheckError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setValuationCheckBusy(false);
     }
   }, []);
 
@@ -875,6 +899,11 @@ const PersonalPage: React.FC = () => {
                 crowding={reviewCrowding}
                 macro={reviewMacro}
                 composite={reviewComposite}
+                valuation={reviewValuation}
+                valuationCheck={reviewValuationCheck}
+                valuationCheckBusy={valuationCheckBusy}
+                valuationCheckError={valuationCheckError}
+                onCheckValuation={() => void handleCheckValuation()}
                 marginStocks={reviewMarginStocks}
                 validation={reviewValidation}
                 busy={reviewBusy}

@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 163 |
+| `test_count` | 178 |
 | `last_updated` | 2026-11-19 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -90,15 +90,17 @@ multi-asset derivatives beyond future ETF options.
 | `personal/contracts/upstream_db.py` | Read-only SQLite adapter; typed queries |
 | `personal/contracts/models.py` | `AnalysisRecord`, `PortfolioAccount`, `PortfolioTradeRecord`, `DecisionSignalRecord` |
 | `personal/contracts/version.py` | Capability detection and missing-contract report |
-| `personal/datahub/models.py` | `DailyBar`, `AdjustFactor`, `TradingStatus`, `FundNav`, `EtfSnapshot`, `QualityIssue` |
-| `personal/datahub/store.py` | SQLite schema + repository; `stats()`, `coverage()`, `get_bars()` |
+| `personal/datahub/models.py` | `DailyBar`, `AdjustFactor`, `TradingStatus`, `FundNav`, `EtfSnapshot`, `IndexValuation`, `QualityIssue` |
+| `personal/datahub/store.py` | SQLite schema + repository; `stats()`, `coverage()`, `get_bars()`, `replace_index_valuations()`, `margin_stock_codes()` |
 | `personal/datahub/adjust.py` | qfq/hfq adjustment; Tushare `adj_factor` convention |
 | `personal/datahub/tradability.py` | T+1, 100-share lots, suspension, price limits |
 | `personal/datahub/quality.py` | OHLC/duplicate/jump/cross-source/missing-day checks |
 | `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
-| `personal/datahub/market.py` | Market-level syncs: index futures + margin balance |
+| `personal/datahub/market.py` | Market-level syncs: index futures, index valuation, margin balance |
 | `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
-| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows for watchlist ∪ broker positions ∪ latest account snapshot (RM-42) |
+| `personal/datahub/sources/valuation_source.py` | RM-46 Legulegu weekly PE history for 000300.SH/399006.SZ/399673.SZ/000688.SH; ISO-week dedupe |
+| `personal/datahub/sources/valuation_check_source.py` | RM-46 official current PE: CSI PE1 (total-share) and CNI PE滚动 (TTM) |
+| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows; SSE name from `securityAbbr`; watchlist ∪ broker ∪ snapshot ∪ existing margin codes (RM-42) |
 | `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
 | `personal/datahub/validate.py` | RM-41 data passport: identities, ranges, trading days, jumps, cross-metric ratios, optional external spot checks |
@@ -108,6 +110,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/analytics/trade_plans.py` | RM-43 pure fee-aware risk-budget sizing and post-trade exposure preview; no writes/orders |
 | `personal/analytics/portfolio_risk.py` | RM-43 snapshot-based concentration, cash, Beta/volatility, correlation, liquidity; explicit market-data coverage |
 | `personal/analytics/journal_outcomes.py` | RM-44 D+1/5/20/60 outcomes, adjusted entry, benchmark excess, MAE/MFE, plan-vs-fill comparison, Wilson summary |
+| `personal/analytics/index_valuation.py` | RM-46 percentile windows, sample floors, frequency/stale days, metric-aware official cross-check; UI also shows current/window-high ratio |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares (EM list API with per-symbol `f84` fallback, CHG-0025) + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
@@ -162,6 +165,7 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `sector_amount` | `(trade_date, board)`; THS industry amount/share |
 | `etf_share` | `(trade_date, code)`; broad-ETF share snapshots (self-built series) |
 | `bond_yield` | `trade_date`; CN/US 2Y/10Y + spreads (full history) |
+| `index_valuation` | `(code, trade_date, source)`; weekly weighted/equal/static/median PE for 4 broad indexes (RM-46) |
 | `restricted_summary` | `release_date`; release count/shares/MV |
 | `sync_state` | `dataset`; last_run/last_ok/last_ok_date/rows/last_error freshness |
 | `data_quality_event` | auto id; quality warnings/errors |
@@ -204,7 +208,7 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main account-import --file F [--alias A] [--as-of D] [--save]` | RM-45 local OCR screenshot to account snapshot draft/confirm |
 | `python -m personal.cli.main plans [--status S] [--limit N]` | RM-43 trade plans with fill progress |
 | `python -m personal.cli.main journal-outcomes [--horizon N] [--days N] [--code C] [--side S]` | RM-44 D+N/MAE/MFE/plan-vs-fill outcomes |
-| `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
+| `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release\|valuation` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
 
@@ -241,9 +245,11 @@ the page route is `/personal`.
 | POST/GET | `/api/trade-plans`, `/api/trade-plans/{id}` | Plan create/list/detail (status PATCH, full edit PUT) |
 | GET | `/api/journal/outcomes?horizon=&days=&code=&side=&limit=` | RM-44 D+N outcomes + summary |
 | GET | `/api/margin/stocks?days=N&code=` | RM-42 per-stock margin detail (watchlist ∪ ledger holdings) |
+| GET | `/api/market/index-valuation` | RM-46 PE-TTM + 1/3/5y percentile for 4 broad indexes |
+| GET | `/api/market/index-valuation/check` | RM-46 metric-aware CSI/CNI official current-value cross-check |
 | GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
 | GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
-| POST | `/api/market/sync` | Sync futures/margin (default last 10 days) |
+| POST | `/api/market/sync` | Sync futures/margin/valuation (default last 10 days; valuation ignores range) |
 | POST | `/api/data/sync` | Sync bars / adjustment / calendar / status |
 | GET | `/api/backtest/runs` | Recent runs |
 | POST | `/api/backtest/demo` | Synthetic demo backtest |
@@ -252,8 +258,8 @@ the page route is `/personal`.
 | GET | `/api/qmt/health` | QMT bridge health |
 
 Web UI tabs: `总览` (status/coverage/runs/quality + sync freshness), `深度复盘`
-(card grid: data-health, composite, TRIN breadth, index futures, member rank,
-margin, limit-up, PCR, flows, crowding, macro — registry
+(card grid: data-health, composite, index valuation, TRIN breadth, index futures,
+member rank, margin, limit-up, PCR, flows, crowding, macro — registry
 `apps/dsa-web/src/components/personal/ReviewCards.tsx`), `账本`
 (LedgerPanel: statement import + plan link + journal + Tonghuashun screenshot
 snapshot), `交易计划` (TradePlanPanel: risk card + plan CRUD/preview),
@@ -274,12 +280,53 @@ Sync request body:
 }
 ```
 
+Market sync body (`POST /api/market/sync`): `{"dataset":"futures|margin|valuation","days":10}`.
+`valuation` ignores `days` and rebuilds the full weekly series for all four indexes.
+
 Backtest request bodies:
 
 ```json
 {"days": 400, "save": false}
 {"start": "2025-01-01", "end": "2026-11-12", "include": "both", "save": false, "adjust": "hfq"}
 ```
+
+## Index valuation (RM-46)
+
+| Item | Value |
+|---|---|
+| Targets | `000300.SH` 沪深300, `399006.SZ` 创业板指, `399673.SZ` 创业板50, `000688.SH` 科创50 |
+| Source | Legulegu `index-basic-pe`; `freq=week` only (daily history is paid); cookie page + MD5(Beijing date) token |
+| Table | `index_valuation (code, trade_date, source)`; `replace_index_valuations` rewrites one code's full series |
+| Metrics | `pe_ttm`=`addTtmPe` (cap-weighted), `pe_ttm_equal`=`ttmPe`, `pe_static`=`addLyrPe`, `pe_ttm_median`=`middleTtmPe` |
+| Dedupe | Keep the latest date per ISO week; the current week keeps the latest trading-day value |
+| Windows | `1y`=365d, `3y`=1095d, `5y`=1825d; min samples 10/30/50 |
+| Percentile | `count(value <= latest) / samples * 100`; lower = cheaper rank, range 0-100 |
+| Ratio | `latest / window.pe_max * 100`, rendered after the percentile as `（最高 N%）`; rank ≠ magnitude |
+| Zones | ≤20 `low`, ≤40 `low_mid`, ≤60 `mid`, ≤80 `high_mid`, >80 `high` |
+| Freshness | `stale_days > 7` warns; `sample_freq` inferred from the median gap |
+| Cross-check | CSI `市盈率1（总股本）` ↔ `pe_static` (000300/000688); CNI `PE滚动` ↔ `pe_ttm` (399006/399673) |
+| Status | `ok` ≤5%, `warn` 5-15%, `error` >15%, `unavailable` (missing official value) |
+| API | `GET /api/market/index-valuation`, `GET /api/market/index-valuation/check` |
+| CLI | `sync --dataset valuation` (ignores start/end; full weekly history per index) |
+| Frontend | `apps/dsa-web/src/types/personal.ts` → `PersonalIndexValuation*`; `ReviewCards.tsx` → `IndexValuationCard` (registry id `valuation`) |
+
+Operational semantics:
+
+- Per index: fetch → parse → ISO-week dedupe → require ≥52 weekly rows →
+  `replace_index_valuations`. A failure on one index leaves the others updated and
+  raises `partial valuation sync ...`, so `sync_state` records the run as failed
+  and the scheduler retries.
+- Percentiles, zones, stale days and the cross-check are computed on read;
+  nothing is persisted.
+- Cross-check is on demand only and never changes the weekly history. CSI is
+  fetched directly from the official `indicator/{symbol}indicator.xls` because
+  the image's akshare 1.19.x lacks `index_value_csindex`; CNI uses
+  `ak.index_all_cni()`.
+- Official sources publish only current/recent values, so they validate the
+  level, not the long-run percentile. A difference is a methodology signal, not
+  automatically a data bug.
+- The card shows weighted PE-TTM as the main value and equal-weight PE as a
+  secondary line; the 1/3/5-year cells show `percentile（最高 ratio%）`.
 
 ## Plugin contract
 
@@ -309,6 +356,7 @@ config_schema:
 | BaoStock | ✅ | ❌ | ✅ `query_trade_dates` | ✅ `query_stock_basic` name | ❌ | ❌ | Stable free fallback |
 | AkShare | ✅ | planned | ✅ `tool_trade_date_hist_sina` | ✅ `stock_individual_info_em` | planned | planned | Optional dependency |
 | Synthetic | ✅ | ❌ | derived from bars | ❌ | ❌ | ❌ | Offline demo/tests |
+| Legulegu | ❌ | ❌ | ❌ | index names | ❌ | ❌ | Weekly index PE for 4 broad indexes (RM-46); daily is paid; cookie + Beijing-date token |
 
 Trading status is derived: suspension from calendar-vs-bar gaps; ST from the
 instrument name; limit prices from previous close + board rules.
@@ -317,6 +365,15 @@ instrument name; limit prices from previous close + board rules.
 
 - Upstream DB does not exist until the upstream app runs once.
 - Adjustment factors via Tushare free tier are rate-limited to 1/hour.
+- Index valuation (`index_valuation`) uses Legulegu **weekly** history because
+  daily history requires a paid account; percentiles therefore have weekly
+  granularity (about 52 samples/year), and the current week keeps only its
+  latest trading-day value. Tushare `index_dailybasic` is not permitted on the
+  free tier.
+- Official index valuation sources only expose current values, not the long
+  history needed for percentiles. The cross-check compares CSI PE1
+  (total-share) with Legulegu static PE and CNI PE滚动 with Legulegu
+  TTM; differences are labeled as methodology differences, not data errors.
 - Fund interfaces require Tushare 2000/5000 points or AkShare.
 - Trading status is derived, not provider-native. ST detection depends on a
   name lookup; without a name, the limit percentage may be too wide. Status
@@ -411,3 +468,6 @@ instrument name; limit prices from previous close + board rules.
 | `CHG-0027` | Broker statement ledger, decision snapshots, per-stock margin |
 | `CHG-0028` | Trade plans, portfolio risk, D+N decision outcomes |
 | `CHG-0029` | Tonghuashun screenshot OCR account snapshots |
+| `CHG-0030` | Index valuation percentiles + official CSI/CNI cross-check |
+| `CHG-0031` | Fix missing Shanghai margin names (`securityAbbr`) |
+| `CHG-0032` | Documentation: AI context completeness for the RM-46 change set |

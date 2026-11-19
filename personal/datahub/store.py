@@ -27,6 +27,7 @@ from .models import (
     FundNav,
     FuturesRank,
     IndexFutures,
+    IndexValuation,
     LimitUpStats,
     MarginBalance,
     MarginStockRow,
@@ -251,6 +252,22 @@ CREATE TABLE IF NOT EXISTS bond_yield (
   spread_2y REAL,
   spread_10y REAL
 );
+
+CREATE TABLE IF NOT EXISTS index_valuation (
+  code TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  pe_ttm REAL,
+  pe_ttm_equal REAL,
+  pe_static REAL,
+  pe_ttm_median REAL,
+  close REAL,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (code, trade_date, source)
+);
+CREATE INDEX IF NOT EXISTS idx_index_valuation_date
+  ON index_valuation(trade_date);
 
 CREATE TABLE IF NOT EXISTS restricted_summary (
   release_date TEXT PRIMARY KEY,
@@ -996,6 +1013,119 @@ class PersonalStore:
         ]
         return result
 
+    def upsert_index_valuations(self, rows: Iterable[IndexValuation]) -> int:
+        payloads = [row.to_row() for row in rows]
+        if not payloads:
+            return 0
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO index_valuation
+                  (code, trade_date, name, pe_ttm, pe_ttm_equal, pe_static,
+                   pe_ttm_median, close, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code, trade_date, source) DO UPDATE SET
+                  name=excluded.name, pe_ttm=excluded.pe_ttm,
+                  pe_ttm_equal=excluded.pe_ttm_equal,
+                  pe_static=excluded.pe_static,
+                  pe_ttm_median=excluded.pe_ttm_median,
+                  close=excluded.close, updated_at=excluded.updated_at
+                """,
+                [payload + (now,) for payload in payloads],
+            )
+        return len(payloads)
+
+    def replace_index_valuations(
+        self,
+        code: str,
+        rows: Iterable[IndexValuation],
+        *,
+        source: str = "legulegu",
+    ) -> int:
+        """Replace one index's full history for a source.
+
+        The upstream endpoint returns the full weekly series on every call, so
+        replacing avoids keeping a stale daily point from an earlier sync in
+        the same week (which would over-weight recent observations when
+        computing percentiles).
+        """
+
+        payloads = []
+        for row in rows:
+            payload = list(row.to_row())
+            payload[-1] = source
+            payloads.append(tuple(payload))
+        if not payloads:
+            return 0
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.execute(
+                "DELETE FROM index_valuation WHERE code = ? AND source = ?",
+                (code, source),
+            )
+            conn.executemany(
+                """
+                INSERT INTO index_valuation
+                  (code, trade_date, name, pe_ttm, pe_ttm_equal, pe_static,
+                   pe_ttm_median, close, source, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [payload + (now,) for payload in payloads],
+            )
+        return len(payloads)
+
+    def get_index_valuations(
+        self,
+        code: Optional[str] = None,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+        source: Optional[str] = None,
+        limit: int = 0,
+    ) -> list[IndexValuation]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        if start:
+            conditions.append("trade_date >= ?")
+            params.append(start.isoformat())
+        if end:
+            conditions.append("trade_date <= ?")
+            params.append(end.isoformat())
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        if limit and limit > 0:
+            sql = (
+                "SELECT * FROM (SELECT * FROM index_valuation"
+                + where
+                + " ORDER BY trade_date DESC LIMIT ?) ORDER BY code, trade_date"
+            )
+            params.append(int(limit))
+        else:
+            sql = (
+                "SELECT * FROM index_valuation"
+                + where
+                + " ORDER BY code, trade_date"
+            )
+        return [
+            IndexValuation(
+                code=row["code"],
+                trade_date=date.fromisoformat(row["trade_date"]),
+                name=row["name"] or "",
+                pe_ttm=row["pe_ttm"],
+                pe_ttm_equal=row["pe_ttm_equal"],
+                pe_static=row["pe_static"],
+                pe_ttm_median=row["pe_ttm_median"],
+                close=row["close"],
+                source=row["source"],
+            )
+            for row in self._conn.execute(sql, params).fetchall()
+        ]
+
     def upsert_margin_balance(self, rows: Iterable[MarginBalance]) -> int:
         payloads = [row.to_row() for row in rows]
         if not payloads:
@@ -1491,6 +1621,7 @@ class PersonalStore:
             "sector_amount",
             "etf_share",
             "bond_yield",
+            "index_valuation",
             "restricted_summary",
             "data_quality_event",
             "backtest_run",
@@ -2066,6 +2197,21 @@ class PersonalStore:
                 values,
             )
         return len(values)
+
+    def margin_stock_codes(self) -> list[str]:
+        """Codes already present in per-stock margin history.
+
+        They are included in later margin syncs so SSE rows written before the
+        ``securityAbbr`` name fix can be refreshed even if the code was
+        dropped from the current watchlist.
+        """
+
+        return [
+            row["code"]
+            for row in self._conn.execute(
+                "SELECT DISTINCT code FROM margin_stock ORDER BY code"
+            ).fetchall()
+        ]
 
     def get_margin_stock(
         self,

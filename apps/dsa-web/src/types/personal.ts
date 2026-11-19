@@ -276,6 +276,64 @@ export interface PersonalMacroResponse {
   }>;
 }
 
+export interface PersonalIndexValuationWindow {
+  label: string;
+  days: number;
+  start: string;
+  samples: number;
+  min_samples: number;
+  percentile: number | null;
+  zone: 'low' | 'low_mid' | 'mid' | 'high_mid' | 'high' | null;
+  pe_min: number | null;
+  pe_median: number | null;
+  pe_max: number | null;
+}
+
+export interface PersonalIndexValuationRow {
+  code: string;
+  name: string;
+  available: boolean;
+  as_of: string | null;
+  stale_days: number | null;
+  sample_freq: 'weekly' | 'monthly' | 'unknown';
+  pe_ttm: number | null;
+  pe_ttm_equal: number | null;
+  pe_static: number | null;
+  pe_ttm_median: number | null;
+  close: number | null;
+  windows: Record<string, PersonalIndexValuationWindow>;
+}
+
+export interface PersonalIndexValuationResponse {
+  rows: PersonalIndexValuationRow[];
+  source: string;
+  as_of: string | null;
+  windows: string[];
+  available: boolean;
+}
+
+export interface PersonalIndexValuationCheckRow {
+  code: string;
+  name: string;
+  status: 'ok' | 'warn' | 'error' | 'unavailable';
+  detail: string;
+  legu_pe: number | null;
+  official_pe: number | null;
+  official_date: string | null;
+  official_source: string | null;
+  official_metric: string | null;
+  legu_metric: string | null;
+  legu_label: string | null;
+  diff_pct: number | null;
+}
+
+export interface PersonalIndexValuationCheckResponse {
+  checked_at: string;
+  rows: PersonalIndexValuationCheckRow[];
+  warnings: string[];
+  note: string;
+}
+
 export interface PersonalCompositeComponent {
   metric: string;
   label: string;

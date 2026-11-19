@@ -17,6 +17,8 @@ import type {
   PersonalFlowsResponse,
   PersonalFuturesRankRow,
   PersonalFuturesRow,
+  PersonalIndexValuationCheckResponse,
+  PersonalIndexValuationResponse,
   PersonalLimitUpRow,
   PersonalMacroResponse,
   PersonalMarginRow,
@@ -117,7 +119,8 @@ export interface PersonalMarketSyncRequest {
     | 'sector'
     | 'etf_share'
     | 'bond'
-    | 'release';
+    | 'release'
+    | 'valuation';
   start: string | null;
   end: string | null;
 }
@@ -148,6 +151,10 @@ export const personalApi = {
     request<{ rows: PersonalFuturesRow[] }>(`/market/futures?days=${days}`),
   margin: (days = 30) =>
     request<{ rows: PersonalMarginRow[] }>(`/market/margin?days=${days}`),
+  indexValuation: () =>
+    request<PersonalIndexValuationResponse>('/market/index-valuation'),
+  indexValuationCheck: () =>
+    request<PersonalIndexValuationCheckResponse>('/market/index-valuation/check'),
   limitup: (days = 20) =>
     request<{ rows: PersonalLimitUpRow[] }>(`/market/limitup?days=${days}`),
   pcr: (days = 20) =>

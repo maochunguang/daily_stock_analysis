@@ -9,7 +9,7 @@ from personal.datahub.market import (
     sync_margin_balance,
 )
 from personal.datahub.models import IndexFutures, MarginBalance
-from personal.datahub.sources.margin_source import classify_board
+from personal.datahub.sources.margin_source import _stock_rows_sse, classify_board
 from personal.datahub.store import PersonalStore
 
 
@@ -85,6 +85,25 @@ class TestBoardClassification:
         assert classify_board("113050") is None
         assert classify_board("204001") is None
         assert classify_board("") is None
+
+
+def test_sse_stock_rows_fall_back_to_security_abbr():
+    rows = _stock_rows_sse(
+        [
+            {
+                "stockCode": "600519",
+                "securityAbbr": "贵州茅台",
+                "rzye": 14516424905,
+                "rzmre": 205580374,
+                "rqye": 123,
+            }
+        ],
+        date(2026, 11, 18),
+        {"600519"},
+        "exchange_margin",
+    )
+    assert len(rows) == 1
+    assert rows[0].name == "贵州茅台"
 
 
 class TestMarketSync:

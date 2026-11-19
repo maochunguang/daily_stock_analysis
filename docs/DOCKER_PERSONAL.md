@@ -266,6 +266,10 @@ docker exec daily_stock_analysis-2 python -m personal.cli.main validate
   无历史可回补，序列从启用日起自建积累
 - Tushare 免费档 `opt_basic`/`opt_daily` 限频 **1 次/小时**（所以 PCR 用
   上交所官方统计接口，见 §7.7）
+- 乐咕乐股指数估值免费档只提供**周频**历史（日线为付费功能）；`valuation`
+  数据集每次拉全量并按 ISO 周去重，见使用手册 §4.6
+- 指数估值的官方交叉校验按需请求中证/国证接口；失败只把对应指数标为
+  `不可用`，不影响估值卡片、定时同步或本地历史分位
 - 长区间回填受 `MARGIN_MAX_DAYS=120` 保护，按 ≤120 天分块
 
 ## 10. 最小验证命令
