@@ -1,8 +1,18 @@
 import type {
+  AccountScreenshotParseResponse,
+  AccountSnapshot,
+  AccountSnapshotConfirmRequest,
+  AccountSnapshotConfirmResponse,
+  BrokerImportSummary,
+  BrokerJournalRow,
+  BrokerPositionRow,
+  AccountPosition,
+  JournalOutcomesResponse,
+  MarginStockEntry,
   PersonalBacktestResponse,
   PersonalBreadthRow,
+  PersonalBrokerImportRequest,
   PersonalCompositeResponse,
-  PersonalValidationResponse,
   PersonalCrowdingResponse,
   PersonalFlowsResponse,
   PersonalFuturesRankRow,
@@ -17,12 +27,33 @@ import type {
   PersonalStatus,
   PersonalSyncResponse,
   PersonalUpstreamRecent,
-  BrokerImportSummary,
-  BrokerJournalRow,
-  BrokerPositionRow,
-  MarginStockEntry,
-  PersonalBrokerImportRequest,
+  PersonalValidationResponse,
+  PortfolioRiskResponse,
+  TradePlan,
+  TradePlanPreview,
+  TradePlanRequest,
+  TradePlanStatus,
 } from '../types/personal';
+
+function formatDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === 'object' && 'msg' in item) {
+          return String((item as { msg: unknown }).msg);
+        }
+        return typeof item === 'string' ? item : JSON.stringify(item);
+      })
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    if ('message' in detail) return String((detail as { message: unknown }).message);
+    if ('detail' in detail) return formatDetail((detail as { detail: unknown }).detail);
+    return JSON.stringify(detail);
+  }
+  return String(detail ?? '');
+}
 
 const BASE = '/personal-api/api';
 
@@ -47,7 +78,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const detail =
       payload && typeof payload === 'object' && 'detail' in payload
-        ? String((payload as { detail: unknown }).detail)
+        ? formatDetail((payload as { detail: unknown }).detail)
         : `${response.status} ${response.statusText}`;
     throw new Error(detail);
   }
@@ -150,4 +181,60 @@ export const personalApi = {
     request<{ positions: BrokerPositionRow[] }>('/broker/positions'),
   brokerJournal: (limit = 100) =>
     request<{ journal: BrokerJournalRow[] }>(`/broker/journal?limit=${limit}`),
+  accountSnapshotParse: (body: { filename: string; content_b64: string }) =>
+    request<AccountScreenshotParseResponse>('/account-snapshots/parse', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  accountSnapshotConfirm: (body: AccountSnapshotConfirmRequest) =>
+    request<AccountSnapshotConfirmResponse>('/account-snapshots', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  accountSnapshotLatest: () =>
+    request<{ snapshot: AccountSnapshot | null }>('/account-snapshots/latest'),
+  portfolioRisk: () => request<PortfolioRiskResponse>('/portfolio/risk'),
+  tradePlans: (status?: TradePlanStatus | '') =>
+    request<{ plans: TradePlan[] }>(
+      `/trade-plans?limit=200${status ? `&status=${status}` : ''}`,
+    ),
+  tradePlan: (id: number) =>
+    request<{ plan: TradePlan }>(`/trade-plans/${id}`),
+  tradePlanPreview: (body: TradePlanRequest) =>
+    request<{ plan: Partial<TradePlan>; preview: TradePlanPreview }>(
+      '/trade-plans/preview',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  tradePlanCreate: (body: TradePlanRequest) =>
+    request<{ plan: TradePlan; preview: TradePlanPreview }>('/trade-plans', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  tradePlanUpdate: (id: number, body: TradePlanRequest) =>
+    request<{ plan: TradePlan; preview: TradePlanPreview }>(`/trade-plans/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  tradePlanStatus: (id: number, status: TradePlanStatus) =>
+    request<{ plan: TradePlan }>(`/trade-plans/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+  journalOutcomes: (params: {
+    horizon?: number;
+    days?: number;
+    code?: string;
+    side?: string;
+    limit?: number;
+  } = {}) => {
+    const search = new URLSearchParams();
+    search.set('horizon', String(params.horizon ?? 20));
+    search.set('days', String(params.days ?? 365));
+    search.set('limit', String(params.limit ?? 200));
+    if (params.code) search.set('code', params.code);
+    if (params.side) search.set('side', params.side);
+    return request<JournalOutcomesResponse>(`/journal/outcomes?${search.toString()}`);
+  },
 };
+
+export type { AccountPosition };

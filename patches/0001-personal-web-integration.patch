@@ -70,17 +70,126 @@ index c3a1338..1bd1728 100644
    { path: '/alerts', element: <AlertsPage /> },
    { path: '/usage', element: <TokenUsagePage /> },
    { path: '/settings', element: <SettingsPage /> },
+diff --git a/apps/dsa-web/src/api/__tests__/personal.test.ts b/apps/dsa-web/src/api/__tests__/personal.test.ts
+new file mode 100644
+index 0000000..649445e
+--- /dev/null
++++ b/apps/dsa-web/src/api/__tests__/personal.test.ts
+@@ -0,0 +1,93 @@
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { personalApi } from '../personal';
++
++function jsonResponse(payload: unknown, status = 200): Response {
++  return new Response(JSON.stringify(payload), {
++    status,
++    headers: { 'Content-Type': 'application/json' },
++  });
++}
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++});
++
++describe('personalApi account/plan endpoints', () => {
++  it('sends plan_id when importing a statement', async () => {
++    const fetchMock = vi.fn().mockResolvedValue(
++      jsonResponse({ imported: 1, plan_id: 7, plan_linked: 1 }),
++    );
++    vi.stubGlobal('fetch', fetchMock);
++
++    await personalApi.brokerImport({
++      filename: 'deal.csv',
++      content_b64: 'YQ==',
++      plan_id: 7,
++    });
++
++    const [, init] = fetchMock.mock.calls[0];
++    expect(JSON.parse(String(init.body))).toMatchObject({
++      filename: 'deal.csv',
++      plan_id: 7,
++    });
++  });
++
++  it('builds journal outcome query params', async () => {
++    const fetchMock = vi.fn().mockResolvedValue(
++      jsonResponse({ rows: [], summary: {}, horizon: 20 }),
++    );
++    vi.stubGlobal('fetch', fetchMock);
++
++    await personalApi.journalOutcomes({
++      horizon: 60,
++      days: 730,
++      code: '600519',
++      side: 'buy',
++      limit: 100,
++    });
++
++    const [url] = fetchMock.mock.calls[0];
++    expect(String(url)).toContain('/journal/outcomes?');
++    expect(String(url)).toContain('horizon=60');
++    expect(String(url)).toContain('days=730');
++    expect(String(url)).toContain('code=600519');
++    expect(String(url)).toContain('side=buy');
++  });
++
++  it('formats FastAPI validation detail arrays', async () => {
++    vi.stubGlobal(
++      'fetch',
++      vi.fn().mockResolvedValue(
++        jsonResponse(
++          { detail: [{ loc: ['body', 'entry_low'], msg: 'must be positive' }] },
++          422,
++        ),
++      ),
++    );
++    await expect(
++      personalApi.tradePlanPreview({
++        plan_date: null,
++        valid_until: null,
++        code: '600519',
++        name: '',
++        side: 'buy',
++        entry_low: -1,
++        entry_high: 10,
++        stop_loss: 9,
++        target_price: 12,
++        risk_budget_pct: 1,
++        risk_budget_amount: null,
++        max_position_pct: 20,
++        requested_quantity: null,
++        account_snapshot_id: null,
++        status: 'draft',
++        thesis: '',
++        catalyst: '',
++        invalidation: '',
++        horizon_days: null,
++        analysis_id: null,
++        decision_signal_id: null,
++      }),
++    ).rejects.toThrow('must be positive');
++  });
++});
 diff --git a/apps/dsa-web/src/api/personal.ts b/apps/dsa-web/src/api/personal.ts
 new file mode 100644
-index 0000000..9a415cf
+index 0000000..54fcd46
 --- /dev/null
 +++ b/apps/dsa-web/src/api/personal.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,240 @@
 +import type {
++  AccountScreenshotParseResponse,
++  AccountSnapshot,
++  AccountSnapshotConfirmRequest,
++  AccountSnapshotConfirmResponse,
++  BrokerImportSummary,
++  BrokerJournalRow,
++  BrokerPositionRow,
++  AccountPosition,
++  JournalOutcomesResponse,
++  MarginStockEntry,
 +  PersonalBacktestResponse,
 +  PersonalBreadthRow,
++  PersonalBrokerImportRequest,
 +  PersonalCompositeResponse,
-+  PersonalValidationResponse,
 +  PersonalCrowdingResponse,
 +  PersonalFlowsResponse,
 +  PersonalFuturesRankRow,
@@ -95,12 +204,33 @@ index 0000000..9a415cf
 +  PersonalStatus,
 +  PersonalSyncResponse,
 +  PersonalUpstreamRecent,
-+  BrokerImportSummary,
-+  BrokerJournalRow,
-+  BrokerPositionRow,
-+  MarginStockEntry,
-+  PersonalBrokerImportRequest,
++  PersonalValidationResponse,
++  PortfolioRiskResponse,
++  TradePlan,
++  TradePlanPreview,
++  TradePlanRequest,
++  TradePlanStatus,
 +} from '../types/personal';
++
++function formatDetail(detail: unknown): string {
++  if (typeof detail === 'string') return detail;
++  if (Array.isArray(detail)) {
++    return detail
++      .map((item) => {
++        if (item && typeof item === 'object' && 'msg' in item) {
++          return String((item as { msg: unknown }).msg);
++        }
++        return typeof item === 'string' ? item : JSON.stringify(item);
++      })
++      .join('; ');
++  }
++  if (detail && typeof detail === 'object') {
++    if ('message' in detail) return String((detail as { message: unknown }).message);
++    if ('detail' in detail) return formatDetail((detail as { detail: unknown }).detail);
++    return JSON.stringify(detail);
++  }
++  return String(detail ?? '');
++}
 +
 +const BASE = '/personal-api/api';
 +
@@ -125,7 +255,7 @@ index 0000000..9a415cf
 +  if (!response.ok) {
 +    const detail =
 +      payload && typeof payload === 'object' && 'detail' in payload
-+        ? String((payload as { detail: unknown }).detail)
++        ? formatDetail((payload as { detail: unknown }).detail)
 +        : `${response.status} ${response.statusText}`;
 +    throw new Error(detail);
 +  }
@@ -228,7 +358,63 @@ index 0000000..9a415cf
 +    request<{ positions: BrokerPositionRow[] }>('/broker/positions'),
 +  brokerJournal: (limit = 100) =>
 +    request<{ journal: BrokerJournalRow[] }>(`/broker/journal?limit=${limit}`),
++  accountSnapshotParse: (body: { filename: string; content_b64: string }) =>
++    request<AccountScreenshotParseResponse>('/account-snapshots/parse', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  accountSnapshotConfirm: (body: AccountSnapshotConfirmRequest) =>
++    request<AccountSnapshotConfirmResponse>('/account-snapshots', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  accountSnapshotLatest: () =>
++    request<{ snapshot: AccountSnapshot | null }>('/account-snapshots/latest'),
++  portfolioRisk: () => request<PortfolioRiskResponse>('/portfolio/risk'),
++  tradePlans: (status?: TradePlanStatus | '') =>
++    request<{ plans: TradePlan[] }>(
++      `/trade-plans?limit=200${status ? `&status=${status}` : ''}`,
++    ),
++  tradePlan: (id: number) =>
++    request<{ plan: TradePlan }>(`/trade-plans/${id}`),
++  tradePlanPreview: (body: TradePlanRequest) =>
++    request<{ plan: Partial<TradePlan>; preview: TradePlanPreview }>(
++      '/trade-plans/preview',
++      { method: 'POST', body: JSON.stringify(body) },
++    ),
++  tradePlanCreate: (body: TradePlanRequest) =>
++    request<{ plan: TradePlan; preview: TradePlanPreview }>('/trade-plans', {
++      method: 'POST',
++      body: JSON.stringify(body),
++    }),
++  tradePlanUpdate: (id: number, body: TradePlanRequest) =>
++    request<{ plan: TradePlan; preview: TradePlanPreview }>(`/trade-plans/${id}`, {
++      method: 'PUT',
++      body: JSON.stringify(body),
++    }),
++  tradePlanStatus: (id: number, status: TradePlanStatus) =>
++    request<{ plan: TradePlan }>(`/trade-plans/${id}`, {
++      method: 'PATCH',
++      body: JSON.stringify({ status }),
++    }),
++  journalOutcomes: (params: {
++    horizon?: number;
++    days?: number;
++    code?: string;
++    side?: string;
++    limit?: number;
++  } = {}) => {
++    const search = new URLSearchParams();
++    search.set('horizon', String(params.horizon ?? 20));
++    search.set('days', String(params.days ?? 365));
++    search.set('limit', String(params.limit ?? 200));
++    if (params.code) search.set('code', params.code);
++    if (params.side) search.set('side', params.side);
++    return request<JournalOutcomesResponse>(`/journal/outcomes?${search.toString()}`);
++  },
 +};
++
++export type { AccountPosition };
 diff --git a/apps/dsa-web/src/components/layout/ShellHeader.tsx b/apps/dsa-web/src/components/layout/ShellHeader.tsx
 index e740de6..9507b45 100644
 --- a/apps/dsa-web/src/components/layout/ShellHeader.tsx
@@ -260,12 +446,492 @@ index 1fad650..f8b9957 100644
    { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
    { key: 'data', labelKey: 'layout.nav.dataCenter', to: '/data', icon: Database },
    { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },
+diff --git a/apps/dsa-web/src/components/personal/DecisionOutcomePanel.tsx b/apps/dsa-web/src/components/personal/DecisionOutcomePanel.tsx
+new file mode 100644
+index 0000000..c6eef47
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/DecisionOutcomePanel.tsx
+@@ -0,0 +1,474 @@
++import type React from 'react';
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
++import { RefreshCw, Search, Target } from 'lucide-react';
++import {
++  Badge,
++  Button,
++  Card,
++  Drawer,
++  EmptyState,
++  InlineAlert,
++  Pagination,
++  StatCard,
++} from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import { personalApi } from '../../api/personal';
++import type {
++  JournalOutcomeRow,
++  JournalOutcomesResponse,
++} from '../../types/personal';
++
++const INPUT_CLASS =
++  'input-surface input-focus-glow h-9 rounded-lg border bg-transparent px-3 text-sm text-foreground transition-all focus:outline-none';
++const TABLE_HEAD_CLASS =
++  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS = 'border-b border-border/40 py-2.5 pr-3 text-sm text-foreground';
++
++const COPY = {
++  zh: {
++    title: '决策结果',
++    hint: '按成交日后第 N 个交易日评估；卖出方向已取反，MFE/MAE 为持有或卖出后的有利/不利波动。',
++    horizon: '周期',
++    days: '回看天数',
++    code: '代码',
++    codePlaceholder: '如 600519',
++    side: '方向',
++    all: '全部',
++    buy: '买入',
++    sell: '卖出',
++    apply: '查询',
++    refresh: '刷新',
++    loadError: '加载决策结果失败',
++    completed: '已完成',
++    pending: '待观察',
++    unavailable: '不可用',
++    avg: '平均决策收益',
++    median: '中位收益',
++    win: '胜率',
++    mae: '平均 MAE',
++    mfe: '平均 MFE',
++    planRange: '计划区间命中',
++    sampleWarning: '完成样本不足 30，仅作观察，不作胜率结论。',
++    date: '日期',
++    status: '状态',
++    aligned: '决策收益',
++    excess: '超额',
++    state: '当时市场',
++    plan: '计划',
++    detail: '详情',
++    noRows: '没有符合条件的交易记录',
++    noRowsHint: '导入交割单后，这里会自动计算 D+N 结果。',
++    targetDate: '目标日',
++    rawReturn: '价格涨跌',
++    benchmark: '基准收益',
++    maeFull: '最大不利波动',
++    mfeFull: '最大有利波动',
++    entry: '成交价',
++    adjustedEntry: '复权成交价',
++    planRangeDetail: '计划区间',
++    planQty: '数量 / 计划',
++    planStatus: '计划状态',
++    barCount: '已走交易日',
++    unableReason: '不可用原因',
++    source: '行情源',
++    rangeYes: '区间内',
++    rangeNo: '区间外',
++    loading: '计算中…',
++    percentileNote: '收益为比例，页面已转换为 %',
++  },
++  en: {
++    title: 'Decision outcomes',
++    hint: 'Evaluated at the Nth trading bar after the trade. Sell-side direction is inverted; MAE/MFE describe favorable/adverse excursions.',
++    horizon: 'Horizon',
++    days: 'Lookback',
++    code: 'Code',
++    codePlaceholder: 'e.g. 600519',
++    side: 'Side',
++    all: 'All',
++    buy: 'Buy',
++    sell: 'Sell',
++    apply: 'Search',
++    refresh: 'Refresh',
++    loadError: 'Failed to load outcomes',
++    completed: 'Completed',
++    pending: 'Pending',
++    unavailable: 'Unavailable',
++    avg: 'Mean decision return',
++    median: 'Median return',
++    win: 'Win rate',
++    mae: 'Avg MAE',
++    mfe: 'Avg MFE',
++    planRange: 'Plan range hit',
++    sampleWarning: 'Fewer than 30 completed samples — observational only, no win-rate conclusion.',
++    date: 'Date',
++    status: 'Status',
++    aligned: 'Decision return',
++    excess: 'Excess',
++    state: 'Market then',
++    plan: 'Plan',
++    detail: 'Details',
++    noRows: 'No matching journal entries',
++    noRowsHint: 'Import a broker statement; D+N outcomes are calculated here automatically.',
++    targetDate: 'Target date',
++    rawReturn: 'Price move',
++    benchmark: 'Benchmark',
++    maeFull: 'Max adverse excursion',
++    mfeFull: 'Max favorable excursion',
++    entry: 'Entry',
++    adjustedEntry: 'Adjusted entry',
++    planRangeDetail: 'Plan range',
++    planQty: 'Qty / plan',
++    planStatus: 'Plan status',
++    barCount: 'Bars elapsed',
++    unableReason: 'Reason',
++    source: 'Source',
++    rangeYes: 'In range',
++    rangeNo: 'Outside range',
++    loading: 'Calculating…',
++    percentileNote: 'Returns are fractions converted to % in the UI',
++  },
++} as const;
++
++function pct(value: number | null | undefined, digits = 2): string {
++  return value === null || value === undefined ? '—' : `${(value * 100).toFixed(digits)}%`;
++}
++
++function number(value: number | null | undefined, digits = 3): string {
++  return value === null || value === undefined ? '—' : value.toFixed(digits);
++}
++
++function statusVariant(status: JournalOutcomeRow['status']): 'success' | 'warning' | 'danger' {
++  if (status === 'completed') return 'success';
++  if (status === 'pending') return 'warning';
++  return 'danger';
++}
++
++export const DecisionOutcomePanel: React.FC = () => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const [horizon, setHorizon] = useState(20);
++  const [days, setDays] = useState(365);
++  const [side, setSide] = useState('');
++  const [codeInput, setCodeInput] = useState('');
++  const [codeQuery, setCodeQuery] = useState('');
++  const [payload, setPayload] = useState<JournalOutcomesResponse | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState('');
++  const [page, setPage] = useState(1);
++  const [selected, setSelected] = useState<JournalOutcomeRow | null>(null);
++  const requestId = useRef(0);
++  const pageSize = 20;
++
++  const load = useCallback(async () => {
++    const id = ++requestId.current;
++    setLoading(true);
++    setError('');
++    try {
++      const result = await personalApi.journalOutcomes({
++        horizon,
++        days,
++        side: side || undefined,
++        code: codeQuery || undefined,
++        limit: 1000,
++      });
++      if (id === requestId.current) {
++        setPayload(result);
++        setPage(1);
++      }
++    } catch (err) {
++      if (id === requestId.current) {
++        setError(err instanceof Error ? err.message : String(err));
++      }
++    } finally {
++      if (id === requestId.current) setLoading(false);
++    }
++  }, [horizon, days, side, codeQuery]);
++
++  useEffect(() => {
++    void load();
++  }, [load]);
++
++  const summary = payload?.summary;
++  const rows = useMemo(() => payload?.rows ?? [], [payload]);
++  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
++  const pageRows = useMemo(
++    () => rows.slice((page - 1) * pageSize, page * pageSize),
++    [rows, page],
++  );
++
++  const submitCode = (event: React.FormEvent) => {
++    event.preventDefault();
++    setCodeQuery(codeInput.trim());
++    setPage(1);
++  };
++
++  return (
++    <div className="space-y-4">
++      <Card title={copy.title} variant="bordered">
++        <p className="text-sm text-secondary-text">{copy.hint}</p>
++        <form className="mt-3 flex flex-wrap items-end gap-2" onSubmit={submitCode}>
++          <label>
++            <span className="mb-1 block text-xs text-secondary-text">{copy.horizon}</span>
++            <select
++              className={INPUT_CLASS}
++              value={horizon}
++              onChange={(event) => setHorizon(Number(event.target.value))}
++            >
++              {[1, 5, 20, 60].map((value) => (
++                <option key={value} value={value}>
++                  D+{value}
++                </option>
++              ))}
++            </select>
++          </label>
++          <label>
++            <span className="mb-1 block text-xs text-secondary-text">{copy.days}</span>
++            <select
++              className={INPUT_CLASS}
++              value={days}
++              onChange={(event) => setDays(Number(event.target.value))}
++            >
++              {[30, 90, 365, 730, 1825].map((value) => (
++                <option key={value} value={value}>
++                  {value}
++                </option>
++              ))}
++            </select>
++          </label>
++          <label>
++            <span className="mb-1 block text-xs text-secondary-text">{copy.side}</span>
++            <select
++              className={INPUT_CLASS}
++              value={side}
++              onChange={(event) => setSide(event.target.value)}
++            >
++              <option value="">{copy.all}</option>
++              <option value="buy">{copy.buy}</option>
++              <option value="sell">{copy.sell}</option>
++            </select>
++          </label>
++          <label>
++            <span className="mb-1 block text-xs text-secondary-text">{copy.code}</span>
++            <input
++              className={INPUT_CLASS}
++              value={codeInput}
++              placeholder={copy.codePlaceholder}
++              onChange={(event) => setCodeInput(event.target.value)}
++            />
++          </label>
++          <Button type="submit" variant="primary" size="sm" disabled={loading}>
++            <Search className="h-4 w-4" />
++            {copy.apply}
++          </Button>
++          <Button
++            type="button"
++            variant="secondary"
++            size="sm"
++            isLoading={loading}
++            loadingText={copy.loading}
++            onClick={() => void load()}
++          >
++            <RefreshCw className="h-4 w-4" />
++            {copy.refresh}
++          </Button>
++        </form>
++
++        {error ? (
++          <InlineAlert
++            className="mt-3"
++            variant="danger"
++            title={copy.loadError}
++            message={error}
++            action={
++              <Button size="sm" variant="secondary" onClick={() => void load()}>
++                {copy.refresh}
++              </Button>
++            }
++          />
++        ) : null}
++      </Card>
++
++      {summary ? (
++        <>
++          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
++            <StatCard
++              label={`D+${summary.horizon} · ${copy.completed}`}
++              value={summary.completed}
++              hint={`${copy.pending} ${summary.pending} · ${copy.unavailable} ${summary.unavailable}`}
++            />
++            <StatCard
++              label={copy.avg}
++              value={pct(summary.aligned_mean)}
++              hint={`${copy.median} ${pct(summary.aligned_median)}`}
++              tone={(summary.aligned_mean ?? 0) >= 0 ? 'success' : 'danger'}
++            />
++            <StatCard
++              label={copy.win}
++              value={pct(summary.win_rate, 1)}
++              hint={`CI ${pct(summary.win_rate_ci[0], 1)} ~ ${pct(summary.win_rate_ci[1], 1)}`}
++              tone={summary.sample_warning ? 'warning' : 'default'}
++            />
++            <StatCard
++              label={`${copy.mae} / ${copy.mfe}`}
++              value={`${pct(summary.avg_mae)} / ${pct(summary.avg_mfe)}`}
++              hint={`${copy.planRange} ${pct(summary.plan_entry_in_range_rate, 1)}`}
++            />
++          </div>
++          {summary.sample_warning ? (
++            <InlineAlert variant="warning" title={copy.win} message={copy.sampleWarning} />
++          ) : null}
++        </>
++      ) : null}
++
++      <Card title={`D+${horizon}`} variant="bordered">
++        {loading ? (
++          <p className="text-sm text-secondary-text">{copy.loading}</p>
++        ) : rows.length === 0 ? (
++          <EmptyState
++            title={copy.noRows}
++            description={copy.noRowsHint}
++            icon={<Target className="h-6 w-6" />}
++          />
++        ) : (
++          <>
++            <div className="overflow-x-auto">
++              <table className="w-full min-w-[980px]">
++                <thead>
++                  <tr className={TABLE_HEAD_CLASS}>
++                    <th className="py-2 pr-3">{copy.date}</th>
++                    <th className="py-2 pr-3">{copy.code}</th>
++                    <th className="py-2 pr-3">{copy.side}</th>
++                    <th className="py-2 pr-3">{copy.status}</th>
++                    <th className="py-2 pr-3 text-right">{copy.aligned}</th>
++                    <th className="py-2 pr-3 text-right">{copy.excess}</th>
++                    <th className="py-2 pr-3 text-right">{copy.mae}</th>
++                    <th className="py-2 pr-3 text-right">{copy.mfe}</th>
++                    <th className="py-2 pr-3">{copy.state}</th>
++                    <th className="py-2 pr-3">{copy.plan}</th>
++                    <th className="py-2 text-right">{copy.detail}</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {pageRows.map((row) => (
++                    <tr key={`${row.journal_id}-${row.horizon}`}>
++                      <td className={TABLE_CELL_CLASS}>{row.trade_date}</td>
++                      <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <Badge variant={row.side === 'buy' ? 'success' : 'danger'}>
++                          {row.side === 'buy' ? copy.buy : copy.sell}
++                        </Badge>
++                      </td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <Badge variant={statusVariant(row.status)}>{copy[row.status]}</Badge>
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>
++                        <span className={(row.aligned_return ?? 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
++                          {pct(row.aligned_return)}
++                        </span>
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{pct(row.excess_return)}</td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{pct(row.mae)}</td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>{pct(row.mfe)}</td>
++                      <td className={TABLE_CELL_CLASS}>
++                        {row.composite_state ? (
++                          <Badge variant="default">
++                            {row.composite_state} {row.composite_score ?? ''}
++                          </Badge>
++                        ) : (
++                          '—'
++                        )}
++                      </td>
++                      <td className={TABLE_CELL_CLASS}>
++                        {row.plan_id ? (
++                          <div className="flex flex-col gap-1">
++                            <Badge variant={row.entry_in_plan_range ? 'success' : 'warning'}>
++                              {row.entry_in_plan_range ? copy.rangeYes : copy.rangeNo}
++                            </Badge>
++                            <span className="text-xs text-muted-text">#{row.plan_id}</span>
++                          </div>
++                        ) : (
++                          '—'
++                        )}
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>
++                        <Button size="xsm" variant="secondary" onClick={() => setSelected(row)}>
++                          {copy.detail}
++                        </Button>
++                      </td>
++                    </tr>
++                  ))}
++                </tbody>
++              </table>
++            </div>
++            <Pagination
++              className="mt-4"
++              currentPage={page}
++              totalPages={totalPages}
++              onPageChange={setPage}
++            />
++          </>
++        )}
++      </Card>
++
++      <Drawer
++        isOpen={Boolean(selected)}
++        onClose={() => setSelected(null)}
++        title={selected ? `${selected.trade_date} ${selected.code}` : copy.detail}
++      >
++        {selected ? (
++          <div className="space-y-4">
++            <div className="flex flex-wrap gap-2">
++              <Badge variant={statusVariant(selected.status)}>{copy[selected.status]}</Badge>
++              <Badge variant={selected.side === 'buy' ? 'success' : 'danger'}>
++                {selected.side === 'buy' ? copy.buy : copy.sell}
++              </Badge>
++              <Badge variant="info">D+{selected.horizon}</Badge>
++              {selected.composite_state ? (
++                <Badge variant="default">
++                  {copy.state}: {selected.composite_state}
++                </Badge>
++              ) : null}
++            </div>
++            <dl className="grid grid-cols-2 gap-3 text-sm">
++              {[
++                [copy.entry, number(selected.price)],
++                [copy.adjustedEntry, number(selected.entry_price_adjusted)],
++                [copy.targetDate, selected.target_date || '—'],
++                [copy.barCount, `${selected.bar_count} / ${selected.horizon}`],
++                [copy.rawReturn, pct(selected.asset_return)],
++                [copy.aligned, pct(selected.aligned_return)],
++                [copy.benchmark, pct(selected.benchmark_return)],
++                [copy.excess, pct(selected.excess_return)],
++                [copy.maeFull, pct(selected.mae)],
++                [copy.mfeFull, pct(selected.mfe)],
++                [copy.source, selected.stock_source || '—'],
++                [copy.unableReason, selected.unable_reason || '—'],
++              ].map(([label, value]) => (
++                <div key={label} className="rounded-xl border border-border/50 bg-elevated/20 p-3">
++                  <dt className="text-xs text-secondary-text">{label}</dt>
++                  <dd className="mt-1 break-words text-sm font-medium text-foreground">{value}</dd>
++                </div>
++              ))}
++            </dl>
++            {selected.plan_id ? (
++              <div className="rounded-2xl border border-cyan/20 bg-cyan/5 p-4 text-sm">
++                <p className="font-medium text-cyan">
++                  {copy.plan} #{selected.plan_id} · {selected.plan_status || '—'}
++                </p>
++                <p className="mt-1 text-secondary-text">
++                  {copy.planRangeDetail}: {number(selected.plan_entry_low)} ~ {number(selected.plan_entry_high)}
++                </p>
++                <p className="mt-1 text-secondary-text">
++                  {copy.planQty}: {number(selected.quantity, 0)} / {number(selected.plan_suggested_quantity, 0)}
++                  {selected.entry_deviation !== null && selected.entry_deviation !== undefined
++                    ? ` · deviation ${pct(selected.entry_deviation)}`
++                    : ''}
++                </p>
++              </div>
++            ) : null}
++          </div>
++        ) : null}
++      </Drawer>
++    </div>
++  );
++};
 diff --git a/apps/dsa-web/src/components/personal/LedgerPanel.tsx b/apps/dsa-web/src/components/personal/LedgerPanel.tsx
 new file mode 100644
-index 0000000..8429140
+index 0000000..3013f9b
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/LedgerPanel.tsx
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,373 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useRef, useState } from 'react';
 +import { Upload } from 'lucide-react';
@@ -277,7 +943,10 @@ index 0000000..8429140
 +  BrokerJournalRow,
 +  BrokerPositionRow,
 +  BrokerSnapshot,
++  TradePlan,
 +} from '../../types/personal';
++import { TonghuashunImport } from './TonghuashunImport';
++import { fileToBase64 } from './fileEncoding';
 +
 +const TABLE_HEAD_CLASS =
 +  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
@@ -320,6 +989,10 @@ index 0000000..8429140
 +    noData: '暂无数据，先导入交割单',
 +    importFailed: '导入失败',
 +    emptyJournal: '暂无交易日志',
++    planLabel: '关联交易计划（可选）',
++    noPlan: '不关联',
++    planHint: '只有代码和方向匹配的新成交会写入 plan_id',
++    planLinked: '已关联计划成交',
 +  },
 +  en: {
 +    title: 'Ledger (statements / positions / decision snapshots)',
@@ -356,6 +1029,10 @@ index 0000000..8429140
 +    noData: 'No data yet — import a statement first',
 +    importFailed: 'Import failed',
 +    emptyJournal: 'Journal is empty',
++    planLabel: 'Link trade plan (optional)',
++    noPlan: 'No link',
++    planHint: 'Only matching code/side fills receive plan_id',
++    planLinked: 'Plan-linked fills',
 +  },
 +} as const;
 +
@@ -379,6 +1056,8 @@ index 0000000..8429140
 +  const [error, setError] = useState('');
 +  const [busy, setBusy] = useState(false);
 +  const [loaded, setLoaded] = useState(false);
++  const [activePlans, setActivePlans] = useState<TradePlan[]>([]);
++  const [selectedPlanId, setSelectedPlanId] = useState('');
 +
 +  const reload = useCallback(async () => {
 +    try {
@@ -388,6 +1067,16 @@ index 0000000..8429140
 +      ]);
 +      setPositions(positionsData.positions);
 +      setJournal(journalData.journal);
++      try {
++        const plansData = await personalApi.tradePlans('');
++        setActivePlans(
++          plansData.plans.filter(
++            (plan) => plan.status !== 'closed' && plan.status !== 'cancelled',
++          ),
++        );
++      } catch {
++        // A plan endpoint failure must not hide the working ledger.
++      }
 +    } catch (err) {
 +      setError(err instanceof Error ? err.message : String(err));
 +    }
@@ -403,15 +1092,10 @@ index 0000000..8429140
 +      setError('');
 +      setSummary(null);
 +      try {
-+        const buffer = await file.arrayBuffer();
-+        const bytes = new Uint8Array(buffer);
-+        let binary = '';
-+        for (let i = 0; i < bytes.length; i += 0x8000) {
-+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-+        }
 +        const payload = {
 +          filename: file.name,
-+          content_b64: btoa(binary),
++          content_b64: await fileToBase64(file),
++          plan_id: selectedPlanId ? Number(selectedPlanId) : null,
 +        };
 +        const result = await personalApi.brokerImport(payload);
 +        setSummary(result);
@@ -423,7 +1107,7 @@ index 0000000..8429140
 +        if (fileRef.current) fileRef.current.value = '';
 +      }
 +    },
-+    [reload],
++    [reload, selectedPlanId],
 +  );
 +
 +  const held = positions.filter((row) => row.quantity > 0);
@@ -433,9 +1117,27 @@ index 0000000..8429140
 +
 +  return (
 +    <div className="grid gap-4 xl:grid-cols-2">
++      <TonghuashunImport />
++
 +      <Card title={copy.importTitle} variant="bordered" className="xl:col-span-2">
 +        <p className="text-sm text-secondary-text">{copy.importHint}</p>
-+        <div className="mt-3 flex flex-wrap items-center gap-3">
++        <div className="mt-3 flex flex-wrap items-end gap-3">
++          <label className="min-w-[220px]">
++            <span className="mb-1 block text-xs text-secondary-text">{copy.planLabel}</span>
++            <select
++              className="input-surface input-focus-glow h-10 w-full rounded-xl border bg-transparent px-3 text-sm text-foreground focus:outline-none"
++              value={selectedPlanId}
++              onChange={(event) => setSelectedPlanId(event.target.value)}
++            >
++              <option value="">{copy.noPlan}</option>
++              {activePlans.map((plan) => (
++                <option key={plan.id} value={plan.id}>
++                  #{plan.id} {plan.plan_date} {plan.side === 'buy' ? copy.buy : copy.sell} {plan.code}
++                </option>
++              ))}
++            </select>
++            <span className="mt-1 block text-xs text-muted-text">{copy.planHint}</span>
++          </label>
 +          <input
 +            ref={fileRef}
 +            type="file"
@@ -459,6 +1161,9 @@ index 0000000..8429140
 +              {copy.imported}: {summary.imported} {copy.rowsLabel} · {copy.journalLabel} +
 +              {summary.journal_added}
 +              {summary.skipped_total ? ` · ${copy.skippedLabel} ${summary.skipped_total}` : ''}
++              {summary.plan_id
++                ? ` · ${copy.planLinked} ${summary.plan_linked}`
++                : ''}
 +            </span>
 +          ) : null}
 +        </div>
@@ -598,6 +1303,200 @@ index 0000000..8429140
 +        )}
 +      </Card>
 +    </div>
++  );
++};
+diff --git a/apps/dsa-web/src/components/personal/PortfolioRiskCard.tsx b/apps/dsa-web/src/components/personal/PortfolioRiskCard.tsx
+new file mode 100644
+index 0000000..ff7ebf0
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/PortfolioRiskCard.tsx
+@@ -0,0 +1,188 @@
++import type React from 'react';
++import { ShieldAlert, Wallet } from 'lucide-react';
++import { Badge, Card, EmptyState, InlineAlert, StatCard } from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import type { PortfolioRiskResponse } from '../../types/personal';
++
++const TABLE_HEAD_CLASS =
++  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS = 'border-b border-border/40 py-2 pr-4 text-sm text-foreground';
++
++const COPY = {
++  zh: {
++    title: '组合风险',
++    unavailable: '暂无组合风险',
++    unavailableHint: '先在账本导入同花顺账户截图，再创建交易计划。',
++    equity: '账户总资产',
++    cash: '现金比例',
++    concentration: 'Top1 / Top5',
++    marketRisk: 'Beta / 年化波动',
++    coverage: '行情覆盖',
++    stale: '快照已过期',
++    positions: '持仓权重与风险',
++    code: '代码',
++    name: '名称',
++    weight: '权重',
++    value: '市值',
++    beta: 'Beta',
++    volatility: '波动率',
++    liquidity: '退出天数',
++    correlations: '高相关持仓',
++    warnings: '风险提示',
++    asOf: '快照日期',
++    hhi: 'HHI',
++    noPositions: '快照没有持仓',
++  },
++  en: {
++    title: 'Portfolio risk',
++    unavailable: 'No portfolio risk',
++    unavailableHint: 'Import a Tonghuashun account screenshot in the ledger first.',
++    equity: 'Account equity',
++    cash: 'Cash ratio',
++    concentration: 'Top1 / Top5',
++    marketRisk: 'Beta / volatility',
++    coverage: 'Market-data coverage',
++    stale: 'Snapshot is stale',
++    positions: 'Position weights and risk',
++    code: 'Code',
++    name: 'Name',
++    weight: 'Weight',
++    value: 'Value',
++    beta: 'Beta',
++    volatility: 'Volatility',
++    liquidity: 'Exit days',
++    correlations: 'Highly correlated holdings',
++    warnings: 'Risk notes',
++    asOf: 'Snapshot date',
++    hhi: 'HHI',
++    noPositions: 'Snapshot has no positions',
++  },
++} as const;
++
++function pct(value: number | null | undefined, digits = 1): string {
++  return value === null || value === undefined ? '—' : `${value.toFixed(digits)}%`;
++}
++
++function money(value: number | null | undefined): string {
++  return value === null || value === undefined
++    ? '—'
++    : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
++}
++
++export const PortfolioRiskCard: React.FC<{ risk: PortfolioRiskResponse | null }> = ({ risk }) => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++
++  if (!risk || !risk.available) {
++    return (
++      <Card title={copy.title} variant="bordered">
++        <EmptyState
++          title={copy.unavailable}
++          description={risk?.reason || copy.unavailableHint}
++          icon={<Wallet className="h-6 w-6" />}
++        />
++      </Card>
++    );
++  }
++
++  return (
++    <Card title={copy.title} variant="bordered">
++      <div className="mb-3 flex flex-wrap items-center gap-2">
++        <Badge variant="info">
++          {copy.asOf} {risk.as_of || '—'}
++        </Badge>
++        {risk.stale ? <Badge variant="warning">{copy.stale}</Badge> : null}
++        <Badge variant="default">{copy.coverage} {pct(risk.market_data_coverage_pct, 0)}</Badge>
++        {risk.account_alias ? <Badge variant="default">{risk.account_alias}</Badge> : null}
++      </div>
++      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
++        <StatCard label={copy.equity} value={money(risk.equity)} hint={`HHI ${risk.hhi ?? '—'}`} />
++        <StatCard
++          label={copy.cash}
++          value={pct(risk.cash_pct)}
++          hint={`${copy.concentration}: ${pct(risk.top1_pct)} / ${pct(risk.top5_pct)}`}
++          tone={(risk.cash_pct ?? 100) < (risk.limits?.min_cash_pct ?? 0) ? 'warning' : 'default'}
++        />
++        <StatCard
++          label={copy.concentration}
++          value={`${pct(risk.top1_pct)} / ${pct(risk.top5_pct)}`}
++          hint={`${risk.position_count ?? 0} positions`}
++          tone={
++            (risk.top1_pct ?? 0) > (risk.limits?.max_single_pct ?? 100) ||
++            (risk.top5_pct ?? 0) > (risk.limits?.max_top5_pct ?? 100)
++              ? 'danger'
++              : 'default'
++          }
++        />
++        <StatCard
++          label={copy.marketRisk}
++          value={`${risk.beta?.toFixed(2) ?? '—'} / ${pct(risk.volatility_pct)}`}
++          hint={`ETF ${pct(risk.etf_pct)} · Stock ${pct(risk.stock_pct)}`}
++        />
++      </div>
++
++      {risk.warnings.length ? (
++        <InlineAlert
++          className="mt-3"
++          variant="warning"
++          title={copy.warnings}
++          message={risk.warnings.join('；')}
++        />
++      ) : null}
++
++      <div className="mt-4 overflow-x-auto">
++        <p className="mb-2 text-sm font-medium text-foreground">{copy.positions}</p>
++        {risk.positions.length === 0 ? (
++          <p className="text-sm text-secondary-text">{copy.noPositions}</p>
++        ) : (
++          <table className="w-full min-w-[720px]">
++            <thead>
++              <tr className={TABLE_HEAD_CLASS}>
++                <th className="py-2 pr-4">{copy.code}</th>
++                <th className="py-2 pr-4">{copy.name}</th>
++                <th className="py-2 pr-4 text-right">{copy.weight}</th>
++                <th className="py-2 pr-4 text-right">{copy.value}</th>
++                <th className="py-2 pr-4 text-right">{copy.beta}</th>
++                <th className="py-2 pr-4 text-right">{copy.volatility}</th>
++                <th className="py-2 text-right">{copy.liquidity}</th>
++              </tr>
++            </thead>
++            <tbody>
++              {risk.positions.slice(0, 12).map((row) => (
++                <tr key={row.code}>
++                  <td className={TABLE_CELL_CLASS}>
++                    {row.code} {row.asset_type === 'etf' ? <Badge variant="info">ETF</Badge> : null}
++                  </td>
++                  <td className={TABLE_CELL_CLASS}>{row.name || '—'}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{pct(row.weight_pct, 2)}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{money(row.market_value)}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{row.beta?.toFixed(2) ?? '—'}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>{pct(row.volatility_pct)}</td>
++                  <td className={`${TABLE_CELL_CLASS} text-right`}>
++                    {row.liquidation_days?.toFixed(2) ?? '—'}
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        )}
++      </div>
++
++      {risk.correlations?.length ? (
++        <div className="mt-3">
++          <p className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
++            <ShieldAlert className="h-4 w-4 text-warning" />
++            {copy.correlations}
++          </p>
++          <div className="flex flex-wrap gap-2">
++            {risk.correlations.slice(0, 5).map((row) => (
++              <Badge key={`${row.code_a}-${row.code_b}`} variant="warning">
++                {row.code_a} / {row.code_b} {row.correlation.toFixed(2)}
++              </Badge>
++            ))}
++          </div>
++        </div>
++      ) : null}
++    </Card>
 +  );
 +};
 diff --git a/apps/dsa-web/src/components/personal/ReviewCards.tsx b/apps/dsa-web/src/components/personal/ReviewCards.tsx
@@ -2052,23 +2951,1698 @@ index 0000000..a397ab5
 +  { id: 'macro', component: MacroCard },
 +  { id: 'more', component: MoreCard },
 +];
+diff --git a/apps/dsa-web/src/components/personal/TonghuashunImport.tsx b/apps/dsa-web/src/components/personal/TonghuashunImport.tsx
+new file mode 100644
+index 0000000..bbe7ee7
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/TonghuashunImport.tsx
+@@ -0,0 +1,637 @@
++import type React from 'react';
++import { useCallback, useEffect, useRef, useState } from 'react';
++import { ImagePlus, Plus, ShieldCheck, Trash2, Upload } from 'lucide-react';
++import { Badge, Button, Card, EmptyState, InlineAlert } from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import { personalApi } from '../../api/personal';
++import type { AccountPosition, AccountSnapshot, AccountSnapshotDraft } from '../../types/personal';
++import { fileToBase64 } from './fileEncoding';
++
++const INPUT_CLASS =
++  'input-surface input-focus-glow h-10 w-full rounded-xl border bg-transparent px-3 text-sm text-foreground transition-all focus:outline-none';
++const LABEL_CLASS = 'mb-1 block text-xs font-medium text-secondary-text';
++const TABLE_HEAD_CLASS =
++  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS = 'border-b border-border/40 py-2 pr-3 text-sm text-foreground';
++
++interface EditablePosition {
++  code: string;
++  name: string;
++  quantity: string;
++  available_quantity: string;
++  avg_cost: string;
++  market_price: string;
++  market_value: string;
++  pnl: string;
++}
++
++interface EditableDraft {
++  account_alias: string;
++  as_of: string;
++  cash: string;
++  available_cash: string;
++  market_value: string;
++  equity: string;
++  positions: EditablePosition[];
++}
++
++const COPY = {
++  zh: {
++    title: '同花顺截图导入',
++    hint: '本地 OCR，图片不上传云端；识别结果需要核对后确认。只生成账户快照，不改动交割单持仓。',
++    choose: '选择截图',
++    manual: '手工录入',
++    parsing: '识别中…',
++    image: '截图',
++    noImage: '未选择图片',
++    accountAlias: '账户别名',
++    asOf: '快照日期',
++    equity: '总资产',
++    cash: '现金',
++    availableCash: '可用资金',
++    marketValue: '持仓市值',
++    positions: '持仓明细',
++    addRow: '加一行',
++    remove: '删除',
++    code: '代码',
++    name: '名称',
++    quantity: '数量',
++    available: '可用',
++    avgCost: '成本',
++    price: '现价',
++    marketValueShort: '市值',
++    pnl: '盈亏',
++    confirm: '确认保存快照',
++    saving: '保存中…',
++    saved: '账户快照已保存',
++    warnings: '识别提示',
++    error: '操作失败',
++    latest: '最新账户快照',
++    noSnapshot: '还没有账户快照，先导入一张同花顺资产/持仓截图',
++    refresh: '刷新',
++    alias: '账户',
++    positionsCount: '持仓',
++    confirmTitle: '请核对后再保存',
++    confirmHint: 'OCR 可能把数字、列或账户项识别错；确认后会覆盖同日同账户的旧快照。',
++    unsupported: '支持 PNG/JPEG/WebP/HEIC，最大 8MB',
++    codeRequired: '持仓缺少代码',
++    asOfRequired: '请填写快照日期',
++    savedWarnings: '保存提示',
++    noRows: '暂无持仓行',
++  },
++  en: {
++    title: 'Tonghuashun screenshot import',
++    hint: 'Local OCR; images never leave this host. Review before confirming. This creates an account snapshot only and never overwrites statement-derived positions.',
++    choose: 'Choose screenshot',
++    manual: 'Manual entry',
++    parsing: 'Recognizing…',
++    image: 'Screenshot',
++    noImage: 'No image selected',
++    accountAlias: 'Account alias',
++    asOf: 'Snapshot date',
++    equity: 'Equity',
++    cash: 'Cash',
++    availableCash: 'Available cash',
++    marketValue: 'Market value',
++    positions: 'Positions',
++    addRow: 'Add row',
++    remove: 'Remove',
++    code: 'Code',
++    name: 'Name',
++    quantity: 'Qty',
++    available: 'Available',
++    avgCost: 'Cost',
++    price: 'Price',
++    marketValueShort: 'Value',
++    pnl: 'P&L',
++    confirm: 'Confirm snapshot',
++    saving: 'Saving…',
++    saved: 'Account snapshot saved',
++    warnings: 'OCR notes',
++    error: 'Action failed',
++    latest: 'Latest account snapshot',
++    noSnapshot: 'No account snapshot yet — import a Tonghuashun asset/holdings screenshot',
++    refresh: 'Refresh',
++    alias: 'Account',
++    positionsCount: 'Positions',
++    confirmTitle: 'Review before saving',
++    confirmHint: 'OCR can misread numbers or columns. Confirming replaces the same alias/date snapshot.',
++    unsupported: 'PNG/JPEG/WebP/HEIC up to 8MB',
++    codeRequired: 'Position is missing a code',
++    asOfRequired: 'Snapshot date is required',
++    savedWarnings: 'Save notes',
++    noRows: 'No position rows',
++  },
++} as const;
++
++function localToday(): string {
++  const value = new Date();
++  const offset = value.getTimezoneOffset() * 60_000;
++  return new Date(value.getTime() - offset).toISOString().slice(0, 10);
++}
++
++function emptyPosition(): EditablePosition {
++  return {
++    code: '',
++    name: '',
++    quantity: '',
++    available_quantity: '',
++    avg_cost: '',
++    market_price: '',
++    market_value: '',
++    pnl: '',
++  };
++}
++
++function emptyDraft(): EditableDraft {
++  return {
++    account_alias: '同花顺',
++    as_of: localToday(),
++    cash: '',
++    available_cash: '',
++    market_value: '',
++    equity: '',
++    positions: [],
++  };
++}
++
++function formatNumber(value: string | number | null | undefined): string {
++  return value === null || value === undefined || value === '' ? '' : String(value);
++}
++
++function draftFromOcr(draft: AccountSnapshotDraft): EditableDraft {
++  return {
++    account_alias: draft.account_alias || '同花顺',
++    as_of: draft.as_of || localToday(),
++    cash: formatNumber(draft.cash),
++    available_cash: formatNumber(draft.available_cash),
++    market_value: formatNumber(draft.market_value),
++    equity: formatNumber(draft.equity),
++    positions: draft.positions.map((position) => ({
++      code: position.code,
++      name: position.name || '',
++      quantity: formatNumber(position.quantity),
++      available_quantity: formatNumber(position.available_quantity),
++      avg_cost: formatNumber(position.avg_cost),
++      market_price: formatNumber(position.market_price),
++      market_value: formatNumber(position.market_value),
++      pnl: formatNumber(position.pnl),
++    })),
++  };
++}
++
++function numberOrNull(value: string): number | null {
++  const trimmed = value.trim();
++  if (!trimmed) return null;
++  const parsed = Number(trimmed.replace(/,/g, ''));
++  return Number.isFinite(parsed) ? parsed : null;
++}
++
++function toPosition(row: EditablePosition): AccountPosition {
++  return {
++    code: row.code.trim(),
++    name: row.name.trim(),
++    quantity: numberOrNull(row.quantity) ?? 0,
++    available_quantity: numberOrNull(row.available_quantity),
++    avg_cost: numberOrNull(row.avg_cost),
++    market_price: numberOrNull(row.market_price),
++    market_value: numberOrNull(row.market_value),
++    pnl: numberOrNull(row.pnl),
++  };
++}
++
++export const TonghuashunImport: React.FC = () => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const fileRef = useRef<HTMLInputElement>(null);
++  const imageUrlRef = useRef<string | null>(null);
++  const [snapshot, setSnapshot] = useState<AccountSnapshot | null>(null);
++  const [draft, setDraft] = useState<EditableDraft | null>(null);
++  const [imageUrl, setImageUrl] = useState<string | null>(null);
++  const [ocrWarnings, setOcrWarnings] = useState<string[]>([]);
++  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
++  const [error, setError] = useState('');
++  const [busy, setBusy] = useState(false);
++  const [loaded, setLoaded] = useState(false);
++  const [contentHash, setContentHash] = useState('');
++  const [ocrEngine, setOcrEngine] = useState('');
++  const [sourceFile, setSourceFile] = useState('');
++
++  const loadLatest = useCallback(async () => {
++    try {
++      const payload = await personalApi.accountSnapshotLatest();
++      setSnapshot(payload.snapshot);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setLoaded(true);
++    }
++  }, []);
++
++  useEffect(() => {
++    void loadLatest();
++  }, [loadLatest]);
++
++  useEffect(() => {
++    return () => {
++      if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
++    };
++  }, []);
++
++  const replaceImageUrl = (url: string | null) => {
++    if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
++    imageUrlRef.current = url;
++    setImageUrl(url);
++  };
++
++  const handleFile = useCallback(async (file: File) => {
++    if (file.size > 8 * 1024 * 1024) {
++      setError(`${copy.unsupported}: ${file.name}`);
++      return;
++    }
++    setBusy(true);
++    setError('');
++    setOcrWarnings([]);
++    setSaveWarnings([]);
++    replaceImageUrl(URL.createObjectURL(file));
++    try {
++      const contentB64 = await fileToBase64(file);
++      const result = await personalApi.accountSnapshotParse({
++        filename: file.name,
++        content_b64: contentB64,
++      });
++      setDraft(draftFromOcr(result.draft));
++      setOcrWarnings(result.warnings);
++      setContentHash(result.content_hash);
++      setOcrEngine(result.ocr_engine);
++      setSourceFile(result.filename);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++      setDraft(emptyDraft());
++      setContentHash('');
++      setOcrEngine('manual');
++      setSourceFile(file.name);
++    } finally {
++      setBusy(false);
++      if (fileRef.current) fileRef.current.value = '';
++    }
++  }, [copy.unsupported]);
++
++  const startManual = () => {
++    replaceImageUrl(null);
++    setDraft(emptyDraft());
++    setOcrWarnings([]);
++    setSaveWarnings([]);
++    setContentHash('');
++    setOcrEngine('manual');
++    setSourceFile('');
++    setError('');
++  };
++
++  const updateDraft = (patch: Partial<EditableDraft>) => {
++    setDraft((current) => (current ? { ...current, ...patch } : current));
++  };
++
++  const updatePosition = (index: number, field: keyof EditablePosition, value: string) => {
++    setDraft((current) => {
++      if (!current) return current;
++      const positions = current.positions.map((row, rowIndex) =>
++        rowIndex === index ? { ...row, [field]: value } : row,
++      );
++      return { ...current, positions };
++    });
++  };
++
++  const addPosition = () => {
++    setDraft((current) =>
++      current ? { ...current, positions: [...current.positions, emptyPosition()] } : current,
++    );
++  };
++
++  const removePosition = (index: number) => {
++    setDraft((current) =>
++      current
++        ? { ...current, positions: current.positions.filter((_, rowIndex) => rowIndex !== index) }
++        : current,
++    );
++  };
++
++  const save = async () => {
++    if (!draft) return;
++    if (!draft.as_of) {
++      setError(copy.asOfRequired);
++      return;
++    }
++    const missingCode = draft.positions.find((row) => !row.code.trim());
++    if (missingCode) {
++      setError(copy.codeRequired);
++      return;
++    }
++    setBusy(true);
++    setError('');
++    try {
++      const result = await personalApi.accountSnapshotConfirm({
++        account_alias: draft.account_alias.trim() || '同花顺',
++        as_of: draft.as_of,
++        cash: numberOrNull(draft.cash),
++        available_cash: numberOrNull(draft.available_cash),
++        market_value: numberOrNull(draft.market_value),
++        equity: numberOrNull(draft.equity),
++        positions: draft.positions.map(toPosition),
++        source_file: sourceFile,
++        content_hash: contentHash,
++        ocr_engine: ocrEngine,
++      });
++      setSnapshot(result.snapshot);
++      setSaveWarnings(result.warnings);
++      setOcrWarnings([]);
++      setDraft(null);
++      replaceImageUrl(null);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const accountFields: Array<{
++    key: keyof Pick<EditableDraft, 'equity' | 'cash' | 'available_cash' | 'market_value'>;
++    label: string;
++  }> = [
++    { key: 'equity', label: copy.equity },
++    { key: 'cash', label: copy.cash },
++    { key: 'available_cash', label: copy.availableCash },
++    { key: 'market_value', label: copy.marketValue },
++  ];
++
++  return (
++    <Card title={copy.title} variant="bordered" className="xl:col-span-2">
++      <div className="flex flex-wrap items-start justify-between gap-3">
++        <p className="max-w-3xl text-sm text-secondary-text">{copy.hint}</p>
++        <div className="flex flex-wrap gap-2">
++          <input
++            ref={fileRef}
++            type="file"
++            accept=".png,.jpg,.jpeg,.webp,.heic,.heif,image/*"
++            className="hidden"
++            onChange={(event) => {
++              const file = event.target.files?.[0];
++              if (file) void handleFile(file);
++            }}
++          />
++          <Button variant="primary" size="sm" isLoading={busy} onClick={() => fileRef.current?.click()}>
++            <Upload className="h-4 w-4" />
++            {busy ? copy.parsing : copy.choose}
++          </Button>
++          <Button variant="secondary" size="sm" onClick={startManual}>
++            <ImagePlus className="h-4 w-4" />
++            {copy.manual}
++          </Button>
++          <Button variant="ghost" size="sm" onClick={() => void loadLatest()}>
++            {copy.refresh}
++          </Button>
++        </div>
++      </div>
++      <p className="mt-2 text-xs text-muted-text">{copy.unsupported}</p>
++
++      {error ? (
++        <InlineAlert className="mt-3" variant="danger" title={copy.error} message={error} />
++      ) : null}
++      {saveWarnings.length ? (
++        <InlineAlert
++          className="mt-3"
++          variant="warning"
++          title={copy.savedWarnings}
++          message={saveWarnings.join('；')}
++        />
++      ) : null}
++      {ocrWarnings.length ? (
++        <InlineAlert
++          className="mt-3"
++          variant="warning"
++          title={copy.warnings}
++          message={ocrWarnings.join('；')}
++        />
++      ) : null}
++
++      {draft ? (
++        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(260px,0.8fr)_minmax(0,2fr)]">
++          <div className="space-y-3">
++            <p className={LABEL_CLASS}>{copy.image}</p>
++            {imageUrl ? (
++              <img
++                src={imageUrl}
++                alt={copy.image}
++                className="max-h-80 w-full rounded-xl border border-border/60 object-contain bg-elevated/30"
++              />
++            ) : (
++              <div className="rounded-xl border border-dashed border-border/60 p-6 text-sm text-secondary-text">
++                {copy.noImage}
++              </div>
++            )}
++            <div className="grid grid-cols-2 gap-2">
++              <label>
++                <span className={LABEL_CLASS}>{copy.accountAlias}</span>
++                <input
++                  aria-label={copy.accountAlias}
++                  className={INPUT_CLASS}
++                  value={draft.account_alias}
++                  onChange={(event) => updateDraft({ account_alias: event.target.value })}
++                />
++              </label>
++              <label>
++                <span className={LABEL_CLASS}>{copy.asOf}</span>
++                <input
++                  aria-label={copy.asOf}
++                  type="date"
++                  className={INPUT_CLASS}
++                  value={draft.as_of}
++                  onChange={(event) => updateDraft({ as_of: event.target.value })}
++                />
++              </label>
++            </div>
++            <div className="grid grid-cols-2 gap-2">
++              {accountFields.map((field) => (
++                <label key={field.key}>
++                  <span className={LABEL_CLASS}>{field.label}</span>
++                  <input
++                    aria-label={field.label}
++                    inputMode="decimal"
++                    className={INPUT_CLASS}
++                    value={draft[field.key]}
++                    onChange={(event) => updateDraft({ [field.key]: event.target.value })}
++                  />
++                </label>
++              ))}
++            </div>
++            <p className="text-xs text-muted-text">{copy.confirmHint}</p>
++            <Button
++              variant="primary"
++              className="w-full"
++              isLoading={busy}
++              loadingText={copy.saving}
++              onClick={() => void save()}
++            >
++              <ShieldCheck className="h-4 w-4" />
++              {copy.confirm}
++            </Button>
++          </div>
++
++          <div>
++            <div className="mb-2 flex items-center justify-between">
++              <p className="text-sm font-medium text-foreground">
++                {copy.positions} · {draft.positions.length}
++              </p>
++              <Button variant="secondary" size="xsm" onClick={addPosition}>
++                <Plus className="h-3.5 w-3.5" />
++                {copy.addRow}
++              </Button>
++            </div>
++            <div className="overflow-x-auto rounded-xl border border-border/50">
++              <table className="w-full min-w-[920px]">
++                <thead>
++                  <tr className={TABLE_HEAD_CLASS}>
++                    <th className="px-2 py-2">{copy.code}</th>
++                    <th className="px-2 py-2">{copy.name}</th>
++                    <th className="px-2 py-2 text-right">{copy.quantity}</th>
++                    <th className="px-2 py-2 text-right">{copy.available}</th>
++                    <th className="px-2 py-2 text-right">{copy.avgCost}</th>
++                    <th className="px-2 py-2 text-right">{copy.price}</th>
++                    <th className="px-2 py-2 text-right">{copy.marketValueShort}</th>
++                    <th className="px-2 py-2 text-right">{copy.pnl}</th>
++                    <th className="px-2 py-2" />
++                  </tr>
++                </thead>
++                <tbody>
++                  {draft.positions.length === 0 ? (
++                    <tr>
++                      <td colSpan={9} className="px-3 py-5 text-center text-sm text-secondary-text">
++                        {copy.noRows}
++                      </td>
++                    </tr>
++                  ) : (
++                    draft.positions.map((row, index) => (
++                      <tr key={`${row.code}-${index}`}>
++                        {(
++                          [
++                            'code',
++                            'name',
++                            'quantity',
++                            'available_quantity',
++                            'avg_cost',
++                            'market_price',
++                            'market_value',
++                            'pnl',
++                          ] as Array<keyof EditablePosition>
++                        ).map((field) => (
++                          <td key={field} className={`${TABLE_CELL_CLASS} px-1 py-1`}>
++                            <input
++                              inputMode={field === 'code' || field === 'name' ? 'text' : 'decimal'}
++                              className="input-surface input-focus-glow h-9 w-full rounded-lg border bg-transparent px-2 text-sm text-foreground focus:outline-none"
++                              value={row[field]}
++                              onChange={(event) => updatePosition(index, field, event.target.value)}
++                            />
++                          </td>
++                        ))}
++                        <td className={`${TABLE_CELL_CLASS} px-1 py-1`}>
++                          <button
++                            type="button"
++                            aria-label={copy.remove}
++                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-danger/30 text-danger hover:bg-danger/10"
++                            onClick={() => removePosition(index)}
++                          >
++                            <Trash2 className="h-4 w-4" />
++                          </button>
++                        </td>
++                      </tr>
++                    ))
++                  )}
++                </tbody>
++              </table>
++            </div>
++          </div>
++        </div>
++      ) : loaded && snapshot ? (
++        <div className="mt-4">
++          <div className="flex flex-wrap items-center gap-2">
++            <Badge variant="success">
++              {copy.latest} · {snapshot.as_of}
++            </Badge>
++            <Badge variant="default">
++              {copy.alias} {snapshot.account_alias}
++            </Badge>
++            <Badge variant="info">
++              {copy.positionsCount} {snapshot.positions.length}
++            </Badge>
++          </div>
++          <div className="mt-3 grid gap-3 md:grid-cols-4">
++            {[
++              [copy.equity, snapshot.equity],
++              [copy.cash, snapshot.cash],
++              [copy.availableCash, snapshot.available_cash],
++              [copy.marketValue, snapshot.market_value],
++            ].map(([label, value]) => (
++              <div key={String(label)} className="rounded-xl border border-border/50 bg-elevated/20 p-3">
++                <p className="text-xs text-secondary-text">{label}</p>
++                <p className="mt-1 text-lg font-semibold text-foreground">
++                  {value === null || value === undefined
++                    ? '—'
++                    : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
++                </p>
++              </div>
++            ))}
++          </div>
++          <div className="mt-4 overflow-x-auto">
++            <table className="w-full">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.code}</th>
++                  <th className="py-2 pr-4">{copy.name}</th>
++                  <th className="py-2 pr-4 text-right">{copy.quantity}</th>
++                  <th className="py-2 pr-4 text-right">{copy.available}</th>
++                  <th className="py-2 pr-4 text-right">{copy.avgCost}</th>
++                  <th className="py-2 pr-4 text-right">{copy.price}</th>
++                  <th className="py-2 pr-4 text-right">{copy.marketValueShort}</th>
++                  <th className="py-2 text-right">{copy.pnl}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {snapshot.positions.map((row) => (
++                  <tr key={row.code}>
++                    <td className={TABLE_CELL_CLASS}>{row.code}</td>
++                    <td className={TABLE_CELL_CLASS}>{row.name || '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.quantity.toLocaleString()}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {row.available_quantity?.toLocaleString() ?? '—'}
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.avg_cost?.toFixed(3) ?? '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>{row.market_price?.toFixed(3) ?? '—'}</td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      {row.market_value?.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) ?? '—'}
++                    </td>
++                    <td className={`${TABLE_CELL_CLASS} text-right`}>
++                      <span className={(row.pnl ?? 0) < 0 ? 'text-rose-600' : 'text-emerald-600'}>
++                        {row.pnl?.toFixed(2) ?? '—'}
++                      </span>
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        </div>
++      ) : loaded ? (
++        <EmptyState
++          className="mt-4"
++          title={copy.noSnapshot}
++          description={copy.unsupported}
++          action={
++            <Button variant="secondary" onClick={startManual}>
++              {copy.manual}
++            </Button>
++          }
++        />
++      ) : null}
++    </Card>
++  );
++};
+diff --git a/apps/dsa-web/src/components/personal/TradePlanEditor.tsx b/apps/dsa-web/src/components/personal/TradePlanEditor.tsx
+new file mode 100644
+index 0000000..dfcb7a9
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/TradePlanEditor.tsx
+@@ -0,0 +1,572 @@
++import type React from 'react';
++import { useEffect, useMemo, useState } from 'react';
++import { Calculator, Save, ShieldAlert } from 'lucide-react';
++import { Badge, Button, Drawer, InlineAlert } from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import { personalApi } from '../../api/personal';
++import type {
++  AccountSnapshot,
++  TradePlan,
++  TradePlanPreview,
++  TradePlanRequest,
++  TradePlanSide,
++  TradePlanStatus,
++} from '../../types/personal';
++
++const INPUT_CLASS =
++  'input-surface input-focus-glow h-10 w-full rounded-xl border bg-transparent px-3 text-sm text-foreground transition-all focus:outline-none';
++const LABEL_CLASS = 'mb-1 block text-xs font-medium text-secondary-text';
++const TEXTAREA_CLASS =
++  'input-surface input-focus-glow min-h-[76px] w-full rounded-xl border bg-transparent px-3 py-2 text-sm text-foreground transition-all focus:outline-none';
++
++const COPY = {
++  zh: {
++    create: '新建交易计划',
++    edit: '编辑交易计划',
++    date: '计划日期',
++    validUntil: '有效期至',
++    code: '代码',
++    name: '名称',
++    side: '方向',
++    buy: '买入',
++    sell: '卖出',
++    entryLow: '计划价格下限',
++    entryHigh: '计划价格上限',
++    stop: '止损价',
++    target: '目标价',
++    riskMode: '风险预算方式',
++    riskPct: '按总资产比例',
++    riskAmount: '按金额',
++    budget: '风险预算',
++    maxPosition: '单票上限 %',
++    requested: '计划数量（可选）',
++    horizon: '持有周期（天）',
++    status: '状态',
++    draft: '草稿',
++    active: '执行中',
++    closed: '已结束',
++    cancelled: '已取消',
++    thesis: '投资逻辑',
++    catalyst: '催化剂',
++    invalidation: '逻辑失效条件',
++    preview: '风险预演',
++    recalculating: '计算中…',
++    save: '保存计划',
++    saving: '保存中…',
++    previewFirst: '先做风险预演才能保存',
++    noSnapshot: '没有账户快照，先在账本导入同花顺截图。',
++    blockers: '无法保存',
++    warnings: '风险提示',
++    suggestedQty: '建议数量',
++    plannedLoss: '计划亏损',
++    riskUsed: '风险使用',
++    entryFill: '保守成交价',
++    postCash: '交易后现金',
++    postWeight: '交易后单票',
++    postTop5: '交易后 Top5',
++    rewardRisk: '盈亏比',
++    snapshotLabel: '账户快照',
++    equity: '总资产',
++    saveFailed: '保存失败',
++    previewFailed: '预演失败',
++  },
++  en: {
++    create: 'New trade plan',
++    edit: 'Edit trade plan',
++    date: 'Plan date',
++    validUntil: 'Valid until',
++    code: 'Code',
++    name: 'Name',
++    side: 'Side',
++    buy: 'Buy',
++    sell: 'Sell',
++    entryLow: 'Entry low',
++    entryHigh: 'Entry high',
++    stop: 'Stop',
++    target: 'Target',
++    riskMode: 'Risk budget mode',
++    riskPct: 'Percent of equity',
++    riskAmount: 'Fixed amount',
++    budget: 'Risk budget',
++    maxPosition: 'Max position %',
++    requested: 'Requested qty (optional)',
++    horizon: 'Horizon (days)',
++    status: 'Status',
++    draft: 'Draft',
++    active: 'Active',
++    closed: 'Closed',
++    cancelled: 'Cancelled',
++    thesis: 'Thesis',
++    catalyst: 'Catalyst',
++    invalidation: 'Invalidation',
++    preview: 'Risk preview',
++    recalculating: 'Calculating…',
++    save: 'Save plan',
++    saving: 'Saving…',
++    previewFirst: 'Run a risk preview before saving',
++    noSnapshot: 'No account snapshot. Import a Tonghuashun screenshot in the ledger first.',
++    blockers: 'Cannot save',
++    warnings: 'Risk notes',
++    suggestedQty: 'Suggested qty',
++    plannedLoss: 'Planned loss',
++    riskUsed: 'Risk used',
++    entryFill: 'Conservative fill',
++    postCash: 'Post-trade cash',
++    postWeight: 'Post-trade name',
++    postTop5: 'Post-trade Top5',
++    rewardRisk: 'Reward/risk',
++    snapshotLabel: 'Account snapshot',
++    equity: 'Equity',
++    saveFailed: 'Save failed',
++    previewFailed: 'Preview failed',
++  },
++} as const;
++
++interface FormState {
++  plan_date: string;
++  valid_until: string;
++  code: string;
++  name: string;
++  side: TradePlanSide;
++  entry_low: string;
++  entry_high: string;
++  stop_loss: string;
++  target_price: string;
++  risk_mode: 'pct' | 'amount';
++  risk_budget_pct: string;
++  risk_budget_amount: string;
++  max_position_pct: string;
++  requested_quantity: string;
++  status: TradePlanStatus;
++  thesis: string;
++  catalyst: string;
++  invalidation: string;
++  horizon_days: string;
++}
++
++function localToday(): string {
++  const value = new Date();
++  const offset = value.getTimezoneOffset() * 60_000;
++  return new Date(value.getTime() - offset).toISOString().slice(0, 10);
++}
++
++function value(value: number | null | undefined): string {
++  return value === null || value === undefined ? '' : String(value);
++}
++
++function formFromPlan(
++  plan: TradePlan | null,
++  defaultBudgetPct: number,
++  defaultMaxPositionPct: number,
++): FormState {
++  return {
++    plan_date: plan?.plan_date || localToday(),
++    valid_until: plan?.valid_until || '',
++    code: plan?.code || '',
++    name: plan?.name || '',
++    side: plan?.side || 'buy',
++    entry_low: value(plan?.entry_low),
++    entry_high: value(plan?.entry_high),
++    stop_loss: value(plan?.stop_loss),
++    target_price: value(plan?.target_price),
++    risk_mode: plan?.risk_budget_amount !== null && plan?.risk_budget_amount !== undefined ? 'amount' : 'pct',
++    risk_budget_pct: value(plan?.risk_budget_pct ?? defaultBudgetPct),
++    risk_budget_amount: value(plan?.risk_budget_amount),
++    max_position_pct: value(plan?.max_position_pct ?? defaultMaxPositionPct),
++    requested_quantity: value(plan?.requested_quantity),
++    status: plan?.status || 'draft',
++    thesis: plan?.thesis || '',
++    catalyst: plan?.catalyst || '',
++    invalidation: plan?.invalidation || '',
++    horizon_days: value(plan?.horizon_days),
++  };
++}
++
++function numberOrNull(raw: string): number | null {
++  const trimmed = raw.trim();
++  if (!trimmed) return null;
++  const parsed = Number(trimmed.replace(/,/g, ''));
++  return Number.isFinite(parsed) ? parsed : null;
++}
++
++function toRequest(form: FormState, plan: TradePlan | null, snapshot: AccountSnapshot | null): TradePlanRequest {
++  return {
++    plan_date: form.plan_date || null,
++    valid_until: form.valid_until || null,
++    code: form.code.trim(),
++    name: form.name.trim(),
++    side: form.side,
++    entry_low: numberOrNull(form.entry_low) ?? 0,
++    entry_high: numberOrNull(form.entry_high) ?? 0,
++    stop_loss: numberOrNull(form.stop_loss),
++    target_price: numberOrNull(form.target_price),
++    risk_budget_pct: form.risk_mode === 'pct' ? numberOrNull(form.risk_budget_pct) : null,
++    risk_budget_amount:
++      form.risk_mode === 'amount' ? numberOrNull(form.risk_budget_amount) : null,
++    max_position_pct: numberOrNull(form.max_position_pct),
++    requested_quantity: numberOrNull(form.requested_quantity),
++    account_snapshot_id: snapshot?.id ?? plan?.account_snapshot_id ?? null,
++    status: form.status,
++    thesis: form.thesis.trim(),
++    catalyst: form.catalyst.trim(),
++    invalidation: form.invalidation.trim(),
++    horizon_days: numberOrNull(form.horizon_days),
++    analysis_id: plan?.analysis_id ?? null,
++    decision_signal_id: plan?.decision_signal_id ?? null,
++  };
++}
++
++interface TradePlanEditorProps {
++  isOpen: boolean;
++  plan: TradePlan | null;
++  snapshot: AccountSnapshot | null;
++  defaultBudgetPct?: number;
++  defaultMaxPositionPct?: number;
++  onClose: () => void;
++  onSaved: () => void;
++}
++
++export const TradePlanEditor: React.FC<TradePlanEditorProps> = ({
++  isOpen,
++  plan,
++  snapshot,
++  defaultBudgetPct = 1,
++  defaultMaxPositionPct = 20,
++  onClose,
++  onSaved,
++}) => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const [form, setForm] = useState<FormState>(() =>
++    formFromPlan(plan, defaultBudgetPct, defaultMaxPositionPct),
++  );
++  const [preview, setPreview] = useState<TradePlanPreview | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [previewing, setPreviewing] = useState(false);
++  const [error, setError] = useState('');
++
++  useEffect(() => {
++    if (!isOpen) return;
++    setForm(formFromPlan(plan, defaultBudgetPct, defaultMaxPositionPct));
++    setPreview(null);
++    setError('');
++  }, [isOpen, plan, defaultBudgetPct, defaultMaxPositionPct]);
++
++  const update = <K extends keyof FormState>(key: K, next: FormState[K]) => {
++    setForm((current) => ({ ...current, [key]: next }));
++    setPreview(null);
++    setError('');
++  };
++
++  const request = useMemo(() => toRequest(form, plan, snapshot), [form, plan, snapshot]);
++  const canPreview = Boolean(snapshot) && Boolean(form.code.trim()) && !previewing;
++
++  const runPreview = async () => {
++    setPreviewing(true);
++    setError('');
++    try {
++      const result = await personalApi.tradePlanPreview(request);
++      setPreview(result.preview);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++      setPreview(null);
++    } finally {
++      setPreviewing(false);
++    }
++  };
++
++  const save = async () => {
++    if (!preview || preview.blockers.length) return;
++    setBusy(true);
++    setError('');
++    try {
++      if (plan?.id) {
++        await personalApi.tradePlanUpdate(plan.id, request);
++      } else {
++        await personalApi.tradePlanCreate(request);
++      }
++      onSaved();
++      onClose();
++    } catch (err) {
++      setError(`${copy.saveFailed}: ${err instanceof Error ? err.message : String(err)}`);
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <Drawer isOpen={isOpen} onClose={onClose} title={plan ? copy.edit : copy.create} width="max-w-3xl">
++      <div className="space-y-4">
++        {!snapshot ? (
++          <InlineAlert variant="warning" title={copy.noSnapshot} message={copy.noSnapshot} />
++        ) : (
++          <div className="flex flex-wrap gap-2">
++            <Badge variant="success">
++              {copy.snapshotLabel} {snapshot.as_of}
++            </Badge>
++            <Badge variant="default">
++              {copy.equity} {snapshot.equity?.toLocaleString('zh-CN') ?? '—'}
++            </Badge>
++          </div>
++        )}
++
++        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
++          <label>
++            <span className={LABEL_CLASS}>{copy.date}</span>
++            <input
++              type="date"
++              className={INPUT_CLASS}
++              value={form.plan_date}
++              onChange={(event) => update('plan_date', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.validUntil}</span>
++            <input
++              type="date"
++              className={INPUT_CLASS}
++              value={form.valid_until}
++              onChange={(event) => update('valid_until', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.side}</span>
++            <select
++              className={INPUT_CLASS}
++              value={form.side}
++              onChange={(event) => update('side', event.target.value as TradePlanSide)}
++            >
++              <option value="buy">{copy.buy}</option>
++              <option value="sell">{copy.sell}</option>
++            </select>
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.status}</span>
++            <select
++              className={INPUT_CLASS}
++              value={form.status}
++              onChange={(event) => update('status', event.target.value as TradePlanStatus)}
++            >
++              <option value="draft">{copy.draft}</option>
++              <option value="active">{copy.active}</option>
++              <option value="closed">{copy.closed}</option>
++              <option value="cancelled">{copy.cancelled}</option>
++            </select>
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.code}</span>
++            <input
++              className={INPUT_CLASS}
++              value={form.code}
++              placeholder="600519"
++              onChange={(event) => update('code', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.name}</span>
++            <input
++              className={INPUT_CLASS}
++              value={form.name}
++              onChange={(event) => update('name', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.entryLow}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.entry_low}
++              onChange={(event) => update('entry_low', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.entryHigh}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.entry_high}
++              onChange={(event) => update('entry_high', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.stop}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.stop_loss}
++              onChange={(event) => update('stop_loss', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.target}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.target_price}
++              onChange={(event) => update('target_price', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.riskMode}</span>
++            <select
++              className={INPUT_CLASS}
++              value={form.risk_mode}
++              onChange={(event) => update('risk_mode', event.target.value as 'pct' | 'amount')}
++            >
++              <option value="pct">{copy.riskPct}</option>
++              <option value="amount">{copy.riskAmount}</option>
++            </select>
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.budget}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.risk_mode === 'pct' ? form.risk_budget_pct : form.risk_budget_amount}
++              onChange={(event) =>
++                update(
++                  form.risk_mode === 'pct' ? 'risk_budget_pct' : 'risk_budget_amount',
++                  event.target.value,
++                )
++              }
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.maxPosition}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.max_position_pct}
++              onChange={(event) => update('max_position_pct', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.requested}</span>
++            <input
++              inputMode="decimal"
++              className={INPUT_CLASS}
++              value={form.requested_quantity}
++              onChange={(event) => update('requested_quantity', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.horizon}</span>
++            <input
++              inputMode="numeric"
++              className={INPUT_CLASS}
++              value={form.horizon_days}
++              onChange={(event) => update('horizon_days', event.target.value)}
++            />
++          </label>
++        </div>
++
++        <div className="grid gap-3 md:grid-cols-3">
++          <label>
++            <span className={LABEL_CLASS}>{copy.thesis}</span>
++            <textarea
++              className={TEXTAREA_CLASS}
++              value={form.thesis}
++              onChange={(event) => update('thesis', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.catalyst}</span>
++            <textarea
++              className={TEXTAREA_CLASS}
++              value={form.catalyst}
++              onChange={(event) => update('catalyst', event.target.value)}
++            />
++          </label>
++          <label>
++            <span className={LABEL_CLASS}>{copy.invalidation}</span>
++            <textarea
++              className={TEXTAREA_CLASS}
++              value={form.invalidation}
++              onChange={(event) => update('invalidation', event.target.value)}
++            />
++          </label>
++        </div>
++
++        {error ? <InlineAlert variant="danger" title={copy.saveFailed} message={error} /> : null}
++        {preview?.blockers.length ? (
++          <InlineAlert
++            variant="danger"
++            title={copy.blockers}
++            message={preview.blockers.join('；')}
++          />
++        ) : null}
++        {preview?.warnings.length ? (
++          <InlineAlert
++            variant="warning"
++            title={copy.warnings}
++            message={preview.warnings.join('；')}
++          />
++        ) : null}
++
++        {preview ? (
++          <div className="rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
++            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-cyan">
++              <ShieldAlert className="h-4 w-4" />
++              {copy.preview}
++            </div>
++            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
++              {[
++                [copy.suggestedQty, preview.suggested_quantity.toLocaleString()],
++                [copy.entryFill, preview.entry_fill.toFixed(3)],
++                [
++                  copy.plannedLoss,
++                  preview.planned_loss === null
++                    ? '—'
++                    : preview.planned_loss.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
++                ],
++                [copy.riskUsed, preview.risk_used_pct === null ? '—' : `${preview.risk_used_pct.toFixed(1)}%`],
++                [
++                  copy.postCash,
++                  preview.post_trade_cash === null
++                    ? '—'
++                    : preview.post_trade_cash.toLocaleString('zh-CN', { maximumFractionDigits: 2 }),
++                ],
++                [copy.postWeight, preview.post_trade_position_weight_pct === null ? '—' : `${preview.post_trade_position_weight_pct.toFixed(1)}%`],
++                [copy.postTop5, preview.post_trade_top5_pct === null ? '—' : `${preview.post_trade_top5_pct.toFixed(1)}%`],
++                [copy.rewardRisk, preview.reward_risk ?? '—'],
++              ].map(([label, display]) => (
++                <div key={String(label)} className="rounded-xl border border-border/50 bg-card/60 p-3">
++                  <p className="text-xs text-secondary-text">{label}</p>
++                  <p className="mt-1 text-lg font-semibold text-foreground">{display}</p>
++                </div>
++              ))}
++            </div>
++          </div>
++        ) : (
++          <p className="text-sm text-secondary-text">{copy.previewFirst}</p>
++        )}
++
++        <div className="flex flex-wrap justify-end gap-2 border-t border-border/50 pt-4">
++          <Button variant="secondary" onClick={onClose} disabled={busy}>
++            {language === 'zh' ? '取消' : 'Cancel'}
++          </Button>
++          <Button
++            variant="secondary"
++            onClick={() => void runPreview()}
++            isLoading={previewing}
++            loadingText={copy.recalculating}
++            disabled={!canPreview}
++          >
++            <Calculator className="h-4 w-4" />
++            {copy.preview}
++          </Button>
++          <Button
++            variant="primary"
++            onClick={() => void save()}
++            isLoading={busy}
++            loadingText={copy.saving}
++            disabled={!preview || preview.blockers.length > 0}
++          >
++            <Save className="h-4 w-4" />
++            {copy.save}
++          </Button>
++        </div>
++      </div>
++    </Drawer>
++  );
++};
+diff --git a/apps/dsa-web/src/components/personal/TradePlanPanel.tsx b/apps/dsa-web/src/components/personal/TradePlanPanel.tsx
+new file mode 100644
+index 0000000..d4cbd80
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/TradePlanPanel.tsx
+@@ -0,0 +1,348 @@
++import type React from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { Pencil, Plus, RefreshCw, Target } from 'lucide-react';
++import { Badge, Button, Card, EmptyState, InlineAlert } from '../common';
++import { useUiLanguage } from '../../contexts/UiLanguageContext';
++import { personalApi } from '../../api/personal';
++import type {
++  AccountSnapshot,
++  PortfolioRiskResponse,
++  TradePlan,
++  TradePlanStatus,
++} from '../../types/personal';
++import { PortfolioRiskCard } from './PortfolioRiskCard';
++import { TradePlanEditor } from './TradePlanEditor';
++
++const INPUT_CLASS =
++  'input-surface input-focus-glow h-9 rounded-lg border bg-transparent px-3 text-sm text-foreground transition-all focus:outline-none';
++const TABLE_HEAD_CLASS =
++  'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
++const TABLE_CELL_CLASS = 'border-b border-border/40 py-2.5 pr-4 text-sm text-foreground';
++
++const COPY = {
++  zh: {
++    title: '交易计划',
++    hint: '先定义逻辑与失效条件，再做风险预算和仓位预演。计划与实际成交分开保存。',
++    create: '新建计划',
++    refresh: '刷新',
++    all: '全部状态',
++    draft: '草稿',
++    active: '执行中',
++    closed: '已结束',
++    cancelled: '已取消',
++    code: '代码',
++    side: '方向',
++    buy: '买入',
++    sell: '卖出',
++    range: '计划区间',
++    status: '状态',
++    progress: '执行进度',
++    thesis: '投资逻辑',
++    actions: '操作',
++    edit: '编辑',
++    noPlans: '还没有交易计划',
++    noPlansHint: '先导入账户截图，再创建带风险预算的盘前计划。',
++    noSnapshot: '没有账户快照，先在账本导入同花顺截图。',
++    loadError: '加载交易计划失败',
++    updateError: '更新计划状态失败',
++    fills: '笔成交',
++    vwap: 'VWAP',
++    requested: '计划',
++    plannedLoss: '计划亏损',
++    noPreview: '未预演',
++    loading: '加载中…',
++  },
++  en: {
++    title: 'Trade plans',
++    hint: 'Define thesis and invalidation first, then size the position with an explicit risk budget. Plans and fills stay separate.',
++    create: 'New plan',
++    refresh: 'Refresh',
++    all: 'All statuses',
++    draft: 'Draft',
++    active: 'Active',
++    closed: 'Closed',
++    cancelled: 'Cancelled',
++    code: 'Code',
++    side: 'Side',
++    buy: 'Buy',
++    sell: 'Sell',
++    range: 'Range',
++    status: 'Status',
++    progress: 'Execution',
++    thesis: 'Thesis',
++    actions: 'Actions',
++    edit: 'Edit',
++    noPlans: 'No trade plans yet',
++    noPlansHint: 'Import an account screenshot, then create a pre-trade plan with a risk budget.',
++    noSnapshot: 'No account snapshot. Import a Tonghuashun screenshot in the ledger first.',
++    loadError: 'Failed to load trade plans',
++    updateError: 'Failed to update plan status',
++    fills: 'fills',
++    vwap: 'VWAP',
++    requested: 'Plan',
++    plannedLoss: 'Planned loss',
++    noPreview: 'Not previewed',
++    loading: 'Loading…',
++  },
++} as const;
++
++function parsePreview(plan: TradePlan): Record<string, unknown> {
++  if (!plan.preview_json) return {};
++  try {
++    const parsed = JSON.parse(plan.preview_json) as unknown;
++    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
++  } catch {
++    return {};
++  }
++}
++
++export const TradePlanPanel: React.FC = () => {
++  const { language } = useUiLanguage();
++  const copy = COPY[language];
++  const [plans, setPlans] = useState<TradePlan[]>([]);
++  const [risk, setRisk] = useState<PortfolioRiskResponse | null>(null);
++  const [snapshot, setSnapshot] = useState<AccountSnapshot | null>(null);
++  const [statusFilter, setStatusFilter] = useState<TradePlanStatus | ''>('');
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState('');
++  const [actionError, setActionError] = useState('');
++  const [actionId, setActionId] = useState<number | null>(null);
++  const [editorOpen, setEditorOpen] = useState(false);
++  const [editing, setEditing] = useState<TradePlan | null>(null);
++
++  const load = useCallback(async () => {
++    setLoading(true);
++    setError('');
++    try {
++      const [planData, riskData, snapshotData] = await Promise.all([
++        personalApi.tradePlans(statusFilter),
++        personalApi.portfolioRisk(),
++        personalApi.accountSnapshotLatest(),
++      ]);
++      setPlans(planData.plans);
++      setRisk(riskData);
++      setSnapshot(snapshotData.snapshot);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setLoading(false);
++    }
++  }, [statusFilter]);
++
++  useEffect(() => {
++    void load();
++  }, [load]);
++
++  const changeStatus = async (plan: TradePlan, status: TradePlanStatus) => {
++    setActionId(plan.id);
++    setActionError('');
++    try {
++      await personalApi.tradePlanStatus(plan.id, status);
++      await load();
++    } catch (err) {
++      setActionError(err instanceof Error ? err.message : String(err));
++    } finally {
++      setActionId(null);
++    }
++  };
++
++  const intendedQuantity = useMemo(() => {
++    const mapping: Record<number, number | null> = {};
++    for (const plan of plans) {
++      const preview = parsePreview(plan);
++      const suggested = preview.suggested_quantity;
++      mapping[plan.id] =
++        plan.requested_quantity ??
++        (typeof suggested === 'number' ? suggested : null);
++    }
++    return mapping;
++  }, [plans]);
++
++  return (
++    <div className="space-y-4">
++      <Card title={copy.title} variant="bordered">
++        <div className="flex flex-wrap items-start justify-between gap-3">
++          <div>
++            <p className="max-w-3xl text-sm text-secondary-text">{copy.hint}</p>
++            {!snapshot ? <p className="mt-2 text-sm text-warning">{copy.noSnapshot}</p> : null}
++          </div>
++          <div className="flex flex-wrap items-center gap-2">
++            <select
++              className={INPUT_CLASS}
++              value={statusFilter}
++              onChange={(event) => setStatusFilter(event.target.value as TradePlanStatus | '')}
++            >
++              <option value="">{copy.all}</option>
++              <option value="draft">{copy.draft}</option>
++              <option value="active">{copy.active}</option>
++              <option value="closed">{copy.closed}</option>
++              <option value="cancelled">{copy.cancelled}</option>
++            </select>
++            <Button variant="secondary" size="sm" onClick={() => void load()} isLoading={loading}>
++              <RefreshCw className="h-4 w-4" />
++              {copy.refresh}
++            </Button>
++            <Button
++              variant="primary"
++              size="sm"
++              disabled={!snapshot}
++              onClick={() => {
++                setEditing(null);
++                setEditorOpen(true);
++              }}
++            >
++              <Plus className="h-4 w-4" />
++              {copy.create}
++            </Button>
++          </div>
++        </div>
++        {error ? (
++          <InlineAlert
++            className="mt-3"
++            variant="danger"
++            title={copy.loadError}
++            message={error}
++            action={
++              <Button size="sm" variant="secondary" onClick={() => void load()}>
++                {copy.refresh}
++              </Button>
++            }
++          />
++        ) : null}
++        {actionError ? (
++          <InlineAlert className="mt-3" variant="danger" title={copy.updateError} message={actionError} />
++        ) : null}
++
++        <div className="mt-4 overflow-x-auto">
++          {loading ? (
++            <p className="text-sm text-secondary-text">{copy.loading}</p>
++          ) : plans.length === 0 ? (
++            <EmptyState
++              title={copy.noPlans}
++              description={copy.noPlansHint}
++              icon={<Target className="h-6 w-6" />}
++              action={
++                snapshot ? (
++                  <Button
++                    variant="secondary"
++                    onClick={() => {
++                      setEditing(null);
++                      setEditorOpen(true);
++                    }}
++                  >
++                    {copy.create}
++                  </Button>
++                ) : undefined
++              }
++            />
++          ) : (
++            <table className="w-full min-w-[980px]">
++              <thead>
++                <tr className={TABLE_HEAD_CLASS}>
++                  <th className="py-2 pr-4">{copy.code}</th>
++                  <th className="py-2 pr-4">{copy.side}</th>
++                  <th className="py-2 pr-4">{copy.range}</th>
++                  <th className="py-2 pr-4">{copy.status}</th>
++                  <th className="py-2 pr-4">{copy.progress}</th>
++                  <th className="py-2 pr-4">{copy.thesis}</th>
++                  <th className="py-2 text-right">{copy.actions}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {plans.map((plan) => {
++                  const preview = parsePreview(plan);
++                  const target = intendedQuantity[plan.id];
++                  return (
++                    <tr key={plan.id}>
++                      <td className={TABLE_CELL_CLASS}>
++                        <div className="font-medium">
++                          {plan.code} {plan.name ? <span className="text-secondary-text">{plan.name}</span> : null}
++                        </div>
++                        <div className="text-xs text-muted-text">{plan.plan_date}</div>
++                      </td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <Badge variant={plan.side === 'buy' ? 'success' : 'danger'}>
++                          {plan.side === 'buy' ? copy.buy : copy.sell}
++                        </Badge>
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} whitespace-nowrap`}>
++                        {plan.entry_low.toFixed(3)} ~ {plan.entry_high.toFixed(3)}
++                        <div className="text-xs text-muted-text">
++                          {copy.plannedLoss}:{' '}
++                          {typeof preview.planned_loss === 'number'
++                            ? preview.planned_loss.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
++                            : copy.noPreview}
++                        </div>
++                      </td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <select
++                          className="input-surface input-focus-glow h-8 rounded-lg border bg-transparent px-2 text-xs text-foreground focus:outline-none"
++                          value={plan.status}
++                          disabled={actionId === plan.id}
++                          onChange={(event) =>
++                            void changeStatus(plan, event.target.value as TradePlanStatus)
++                          }
++                        >
++                          <option value="draft">{copy.draft}</option>
++                          <option value="active">{copy.active}</option>
++                          <option value="closed">{copy.closed}</option>
++                          <option value="cancelled">{copy.cancelled}</option>
++                        </select>
++                      </td>
++                      <td className={TABLE_CELL_CLASS}>
++                        <div className="flex flex-wrap items-center gap-1.5">
++                          <Badge variant={plan.fill_count > 0 ? 'success' : 'default'}>
++                            {plan.fill_count} {copy.fills}
++                          </Badge>
++                          <span className="text-xs text-secondary-text">
++                            {plan.filled_quantity.toLocaleString()} / {target?.toLocaleString() ?? '—'}
++                          </span>
++                        </div>
++                        {plan.fill_vwap !== null ? (
++                          <div className="text-xs text-muted-text">
++                            VWAP {plan.fill_vwap.toFixed(3)}
++                          </div>
++                        ) : null}
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} max-w-[260px]`}>
++                        <p className="line-clamp-2">{plan.thesis || '—'}</p>
++                        {plan.invalidation ? (
++                          <p className="mt-1 line-clamp-1 text-xs text-warning">{plan.invalidation}</p>
++                        ) : null}
++                      </td>
++                      <td className={`${TABLE_CELL_CLASS} text-right`}>
++                        <Button
++                          size="xsm"
++                          variant="secondary"
++                          onClick={() => {
++                            setEditing(plan);
++                            setEditorOpen(true);
++                          }}
++                        >
++                          <Pencil className="h-3.5 w-3.5" />
++                          {copy.edit}
++                        </Button>
++                      </td>
++                    </tr>
++                  );
++                })}
++              </tbody>
++            </table>
++          )}
++        </div>
++      </Card>
++
++      <PortfolioRiskCard risk={risk} />
++
++      <TradePlanEditor
++        isOpen={editorOpen}
++        plan={editing}
++        snapshot={snapshot}
++        defaultBudgetPct={risk?.limits?.default_budget_pct ?? 1}
++        defaultMaxPositionPct={risk?.limits?.max_single_pct ?? 20}
++        onClose={() => setEditorOpen(false)}
++        onSaved={() => void load()}
++      />
++    </div>
++  );
++};
+diff --git a/apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx b/apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx
+new file mode 100644
+index 0000000..3cb50cd
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx
+@@ -0,0 +1,76 @@
++import { fireEvent, render, screen, waitFor } from '@testing-library/react';
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
++import { TonghuashunImport } from '../TonghuashunImport';
++
++const { latest, confirm } = vi.hoisted(() => ({
++  latest: vi.fn(),
++  confirm: vi.fn(),
++}));
++
++vi.mock('../../../api/personal', () => ({
++  personalApi: {
++    accountSnapshotLatest: latest,
++    accountSnapshotConfirm: confirm,
++  },
++}));
++
++function renderPanel() {
++  return render(
++    <UiLanguageProvider>
++      <TonghuashunImport />
++    </UiLanguageProvider>,
++  );
++}
++
++describe('TonghuashunImport', () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++    latest.mockResolvedValue({ snapshot: null });
++    confirm.mockResolvedValue({
++      snapshot_id: 1,
++      snapshot: {
++        id: 1,
++        account_alias: '同花顺',
++        as_of: '2026-11-19',
++        cash: 20000,
++        available_cash: 20000,
++        market_value: 80000,
++        equity: 100000,
++        source: 'ths_screenshot',
++        source_file: '',
++        content_hash: '',
++        ocr_engine: 'manual',
++        positions: [],
++      },
++      warnings: [],
++    });
++  });
++
++  it('supports manual entry and confirms an editable snapshot', async () => {
++    renderPanel();
++    await waitFor(() => expect(latest).toHaveBeenCalled());
++    fireEvent.click(screen.getAllByRole('button', { name: /Manual entry/ })[0]);
++
++    fireEvent.change(screen.getByLabelText('Equity'), { target: { value: '100000' } });
++    fireEvent.change(screen.getByLabelText('Cash'), { target: { value: '20000' } });
++    fireEvent.change(screen.getByLabelText('Market value'), { target: { value: '80000' } });
++    fireEvent.click(screen.getByRole('button', { name: /Confirm snapshot/ }));
++
++    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
++    expect(confirm.mock.calls[0][0]).toMatchObject({
++      account_alias: '同花顺',
++      equity: 100000,
++      cash: 20000,
++      market_value: 80000,
++      positions: [],
++      ocr_engine: 'manual',
++    });
++    expect(await screen.findByText(/Latest account snapshot/)).toBeTruthy();
++  });
++
++  it('shows the empty state when no snapshot exists', async () => {
++    renderPanel();
++    expect(await screen.findByText(/No account snapshot yet/)).toBeTruthy();
++  });
++});
+diff --git a/apps/dsa-web/src/components/personal/fileEncoding.ts b/apps/dsa-web/src/components/personal/fileEncoding.ts
+new file mode 100644
+index 0000000..271e4fd
+--- /dev/null
++++ b/apps/dsa-web/src/components/personal/fileEncoding.ts
+@@ -0,0 +1,10 @@
++/** Convert a browser File to base64 without a Node Buffer dependency. */
++export async function fileToBase64(file: File): Promise<string> {
++  const buffer = await file.arrayBuffer();
++  const bytes = new Uint8Array(buffer);
++  let binary = '';
++  for (let index = 0; index < bytes.length; index += 0x8000) {
++    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
++  }
++  return btoa(binary);
++}
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
-index 0000000..faa66a1
+index 0000000..8687e70
 --- /dev/null
 +++ b/apps/dsa-web/src/pages/PersonalPage.tsx
-@@ -0,0 +1,1214 @@
+@@ -0,0 +1,1228 @@
 +import type React from 'react';
 +import { useCallback, useEffect, useMemo, useState } from 'react';
 +import {
 +  Activity,
 +  BarChart3,
++  ClipboardList,
 +  Database,
 +  Gauge,
 +  PlugZap,
 +  RefreshCw,
 +  ServerCog,
 +  Sparkles,
++  Target,
 +} from 'lucide-react';
 +import {
 +  CartesianGrid,
@@ -2094,6 +4668,8 @@ index 0000000..faa66a1
 +} from '../components/common';
 +import { useUiLanguage } from '../contexts/UiLanguageContext';
 +import { LedgerPanel } from '../components/personal/LedgerPanel';
++import { TradePlanPanel } from '../components/personal/TradePlanPanel';
++import { DecisionOutcomePanel } from '../components/personal/DecisionOutcomePanel';
 +import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 +import type {
 +  PersonalBacktestResponse,
@@ -2116,7 +4692,7 @@ index 0000000..faa66a1
 +  MarginStockEntry,
 +} from '../types/personal';
 +
-+type TabKey = 'overview' | 'review' | 'ledger' | 'data' | 'backtest' | 'plugins' | 'qmt';
++type TabKey = 'overview' | 'review' | 'ledger' | 'plans' | 'outcomes' | 'data' | 'backtest' | 'plugins' | 'qmt';
 +
 +const INPUT_CLASS =
 +  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
@@ -2133,6 +4709,8 @@ index 0000000..faa66a1
 +      overview: '总览',
 +      review: '深度复盘',
 +      ledger: '账本',
++      plans: '交易计划',
++      outcomes: '决策结果',
 +      data: '数据同步',
 +      backtest: '个人回测',
 +      plugins: '插件',
@@ -2218,6 +4796,8 @@ index 0000000..faa66a1
 +      overview: 'Overview',
 +      review: 'Deep Review',
 +      ledger: 'Ledger',
++      plans: 'Trade Plans',
++      outcomes: 'Decision Outcomes',
 +      data: 'Data',
 +      backtest: 'Backtest',
 +      plugins: 'Plugins',
@@ -2660,6 +5240,8 @@ index 0000000..faa66a1
 +          >
 +            {key === 'overview' ? <Activity className="h-4 w-4" /> : null}
 +            {key === 'review' ? <Gauge className="h-4 w-4" /> : null}
++            {key === 'plans' ? <ClipboardList className="h-4 w-4" /> : null}
++            {key === 'outcomes' ? <Target className="h-4 w-4" /> : null}
 +            {key === 'data' ? <Database className="h-4 w-4" /> : null}
 +            {key === 'backtest' ? <BarChart3 className="h-4 w-4" /> : null}
 +            {key === 'plugins' ? <PlugZap className="h-4 w-4" /> : null}
@@ -2937,6 +5519,10 @@ index 0000000..faa66a1
 +      ) : null}
 +
 +      {tab === 'ledger' ? <LedgerPanel /> : null}
++
++      {tab === 'plans' ? <TradePlanPanel /> : null}
++
++      {tab === 'outcomes' ? <DecisionOutcomePanel /> : null}
 +
 +      {tab === 'data' ? (
 +        <Card title={copy.tabs.data} variant="bordered">
@@ -3274,10 +5860,10 @@ index 0000000..faa66a1
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..edffd19
+index 0000000..eb78493
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,714 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -3671,6 +6257,8 @@ index 0000000..edffd19
 +  warnings: string[];
 +  positions: BrokerPositionRow[];
 +  journal_added: number;
++  plan_id: number | null;
++  plan_linked: number;
 +  column_map: Record<string, string>;
 +  unrecognized_headers: string[];
 +}
@@ -3679,6 +6267,298 @@ index 0000000..edffd19
 +  filename: string;
 +  content_b64: string;
 +  column_map?: Record<string, string>;
++  plan_id?: number | null;
++}
++
++export interface AccountPosition {
++  code: string;
++  name: string;
++  quantity: number;
++  available_quantity: number | null;
++  avg_cost: number | null;
++  market_price: number | null;
++  market_value: number | null;
++  pnl: number | null;
++  confidence?: number;
++}
++
++export interface AccountSnapshot {
++  id: number;
++  account_alias: string;
++  as_of: string;
++  cash: number | null;
++  available_cash: number | null;
++  market_value: number | null;
++  equity: number | null;
++  source: string;
++  source_file: string;
++  content_hash: string;
++  ocr_engine: string;
++  created_at?: string;
++  updated_at?: string;
++  position_count?: number;
++  positions: AccountPosition[];
++}
++
++export interface AccountSnapshotDraft {
++  account_alias: string;
++  as_of: string | null;
++  cash: number | null;
++  available_cash: number | null;
++  market_value: number | null;
++  equity: number | null;
++  positions: AccountPosition[];
++}
++
++export interface AccountScreenshotParseResponse {
++  filename: string;
++  content_hash: string;
++  ocr_engine: string;
++  draft: AccountSnapshotDraft;
++  warnings: string[];
++  line_count: number;
++}
++
++export interface AccountSnapshotConfirmRequest {
++  account_alias: string;
++  as_of: string;
++  cash: number | null;
++  available_cash: number | null;
++  market_value: number | null;
++  equity: number | null;
++  positions: AccountPosition[];
++  source_file?: string;
++  content_hash?: string;
++  ocr_engine?: string;
++}
++
++export interface AccountSnapshotConfirmResponse {
++  snapshot_id: number;
++  snapshot: AccountSnapshot;
++  warnings: string[];
++}
++
++export type TradePlanSide = 'buy' | 'sell';
++export type TradePlanStatus = 'draft' | 'active' | 'closed' | 'cancelled';
++
++export interface TradePlan {
++  id: number;
++  plan_date: string;
++  valid_until: string | null;
++  code: string;
++  name: string;
++  side: TradePlanSide;
++  entry_low: number;
++  entry_high: number;
++  stop_loss: number | null;
++  target_price: number | null;
++  risk_budget_pct: number | null;
++  risk_budget_amount: number | null;
++  max_position_pct: number | null;
++  requested_quantity: number | null;
++  account_snapshot_id: number | null;
++  status: TradePlanStatus;
++  thesis: string;
++  catalyst: string;
++  invalidation: string;
++  horizon_days: number | null;
++  analysis_id: number | null;
++  decision_signal_id: number | null;
++  preview_json: string | null;
++  fill_count: number;
++  filled_quantity: number;
++  filled_amount: number;
++  fill_vwap: number | null;
++  last_fill_date: string | null;
++  created_at?: string;
++  updated_at?: string;
++}
++
++export interface TradePlanRequest {
++  plan_date: string | null;
++  valid_until: string | null;
++  code: string;
++  name: string;
++  side: TradePlanSide;
++  entry_low: number;
++  entry_high: number;
++  stop_loss: number | null;
++  target_price: number | null;
++  risk_budget_pct: number | null;
++  risk_budget_amount: number | null;
++  max_position_pct: number | null;
++  requested_quantity: number | null;
++  account_snapshot_id: number | null;
++  status: TradePlanStatus;
++  thesis: string;
++  catalyst: string;
++  invalidation: string;
++  horizon_days: number | null;
++  analysis_id: number | null;
++  decision_signal_id: number | null;
++}
++
++export interface TradePlanPreview {
++  side: TradePlanSide;
++  code: string;
++  entry_price: number;
++  entry_fill: number;
++  stop_price: number | null;
++  stop_fill?: number | null;
++  target_price: number | null;
++  suggested_quantity: number;
++  lot_size: number;
++  gross_amount: number;
++  entry_fee: number;
++  stop_exit_fee?: number;
++  planned_loss: number | null;
++  risk_budget_amount: number | null;
++  risk_used_pct: number | null;
++  reward_risk: number | null;
++  max_by_risk?: number;
++  max_by_position?: number;
++  max_by_cash?: number;
++  post_trade_cash: number | null;
++  post_trade_position_weight_pct: number | null;
++  post_trade_top1_pct: number | null;
++  post_trade_top5_pct: number | null;
++  post_trade_cash_pct: number | null;
++  remaining_quantity?: number;
++  warnings: string[];
++  blockers: string[];
++  assumptions: Record<string, string>;
++  snapshot_id: number | null;
++}
++
++export interface PortfolioRiskPosition {
++  code: string;
++  name: string;
++  quantity: number;
++  available_quantity: number | null;
++  avg_cost: number | null;
++  market_price: number | null;
++  market_value: number;
++  pnl: number | null;
++  asset_type: 'stock' | 'etf';
++  weight_pct: number;
++  beta: number | null;
++  volatility_pct: number | null;
++  liquidation_days: number | null;
++}
++
++export interface PortfolioRiskResponse {
++  available: boolean;
++  reason?: string;
++  snapshot_id?: number;
++  as_of?: string;
++  age_days?: number;
++  stale?: boolean;
++  account_alias?: string;
++  equity?: number;
++  cash?: number;
++  cash_pct?: number | null;
++  invested?: number;
++  invested_pct?: number | null;
++  position_count?: number;
++  top1_pct?: number | null;
++  top5_pct?: number | null;
++  hhi?: number | null;
++  etf_pct?: number | null;
++  stock_pct?: number | null;
++  market_data_coverage_pct?: number | null;
++  beta?: number | null;
++  volatility_pct?: number | null;
++  correlations?: Array<{ code_a: string; code_b: string; correlation: number }>;
++  limits?: {
++    max_single_pct: number;
++    max_top5_pct: number;
++    min_cash_pct: number;
++    max_liquidation_days: number;
++    max_correlation: number;
++    default_budget_pct: number;
++  };
++  positions: PortfolioRiskPosition[];
++  warnings: string[];
++}
++
++export interface JournalOutcomeRow {
++  journal_id: number;
++  trade_date: string;
++  code: string;
++  side: 'buy' | 'sell';
++  quantity: number;
++  price: number | null;
++  amount: number | null;
++  source: string;
++  mistake_type: string | null;
++  horizon: number;
++  status: 'completed' | 'pending' | 'unavailable';
++  unable_reason: string | null;
++  target_date: string | null;
++  bar_count: number;
++  entry_price_adjusted: number | null;
++  end_close: number | null;
++  asset_return: number | null;
++  aligned_return: number | null;
++  benchmark_return: number | null;
++  excess_return: number | null;
++  mae: number | null;
++  mfe: number | null;
++  stock_source: string | null;
++  benchmark_source: string | null;
++  composite_state?: string | null;
++  composite_score?: number | null;
++  trin?: number | null;
++  plan_id?: number;
++  plan_status?: string;
++  plan_side?: string;
++  plan_entry_low?: number;
++  plan_entry_high?: number;
++  entry_in_plan_range?: boolean | null;
++  entry_deviation?: number | null;
++  plan_suggested_quantity?: number | null;
++  plan_quantity_ratio?: number | null;
++}
++
++export interface JournalOutcomeSummary {
++  horizon: number;
++  total: number;
++  completed: number;
++  pending: number;
++  unavailable: number;
++  aligned_mean: number | null;
++  aligned_median: number | null;
++  win_rate: number | null;
++  win_rate_ci: [number | null, number | null];
++  avg_mae: number | null;
++  avg_mfe: number | null;
++  by_side: Record<string, {
++    completed: number;
++    aligned_mean: number | null;
++    win_rate: number | null;
++    avg_mae: number | null;
++    avg_mfe: number | null;
++  }>;
++  by_market_state: Record<string, {
++    completed: number;
++    aligned_mean: number | null;
++    win_rate: number | null;
++    avg_mae: number | null;
++    avg_mfe: number | null;
++  }>;
++  plan_linked: number;
++  plan_entry_in_range: number;
++  plan_entry_in_range_rate: number | null;
++  sample_warning: boolean;
++}
++
++export interface JournalOutcomesResponse {
++  horizon: number;
++  days: number;
++  benchmark_code: string | null;
++  rows: JournalOutcomeRow[];
++  summary: JournalOutcomeSummary;
++  available_horizons: number[];
 +}
 +
 +export interface MarginStockPoint {

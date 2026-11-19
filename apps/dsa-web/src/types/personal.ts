@@ -391,6 +391,8 @@ export interface BrokerImportSummary {
   warnings: string[];
   positions: BrokerPositionRow[];
   journal_added: number;
+  plan_id: number | null;
+  plan_linked: number;
   column_map: Record<string, string>;
   unrecognized_headers: string[];
 }
@@ -399,6 +401,298 @@ export interface PersonalBrokerImportRequest {
   filename: string;
   content_b64: string;
   column_map?: Record<string, string>;
+  plan_id?: number | null;
+}
+
+export interface AccountPosition {
+  code: string;
+  name: string;
+  quantity: number;
+  available_quantity: number | null;
+  avg_cost: number | null;
+  market_price: number | null;
+  market_value: number | null;
+  pnl: number | null;
+  confidence?: number;
+}
+
+export interface AccountSnapshot {
+  id: number;
+  account_alias: string;
+  as_of: string;
+  cash: number | null;
+  available_cash: number | null;
+  market_value: number | null;
+  equity: number | null;
+  source: string;
+  source_file: string;
+  content_hash: string;
+  ocr_engine: string;
+  created_at?: string;
+  updated_at?: string;
+  position_count?: number;
+  positions: AccountPosition[];
+}
+
+export interface AccountSnapshotDraft {
+  account_alias: string;
+  as_of: string | null;
+  cash: number | null;
+  available_cash: number | null;
+  market_value: number | null;
+  equity: number | null;
+  positions: AccountPosition[];
+}
+
+export interface AccountScreenshotParseResponse {
+  filename: string;
+  content_hash: string;
+  ocr_engine: string;
+  draft: AccountSnapshotDraft;
+  warnings: string[];
+  line_count: number;
+}
+
+export interface AccountSnapshotConfirmRequest {
+  account_alias: string;
+  as_of: string;
+  cash: number | null;
+  available_cash: number | null;
+  market_value: number | null;
+  equity: number | null;
+  positions: AccountPosition[];
+  source_file?: string;
+  content_hash?: string;
+  ocr_engine?: string;
+}
+
+export interface AccountSnapshotConfirmResponse {
+  snapshot_id: number;
+  snapshot: AccountSnapshot;
+  warnings: string[];
+}
+
+export type TradePlanSide = 'buy' | 'sell';
+export type TradePlanStatus = 'draft' | 'active' | 'closed' | 'cancelled';
+
+export interface TradePlan {
+  id: number;
+  plan_date: string;
+  valid_until: string | null;
+  code: string;
+  name: string;
+  side: TradePlanSide;
+  entry_low: number;
+  entry_high: number;
+  stop_loss: number | null;
+  target_price: number | null;
+  risk_budget_pct: number | null;
+  risk_budget_amount: number | null;
+  max_position_pct: number | null;
+  requested_quantity: number | null;
+  account_snapshot_id: number | null;
+  status: TradePlanStatus;
+  thesis: string;
+  catalyst: string;
+  invalidation: string;
+  horizon_days: number | null;
+  analysis_id: number | null;
+  decision_signal_id: number | null;
+  preview_json: string | null;
+  fill_count: number;
+  filled_quantity: number;
+  filled_amount: number;
+  fill_vwap: number | null;
+  last_fill_date: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TradePlanRequest {
+  plan_date: string | null;
+  valid_until: string | null;
+  code: string;
+  name: string;
+  side: TradePlanSide;
+  entry_low: number;
+  entry_high: number;
+  stop_loss: number | null;
+  target_price: number | null;
+  risk_budget_pct: number | null;
+  risk_budget_amount: number | null;
+  max_position_pct: number | null;
+  requested_quantity: number | null;
+  account_snapshot_id: number | null;
+  status: TradePlanStatus;
+  thesis: string;
+  catalyst: string;
+  invalidation: string;
+  horizon_days: number | null;
+  analysis_id: number | null;
+  decision_signal_id: number | null;
+}
+
+export interface TradePlanPreview {
+  side: TradePlanSide;
+  code: string;
+  entry_price: number;
+  entry_fill: number;
+  stop_price: number | null;
+  stop_fill?: number | null;
+  target_price: number | null;
+  suggested_quantity: number;
+  lot_size: number;
+  gross_amount: number;
+  entry_fee: number;
+  stop_exit_fee?: number;
+  planned_loss: number | null;
+  risk_budget_amount: number | null;
+  risk_used_pct: number | null;
+  reward_risk: number | null;
+  max_by_risk?: number;
+  max_by_position?: number;
+  max_by_cash?: number;
+  post_trade_cash: number | null;
+  post_trade_position_weight_pct: number | null;
+  post_trade_top1_pct: number | null;
+  post_trade_top5_pct: number | null;
+  post_trade_cash_pct: number | null;
+  remaining_quantity?: number;
+  warnings: string[];
+  blockers: string[];
+  assumptions: Record<string, string>;
+  snapshot_id: number | null;
+}
+
+export interface PortfolioRiskPosition {
+  code: string;
+  name: string;
+  quantity: number;
+  available_quantity: number | null;
+  avg_cost: number | null;
+  market_price: number | null;
+  market_value: number;
+  pnl: number | null;
+  asset_type: 'stock' | 'etf';
+  weight_pct: number;
+  beta: number | null;
+  volatility_pct: number | null;
+  liquidation_days: number | null;
+}
+
+export interface PortfolioRiskResponse {
+  available: boolean;
+  reason?: string;
+  snapshot_id?: number;
+  as_of?: string;
+  age_days?: number;
+  stale?: boolean;
+  account_alias?: string;
+  equity?: number;
+  cash?: number;
+  cash_pct?: number | null;
+  invested?: number;
+  invested_pct?: number | null;
+  position_count?: number;
+  top1_pct?: number | null;
+  top5_pct?: number | null;
+  hhi?: number | null;
+  etf_pct?: number | null;
+  stock_pct?: number | null;
+  market_data_coverage_pct?: number | null;
+  beta?: number | null;
+  volatility_pct?: number | null;
+  correlations?: Array<{ code_a: string; code_b: string; correlation: number }>;
+  limits?: {
+    max_single_pct: number;
+    max_top5_pct: number;
+    min_cash_pct: number;
+    max_liquidation_days: number;
+    max_correlation: number;
+    default_budget_pct: number;
+  };
+  positions: PortfolioRiskPosition[];
+  warnings: string[];
+}
+
+export interface JournalOutcomeRow {
+  journal_id: number;
+  trade_date: string;
+  code: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  price: number | null;
+  amount: number | null;
+  source: string;
+  mistake_type: string | null;
+  horizon: number;
+  status: 'completed' | 'pending' | 'unavailable';
+  unable_reason: string | null;
+  target_date: string | null;
+  bar_count: number;
+  entry_price_adjusted: number | null;
+  end_close: number | null;
+  asset_return: number | null;
+  aligned_return: number | null;
+  benchmark_return: number | null;
+  excess_return: number | null;
+  mae: number | null;
+  mfe: number | null;
+  stock_source: string | null;
+  benchmark_source: string | null;
+  composite_state?: string | null;
+  composite_score?: number | null;
+  trin?: number | null;
+  plan_id?: number;
+  plan_status?: string;
+  plan_side?: string;
+  plan_entry_low?: number;
+  plan_entry_high?: number;
+  entry_in_plan_range?: boolean | null;
+  entry_deviation?: number | null;
+  plan_suggested_quantity?: number | null;
+  plan_quantity_ratio?: number | null;
+}
+
+export interface JournalOutcomeSummary {
+  horizon: number;
+  total: number;
+  completed: number;
+  pending: number;
+  unavailable: number;
+  aligned_mean: number | null;
+  aligned_median: number | null;
+  win_rate: number | null;
+  win_rate_ci: [number | null, number | null];
+  avg_mae: number | null;
+  avg_mfe: number | null;
+  by_side: Record<string, {
+    completed: number;
+    aligned_mean: number | null;
+    win_rate: number | null;
+    avg_mae: number | null;
+    avg_mfe: number | null;
+  }>;
+  by_market_state: Record<string, {
+    completed: number;
+    aligned_mean: number | null;
+    win_rate: number | null;
+    avg_mae: number | null;
+    avg_mfe: number | null;
+  }>;
+  plan_linked: number;
+  plan_entry_in_range: number;
+  plan_entry_in_range_rate: number | null;
+  sample_warning: boolean;
+}
+
+export interface JournalOutcomesResponse {
+  horizon: number;
+  days: number;
+  benchmark_code: string | null;
+  rows: JournalOutcomeRow[];
+  summary: JournalOutcomeSummary;
+  available_horizons: number[];
 }
 
 export interface MarginStockPoint {

@@ -131,6 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="skip decision-snapshot journal entries",
     )
+    broker_import.add_argument(
+        "--plan-id", type=int, default=None, help="link matching fills to a trade plan"
+    )
 
     broker_positions = subparsers.add_parser(
         "broker-positions", help="show computed broker positions (持仓/成本/盈亏)"
@@ -141,6 +144,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     journal.add_argument("--days", type=int, default=30, help="lookback days")
     journal.add_argument("--code", default="", help="filter by code")
+
+    account_import = subparsers.add_parser(
+        "account-import",
+        help="OCR a Tonghuashun account/holdings screenshot into an account snapshot",
+    )
+    account_import.add_argument("--file", required=True, help="screenshot path")
+    account_import.add_argument("--alias", default="同花顺", help="account alias")
+    account_import.add_argument(
+        "--as-of", default="", help="snapshot date YYYY-MM-DD (default: detected/today)"
+    )
+    account_import.add_argument(
+        "--save", action="store_true", help="confirm and save the parsed draft"
+    )
+
+    plans = subparsers.add_parser("plans", help="list trade plans and fill progress")
+    plans.add_argument("--status", default="", help="draft/active/closed/cancelled")
+    plans.add_argument("--limit", type=int, default=50)
+
+    outcomes = subparsers.add_parser(
+        "journal-outcomes", help="show D+1/5/20/60 decision outcomes"
+    )
+    outcomes.add_argument("--horizon", type=int, default=20)
+    outcomes.add_argument("--days", type=int, default=365)
+    outcomes.add_argument("--code", default="")
+    outcomes.add_argument("--side", default="")
+    outcomes.add_argument("--limit", type=int, default=50)
 
     validate = subparsers.add_parser(
         "validate", help="check indicator accuracy: identities, ranges, gaps, cross-source (RM-41)"
@@ -203,6 +232,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "journal":
         return _journal(settings, args)
+
+    if args.command == "account-import":
+        return _account_import(settings, args)
+
+    if args.command == "plans":
+        return _plans(settings, args)
+
+    if args.command == "journal-outcomes":
+        return _journal_outcomes(settings, args)
 
     if args.command == "replay":
         return _replay(settings, args)
@@ -331,10 +369,25 @@ def _sync_market(settings, args) -> int:
     end = date.fromisoformat(args.end) if args.end else date.today()
     start = date.fromisoformat(args.start) if args.start else end - timedelta(days=10)
     codes_arg = list(args.code) or list(settings.stock_list)
+    explicit_codes = bool(args.code)
+
+    def margin_codes(store) -> list[str]:
+        if explicit_codes:
+            return codes_arg
+        return list(
+            dict.fromkeys(
+                [
+                    *codes_arg,
+                    *store.broker_position_codes(),
+                    *store.account_position_codes(),
+                ]
+            )
+        )
+
     dispatch = {
         "futures": lambda store: sync_index_futures(store, start=start, end=end),
         "margin": lambda store: sync_margin_balance(
-            store, start=start, end=end, stock_codes=codes_arg
+            store, start=start, end=end, stock_codes=margin_codes(store)
         ),
         "turnover": lambda store: sync_turnover(store, start=start, end=end),
         "zt": lambda store: sync_limit_up(store, start=start, end=end),
@@ -572,6 +625,7 @@ def _broker_import(settings, args) -> int:
             content,
             column_map=column_map or None,
             with_journal=bool(args.journal),
+            plan_id=args.plan_id,
         )
     except ValueError as exc:
         print(f"import failed: {exc}")
@@ -584,6 +638,8 @@ def _broker_import(settings, args) -> int:
         f"{path.name}: imported {payload['imported']} rows, "
         f"skipped {payload['skipped_total']}, journal +{payload['journal_added']}"
     )
+    if payload.get("plan_id") is not None:
+        print(f"plan #{payload['plan_id']} linked fills: {payload['plan_linked']}")
     if payload["unrecognized_headers"]:
         print(f"unrecognized headers: {', '.join(payload['unrecognized_headers'])}")
     for warning in payload["warnings"]:
@@ -674,6 +730,159 @@ def _journal(settings, args) -> int:
             f"{' | '.join(chips)}"
         )
     return 0
+
+
+def _account_import(settings, args) -> int:
+    import json
+
+    from personal.datahub.screenshot import (
+        ScreenshotError,
+        confirm_account_snapshot,
+        parse_account_screenshot,
+    )
+
+    path = Path(args.file)
+    if not path.exists():
+        print(f"file not found: {path}")
+        return 2
+    try:
+        parsed = parse_account_screenshot(
+            path.read_bytes(),
+            filename=path.name,
+            max_mb=settings.ocr_max_image_mb,
+            enabled=settings.ocr_enabled,
+        )
+    except ScreenshotError as exc:
+        print(f"OCR failed: {exc}")
+        return 2
+    draft = parsed["draft"]
+    print(f"file: {path.name}  lines={parsed['line_count']}")
+    print(
+        "account: "
+        + ", ".join(
+            f"{key}={value}"
+            for key, value in draft.items()
+            if key not in {"positions", "account_alias", "as_of"}
+            and value is not None
+        )
+    )
+    for position in draft.get("positions", []):
+        print(
+            f"  {position['code']} {position.get('name') or '':<8} "
+            f"qty={position['quantity']:g} avail={position.get('available_quantity')} "
+            f"cost={position.get('avg_cost')} price={position.get('market_price')} "
+            f"mv={position.get('market_value')}"
+        )
+    for warning in parsed.get("warnings", []):
+        print(f"  ! {warning}")
+    print("draft JSON (edit in the Web UI if needed):")
+    print(json.dumps(draft, ensure_ascii=False, indent=2))
+    if not args.save:
+        print("preview only; add --save to confirm this draft")
+        return 0
+    as_of_text = args.as_of or draft.get("as_of") or date.today().isoformat()
+    try:
+        as_of = date.fromisoformat(as_of_text)
+    except ValueError:
+        print(f"bad --as-of: {as_of_text}")
+        return 2
+    store = PersonalStore(settings.personal_db)
+    try:
+        snapshot_id, snapshot, warnings = confirm_account_snapshot(
+            store,
+            draft,
+            account_alias=args.alias,
+            as_of=as_of,
+            source_file=path.name,
+            content_hash=parsed["content_hash"],
+            ocr_engine=parsed["ocr_engine"],
+        )
+    except ScreenshotError as exc:
+        print(f"confirm failed: {exc}")
+        return 2
+    finally:
+        store.close()
+    print(
+        f"saved snapshot #{snapshot_id} {snapshot.account_alias} {as_of.isoformat()} "
+        f"equity={snapshot.equity} positions={len(snapshot.positions)}"
+    )
+    for warning in warnings:
+        print(f"  ! {warning}")
+    return 0
+
+
+def _plans(settings, args) -> int:
+    store = PersonalStore(settings.personal_db)
+    try:
+        rows = store.list_trade_plans(
+            status=args.status or None, limit=int(args.limit)
+        )
+    finally:
+        store.close()
+    if not rows:
+        print("no trade plans")
+        return 1
+    for row in rows:
+        print(
+            f"#{row['id']} {row['plan_date']} {row['side']:<4} {row['code']} "
+            f"range={row['entry_low']:g}-{row['entry_high']:g} "
+            f"status={row['status']} fills={row['fill_count']} "
+            f"qty={row['filled_quantity']:g} vwap={row.get('fill_vwap') or '—'}"
+        )
+        if row.get("thesis"):
+            print(f"   thesis: {row['thesis']}")
+        if row.get("invalidation"):
+            print(f"   invalidation: {row['invalidation']}")
+    return 0
+
+
+def _journal_outcomes(settings, args) -> int:
+    from personal.analytics.journal_outcomes import evaluate_journal_outcomes
+
+    store = PersonalStore(settings.personal_db)
+    try:
+        payload = evaluate_journal_outcomes(
+            store,
+            horizon=int(args.horizon),
+            days=int(args.days),
+            code=args.code or None,
+            side=args.side or None,
+            limit=int(args.limit),
+            benchmark_code=settings.backtest_benchmark or None,
+            adjust_mode=settings.backtest_adjust_mode,
+        )
+    except ValueError as exc:
+        print(f"outcomes failed: {exc}")
+        return 2
+    finally:
+        store.close()
+    summary = payload["summary"]
+    print(
+        f"D+{summary['horizon']} completed={summary['completed']} "
+        f"pending={summary['pending']} unavailable={summary['unavailable']} "
+        f"mean={_pct(summary.get('aligned_mean'))} win={_pct(summary.get('win_rate'))} "
+        f"CI={_pct(summary['win_rate_ci'][0])}~{_pct(summary['win_rate_ci'][1])}"
+    )
+    print(
+        f"MAE={_pct(summary.get('avg_mae'))} MFE={_pct(summary.get('avg_mfe'))} "
+        f"plan-linked={summary['plan_linked']} in-range={_pct(summary.get('plan_entry_in_range_rate'))}"
+    )
+    if summary.get("sample_warning"):
+        print("! 样本不足 30，仅作观察，不下胜率结论")
+    for row in payload["rows"]:
+        print(
+            f"{row['trade_date']} {row['code']} {row['side']:<4} "
+            f"status={row['status']:<11} aligned={_pct(row.get('aligned_return'))} "
+            f"excess={_pct(row.get('excess_return'))} MAE={_pct(row.get('mae'))} "
+            f"MFE={_pct(row.get('mfe'))} {row.get('unable_reason') or ''}"
+        )
+    return 0
+
+
+def _pct(value) -> str:
+    if value is None:
+        return "—"
+    return f"{float(value) * 100:.2f}%"
 
 
 def _web(args) -> int:

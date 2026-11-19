@@ -113,6 +113,14 @@ class Settings:
     backtest_adjust_mode: str
     cross_source_check: bool
     log_level: str
+    ocr_enabled: bool
+    ocr_max_image_mb: float
+    risk_default_budget_pct: float
+    risk_max_single_pct: float
+    risk_max_top5_pct: float
+    risk_min_cash_pct: float
+    risk_max_liquidation_days: float
+    risk_max_correlation: float
 
 
 @lru_cache(maxsize=1)
@@ -166,4 +174,16 @@ def get_settings() -> Settings:
         backtest_adjust_mode=adjust_mode,
         cross_source_check=_env_bool("PERSONAL_CROSS_SOURCE_CHECK", True),
         log_level=_env("PERSONAL_LOG_LEVEL", "INFO").upper(),
+        ocr_enabled=_env_bool("PERSONAL_OCR_ENABLED", True),
+        ocr_max_image_mb=_env_float("PERSONAL_OCR_MAX_IMAGE_MB", 8.0),
+        risk_default_budget_pct=_env_float(
+            "PERSONAL_RISK_DEFAULT_BUDGET_PCT", 1.0
+        ),
+        risk_max_single_pct=_env_float("PERSONAL_RISK_MAX_SINGLE_PCT", 20.0),
+        risk_max_top5_pct=_env_float("PERSONAL_RISK_MAX_TOP5_PCT", 60.0),
+        risk_min_cash_pct=_env_float("PERSONAL_RISK_MIN_CASH_PCT", 5.0),
+        risk_max_liquidation_days=_env_float(
+            "PERSONAL_RISK_MAX_LIQUIDATION_DAYS", 5.0
+        ),
+        risk_max_correlation=_env_float("PERSONAL_RISK_MAX_CORRELATION", 0.85),
     )

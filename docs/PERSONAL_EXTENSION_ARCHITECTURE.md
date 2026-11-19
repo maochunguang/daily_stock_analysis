@@ -152,6 +152,27 @@ Upstream DB/API
   → 个人报告/复盘/风控
 ```
 
+个人决策闭环（RM-43/44/45）：
+
+```text
+同花顺截图（本地 OCR，不落原图）
+  → 可编辑草稿 → 用户确认 → account_snapshot + account_position_snapshot
+  → 交易计划（风险预算/止损/失效条件）
+  → analytics.trade_plans 只读预演（含费/整手/仓位/现金/卖出可用量）
+  → 用户确认保存 trade_plan
+  → 交割单导入（可选 plan_id）→ trade_journal（当时市场 snapshot）
+  → analytics.journal_outcomes: D+1/5/20/60、超额、MAE/MFE
+  → 计划区间/数量偏差 + 市场状态分组 → 复盘
+```
+
+边界：
+
+- `broker_position`（交割单重建）与 `account_position_snapshot`（观察快照）
+  永不互相覆盖；风险预演只读快照。
+- 截图 OCR、计划预演、结果计算都不能写上游库；结果计算不持久化，读时重算。
+- 计划预演不调用 QMT，交易开关默认关闭。
+- 行情覆盖不足时组合风险显式标注，不把部分覆盖当成全账户。
+
 ---
 
 ## 4. 仓库结构

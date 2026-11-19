@@ -3,12 +3,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   BarChart3,
+  ClipboardList,
   Database,
   Gauge,
   PlugZap,
   RefreshCw,
   ServerCog,
   Sparkles,
+  Target,
 } from 'lucide-react';
 import {
   CartesianGrid,
@@ -34,6 +36,8 @@ import {
 } from '../components/common';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { LedgerPanel } from '../components/personal/LedgerPanel';
+import { TradePlanPanel } from '../components/personal/TradePlanPanel';
+import { DecisionOutcomePanel } from '../components/personal/DecisionOutcomePanel';
 import { REVIEW_CARDS } from '../components/personal/ReviewCards';
 import type {
   PersonalBacktestResponse,
@@ -56,7 +60,7 @@ import type {
   MarginStockEntry,
 } from '../types/personal';
 
-type TabKey = 'overview' | 'review' | 'ledger' | 'data' | 'backtest' | 'plugins' | 'qmt';
+type TabKey = 'overview' | 'review' | 'ledger' | 'plans' | 'outcomes' | 'data' | 'backtest' | 'plugins' | 'qmt';
 
 const INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm text-foreground transition-all focus:outline-none';
@@ -73,6 +77,8 @@ const COPY = {
       overview: '总览',
       review: '深度复盘',
       ledger: '账本',
+      plans: '交易计划',
+      outcomes: '决策结果',
       data: '数据同步',
       backtest: '个人回测',
       plugins: '插件',
@@ -158,6 +164,8 @@ const COPY = {
       overview: 'Overview',
       review: 'Deep Review',
       ledger: 'Ledger',
+      plans: 'Trade Plans',
+      outcomes: 'Decision Outcomes',
       data: 'Data',
       backtest: 'Backtest',
       plugins: 'Plugins',
@@ -600,6 +608,8 @@ const PersonalPage: React.FC = () => {
           >
             {key === 'overview' ? <Activity className="h-4 w-4" /> : null}
             {key === 'review' ? <Gauge className="h-4 w-4" /> : null}
+            {key === 'plans' ? <ClipboardList className="h-4 w-4" /> : null}
+            {key === 'outcomes' ? <Target className="h-4 w-4" /> : null}
             {key === 'data' ? <Database className="h-4 w-4" /> : null}
             {key === 'backtest' ? <BarChart3 className="h-4 w-4" /> : null}
             {key === 'plugins' ? <PlugZap className="h-4 w-4" /> : null}
@@ -877,6 +887,10 @@ const PersonalPage: React.FC = () => {
       ) : null}
 
       {tab === 'ledger' ? <LedgerPanel /> : null}
+
+      {tab === 'plans' ? <TradePlanPanel /> : null}
+
+      {tab === 'outcomes' ? <DecisionOutcomePanel /> : null}
 
       {tab === 'data' ? (
         <Card title={copy.tabs.data} variant="bordered">

@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .decision import snapshot_json
 from .models import BrokerPosition, BrokerTrade
+from .normalize import normalize_code
 from .store import PersonalStore
 
 #: 标准字段 -> 认识的中文表头别名（按顺序尝试，先命中先占用）
@@ -95,6 +96,8 @@ class ImportSummary:
     warnings: list[str] = field(default_factory=list)
     positions: list[BrokerPosition] = field(default_factory=list)
     journal_added: int = 0
+    plan_id: int | None = None
+    plan_linked: int = 0
     column_map: dict[str, str] = field(default_factory=dict)
     unrecognized_headers: list[str] = field(default_factory=list)
 
@@ -107,6 +110,8 @@ class ImportSummary:
             "warnings": self.warnings,
             "positions": [position.__dict__ | _dates_iso(position) for position in self.positions],
             "journal_added": self.journal_added,
+            "plan_id": self.plan_id,
+            "plan_linked": self.plan_linked,
             "column_map": self.column_map,
             "unrecognized_headers": self.unrecognized_headers,
         }
@@ -413,14 +418,24 @@ def import_statement(
     *,
     column_map: Mapping[str, str] | None = None,
     with_journal: bool = True,
+    plan_id: int | None = None,
 ) -> ImportSummary:
     """Full import: parse -> upsert -> recompute positions -> journal snapshots."""
+    plan = None
+    if plan_id is not None:
+        plan = store.get_trade_plan(int(plan_id))
+        if plan is None:
+            raise ValueError(f"交易计划不存在：{plan_id}")
+        if plan.get("status") in {"cancelled", "closed"}:
+            raise ValueError("已取消/已结束的交易计划不能再关联成交")
+
     text = decode_statement(filename, content)
     statement = parse_statement(text, source_file=filename, column_map=column_map)
     summary = ImportSummary(
         filename=filename,
         skipped_total=len(statement.skipped),
         skipped=statement.skipped,
+        plan_id=int(plan_id) if plan_id is not None else None,
         column_map=statement.column_map,
         unrecognized_headers=statement.unrecognized_headers,
     )
@@ -448,6 +463,13 @@ def import_statement(
             price = trade.price
             if price is None and trade.quantity and trade.amount:
                 price = round(abs(trade.amount) / trade.quantity, 4)
+            linked_plan_id = (
+                int(plan["id"])
+                if plan is not None
+                and trade.side == plan.get("side")
+                and normalize_code(trade.code) == normalize_code(str(plan.get("code")))
+                else None
+            )
             store.add_journal_entry(
                 trade.trade_date,
                 trade.code,
@@ -458,9 +480,16 @@ def import_statement(
                 reason=trade.category,
                 source="broker",
                 broker_trade_id=trade_id,
+                plan_id=linked_plan_id,
                 snapshot=snapshot_json(store, trade.trade_date, trade.code),
             )
             summary.journal_added += 1
+            if linked_plan_id is not None:
+                summary.plan_linked += 1
+        if plan is not None and summary.plan_linked == 0:
+            summary.warnings.append(
+                "交割单中没有与计划代码/方向匹配的新成交，计划未关联"
+            )
     return summary
 
 

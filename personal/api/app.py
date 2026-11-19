@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import uuid
@@ -16,12 +18,33 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from personal import __version__
+from personal.analytics.journal_outcomes import (
+    HORIZONS,
+    evaluate_journal_outcomes,
+)
+from personal.analytics.portfolio_risk import RiskLimits, analyze_portfolio_risk
+from personal.analytics.trade_plans import (
+    PlanValidationError,
+    plan_to_dict,
+    preview_trade_plan,
+)
 from personal.backtest.demo import run_demo_backtest
 from personal.backtest.replay import replay_upstream
 from personal.backtest.types import BacktestConfig, BacktestResult
 from personal.config import Settings, get_settings
 from personal.contracts.upstream_db import UpstreamDB
 from personal.contracts.version import detect
+from personal.datahub.models import (
+    AccountPositionSnapshot,
+    AccountSnapshot,
+    TradePlan,
+)
+from personal.datahub.normalize import normalize_code
+from personal.datahub.screenshot import (
+    ScreenshotError,
+    confirm_account_snapshot,
+    parse_account_screenshot,
+)
 from personal.datahub.store import PersonalStore
 from personal.datahub.sync import DataSyncService, build_sources
 from personal.execution.qmt_client import QmtBridgeClient, QmtBridgeError
@@ -67,6 +90,64 @@ class BrokerImportRequest(BaseModel):
     filename: str
     content_b64: str
     column_map: Optional[dict[str, str]] = None
+    plan_id: Optional[int] = None
+
+
+class ScreenshotParseRequest(BaseModel):
+    filename: str
+    content_b64: str
+
+
+class AccountPositionRequest(BaseModel):
+    code: str
+    name: str = ""
+    quantity: float = 0
+    available_quantity: Optional[float] = None
+    avg_cost: Optional[float] = None
+    market_price: Optional[float] = None
+    market_value: Optional[float] = None
+    pnl: Optional[float] = None
+
+
+class AccountSnapshotRequest(BaseModel):
+    account_alias: str = "同花顺"
+    as_of: date
+    cash: Optional[float] = None
+    available_cash: Optional[float] = None
+    market_value: Optional[float] = None
+    equity: Optional[float] = None
+    source_file: str = ""
+    content_hash: str = ""
+    ocr_engine: str = ""
+    positions: list[AccountPositionRequest] = Field(default_factory=list)
+
+
+class TradePlanRequest(BaseModel):
+    plan_date: Optional[date] = None
+    valid_until: Optional[date] = None
+    code: str
+    name: str = ""
+    side: Literal["buy", "sell"]
+    entry_low: float
+    entry_high: float
+    stop_loss: Optional[float] = None
+    target_price: Optional[float] = None
+    risk_budget_pct: Optional[float] = None
+    risk_budget_amount: Optional[float] = None
+    max_position_pct: Optional[float] = None
+    requested_quantity: Optional[float] = None
+    account_snapshot_id: Optional[int] = None
+    status: Literal["draft", "active", "closed", "cancelled"] = "draft"
+    thesis: str = ""
+    catalyst: str = ""
+    invalidation: str = ""
+    horizon_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    analysis_id: Optional[int] = None
+    decision_signal_id: Optional[int] = None
+
+
+class PlanStatusRequest(BaseModel):
+    status: Literal["draft", "active", "closed", "cancelled"]
 
 
 def _json_safe(value: Any) -> Any:
@@ -88,6 +169,158 @@ def _parse_date(value: Optional[str], default: date) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"invalid date: {value}") from exc
+
+
+def _decode_base64_image(content_b64: str, max_mb: float) -> bytes:
+    if not content_b64:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    max_bytes = int(max_mb * 1024 * 1024)
+    if max_bytes > 0 and len(content_b64) > max_bytes * 4 // 3 + 16:
+        raise HTTPException(status_code=400, detail=f"图片超过 {max_mb:g}MB 限制")
+    try:
+        content = base64.b64decode(content_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="图片 base64 无效") from exc
+    if max_bytes > 0 and len(content) > max_bytes:
+        raise HTTPException(status_code=400, detail=f"图片超过 {max_mb:g}MB 限制")
+    if not content:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    return content
+
+
+def _account_positions_payload(
+    positions: list[AccountPositionSnapshot],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "code": position.code,
+            "name": position.name,
+            "quantity": position.quantity,
+            "available_quantity": position.available_quantity,
+            "avg_cost": position.avg_cost,
+            "market_price": position.market_price,
+            "market_value": position.market_value,
+            "pnl": position.pnl,
+        }
+        for position in positions
+    ]
+
+
+def _account_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(snapshot)
+    positions = payload.pop("positions", [])
+    if positions and isinstance(positions[0], AccountPositionSnapshot):
+        payload["positions"] = _account_positions_payload(positions)
+    else:
+        payload["positions"] = positions
+    return _json_safe(payload)
+
+
+def _risk_limits(settings: Settings) -> RiskLimits:
+    return RiskLimits(
+        max_single_pct=settings.risk_max_single_pct,
+        max_top5_pct=settings.risk_max_top5_pct,
+        min_cash_pct=settings.risk_min_cash_pct,
+        max_liquidation_days=settings.risk_max_liquidation_days,
+        max_correlation=settings.risk_max_correlation,
+        default_budget_pct=settings.risk_default_budget_pct,
+    )
+
+
+def _plan_from_request(
+    request: TradePlanRequest,
+    *,
+    account_snapshot_id: int | None = None,
+    preview_json: str = "",
+    default_risk_budget_pct: float | None = None,
+) -> TradePlan:
+    try:
+        code = normalize_code(request.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if request.entry_low > request.entry_high:
+        raise HTTPException(status_code=400, detail="价格区间下限不能高于上限")
+    if request.risk_budget_pct is not None and request.risk_budget_amount is not None:
+        raise HTTPException(
+            status_code=400, detail="风险预算比例和金额只能填写一个"
+        )
+    risk_budget_pct = request.risk_budget_pct
+    if (
+        request.side == "buy"
+        and risk_budget_pct is None
+        and request.risk_budget_amount is None
+        and default_risk_budget_pct is not None
+    ):
+        risk_budget_pct = default_risk_budget_pct
+    return TradePlan(
+        plan_date=request.plan_date or date.today(),
+        valid_until=request.valid_until,
+        code=code,
+        name=request.name.strip(),
+        side=request.side,
+        entry_low=request.entry_low,
+        entry_high=request.entry_high,
+        stop_loss=request.stop_loss,
+        target_price=request.target_price,
+        risk_budget_pct=risk_budget_pct,
+        risk_budget_amount=request.risk_budget_amount,
+        max_position_pct=request.max_position_pct,
+        requested_quantity=request.requested_quantity,
+        account_snapshot_id=account_snapshot_id or request.account_snapshot_id,
+        status=request.status,
+        thesis=request.thesis.strip(),
+        catalyst=request.catalyst.strip(),
+        invalidation=request.invalidation.strip(),
+        horizon_days=request.horizon_days,
+        analysis_id=request.analysis_id,
+        decision_signal_id=request.decision_signal_id,
+        preview_json=preview_json,
+    )
+
+
+def _resolve_plan_snapshot(
+    store: PersonalStore, request: TradePlanRequest
+) -> dict[str, Any]:
+    snapshot = (
+        store.get_account_snapshot(request.account_snapshot_id)
+        if request.account_snapshot_id is not None
+        else store.get_latest_account_snapshot(include_positions=True)
+    )
+    if snapshot is None:
+        raise HTTPException(
+            status_code=400,
+            detail="没有账户快照，请先在账本中导入同花顺资产/持仓截图",
+        )
+    return snapshot
+
+
+def _preview_plan(
+    settings: Settings,
+    store: PersonalStore,
+    request: TradePlanRequest,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    snapshot = _resolve_plan_snapshot(store, request)
+    plan = _plan_from_request(
+        request,
+        account_snapshot_id=int(snapshot["id"]),
+        default_risk_budget_pct=settings.risk_default_budget_pct,
+    )
+    try:
+        preview = preview_trade_plan(
+            plan,
+            snapshot,
+            list(snapshot.get("positions") or []),
+            limits=_risk_limits(settings),
+        )
+    except PlanValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return plan, preview
+
+
+def _require_preview_saved(preview: dict[str, Any]) -> None:
+    blockers = preview.get("blockers") or []
+    if blockers:
+        raise HTTPException(status_code=400, detail="；".join(blockers))
 
 
 def _result_payload(result: BacktestResult) -> dict[str, Any]:
@@ -388,7 +621,15 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 store,
                 start=start,
                 end=end,
-                stock_codes=[*settings.stock_list, *store.broker_position_codes()],
+                stock_codes=list(
+                    dict.fromkeys(
+                        [
+                            *settings.stock_list,
+                            *store.broker_position_codes(),
+                            *store.account_position_codes(),
+                        ]
+                    )
+                ),
             ),
             "turnover": lambda store: sync_turnover(store, start=start, end=end),
             "zt": lambda store: sync_limit_up(store, start=start, end=end),
@@ -624,9 +865,6 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
     # ------------------------------------------------------------------
     @app.post("/api/broker/import")
     def broker_import(request: BrokerImportRequest) -> dict[str, Any]:
-        import base64
-        import binascii
-
         from personal.datahub.broker import import_statement
 
         try:
@@ -635,6 +873,8 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"invalid base64: {exc}")
         if not content:
             raise HTTPException(status_code=400, detail="empty file")
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="交割单文件超过 20MB 限制")
         store = PersonalStore(settings.personal_db)
         try:
             summary = import_statement(
@@ -642,6 +882,7 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 request.filename,
                 content,
                 column_map=request.column_map,
+                plan_id=request.plan_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
@@ -675,6 +916,244 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 except (TypeError, ValueError):
                     pass
         return {"journal": _json_safe(rows)}
+
+    # ------------------------------------------------------------------
+    # Account snapshots (同花顺截图 / 手工快照)
+    # ------------------------------------------------------------------
+    @app.post("/api/account-snapshots/parse")
+    def account_snapshot_parse(request: ScreenshotParseRequest) -> dict[str, Any]:
+        content = _decode_base64_image(
+            request.content_b64, settings.ocr_max_image_mb
+        )
+        try:
+            result = parse_account_screenshot(
+                content,
+                filename=request.filename,
+                max_mb=settings.ocr_max_image_mb,
+                enabled=settings.ocr_enabled,
+            )
+        except ScreenshotError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _json_safe(result)
+
+    @app.post("/api/account-snapshots")
+    def account_snapshot_confirm(request: AccountSnapshotRequest) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            snapshot_id, snapshot, warnings = confirm_account_snapshot(
+                store,
+                {
+                    "cash": request.cash,
+                    "available_cash": request.available_cash,
+                    "market_value": request.market_value,
+                    "equity": request.equity,
+                    "positions": [
+                        {
+                            "code": position.code,
+                            "name": position.name,
+                            "quantity": position.quantity,
+                            "available_quantity": position.available_quantity,
+                            "avg_cost": position.avg_cost,
+                            "market_price": position.market_price,
+                            "market_value": position.market_value,
+                            "pnl": position.pnl,
+                        }
+                        for position in request.positions
+                    ],
+                },
+                account_alias=request.account_alias,
+                as_of=request.as_of,
+                source_file=request.source_file,
+                content_hash=request.content_hash,
+                ocr_engine=request.ocr_engine,
+            )
+            payload = store.get_account_snapshot(snapshot_id)
+        except ScreenshotError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+        return {
+            "snapshot_id": snapshot_id,
+            "snapshot": _account_snapshot_payload(payload or {}),
+            "warnings": warnings,
+        }
+
+    @app.get("/api/account-snapshots/latest")
+    def account_snapshot_latest(
+        account_alias: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            snapshot = store.get_latest_account_snapshot(
+                account_alias=account_alias, include_positions=True
+            )
+        finally:
+            store.close()
+        return {
+            "snapshot": (
+                _account_snapshot_payload(snapshot) if snapshot is not None else None
+            )
+        }
+
+    @app.get("/api/account-snapshots")
+    def account_snapshots(
+        limit: int = Query(default=20, ge=1, le=200),
+        account_alias: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.list_account_snapshots(
+                limit=limit, account_alias=account_alias
+            )
+        finally:
+            store.close()
+        return {"snapshots": _json_safe(rows)}
+
+    # ------------------------------------------------------------------
+    # Trade plans and portfolio risk
+    # ------------------------------------------------------------------
+    @app.get("/api/portfolio/risk")
+    def portfolio_risk(
+        account_alias: Optional[str] = Query(default=None),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            payload = analyze_portfolio_risk(
+                store,
+                account_alias=account_alias,
+                benchmark_code=settings.backtest_benchmark or None,
+                limits=_risk_limits(settings),
+                today=date.today(),
+            )
+        finally:
+            store.close()
+        return _json_safe(payload)
+
+    @app.post("/api/trade-plans/preview")
+    def trade_plan_preview(request: TradePlanRequest) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            plan, preview = _preview_plan(settings, store, request)
+        finally:
+            store.close()
+        return _json_safe(
+            {
+                "plan": plan_to_dict(plan),
+                "preview": preview,
+            }
+        )
+
+    @app.post("/api/trade-plans")
+    def trade_plan_create(request: TradePlanRequest) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            plan, preview = _preview_plan(settings, store, request)
+            _require_preview_saved(preview)
+            plan = _plan_from_request(
+                request,
+                account_snapshot_id=int(preview["snapshot_id"]),
+                preview_json=json.dumps(preview, ensure_ascii=False),
+                default_risk_budget_pct=settings.risk_default_budget_pct,
+            )
+            plan_id = store.create_trade_plan(plan)
+            payload = store.get_trade_plan(plan_id)
+        except PlanValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+        return {"plan": _json_safe(payload), "preview": _json_safe(preview)}
+
+    @app.put("/api/trade-plans/{plan_id}")
+    def trade_plan_update(
+        plan_id: int, request: TradePlanRequest
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            if store.get_trade_plan(plan_id) is None:
+                raise HTTPException(status_code=404, detail="交易计划不存在")
+            plan, preview = _preview_plan(settings, store, request)
+            _require_preview_saved(preview)
+            plan = _plan_from_request(
+                request,
+                account_snapshot_id=int(preview["snapshot_id"]),
+                preview_json=json.dumps(preview, ensure_ascii=False),
+                default_risk_budget_pct=settings.risk_default_budget_pct,
+            )
+            if not store.update_trade_plan(plan_id, plan):
+                raise HTTPException(status_code=404, detail="交易计划不存在")
+            payload = store.get_trade_plan(plan_id)
+        except PlanValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+        return {"plan": _json_safe(payload), "preview": _json_safe(preview)}
+
+    @app.patch("/api/trade-plans/{plan_id}")
+    def trade_plan_status(
+        plan_id: int, request: PlanStatusRequest
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            if not store.update_trade_plan_status(plan_id, request.status):
+                raise HTTPException(status_code=404, detail="交易计划不存在")
+            payload = store.get_trade_plan(plan_id)
+        finally:
+            store.close()
+        return {"plan": _json_safe(payload)}
+
+    @app.get("/api/trade-plans")
+    def trade_plans(
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            rows = store.list_trade_plans(status=status_filter, limit=limit)
+        finally:
+            store.close()
+        return {"plans": _json_safe(rows)}
+
+    @app.get("/api/trade-plans/{plan_id}")
+    def trade_plan_detail(plan_id: int) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            payload = store.get_trade_plan(plan_id)
+        finally:
+            store.close()
+        if payload is None:
+            raise HTTPException(status_code=404, detail="交易计划不存在")
+        return {"plan": _json_safe(payload)}
+
+    # ------------------------------------------------------------------
+    # Decision outcomes (逐笔交易结果)
+    # ------------------------------------------------------------------
+    @app.get("/api/journal/outcomes")
+    def journal_outcomes(
+        horizon: int = Query(default=20, ge=1, le=250),
+        days: int = Query(default=365, ge=1, le=5000),
+        code: Optional[str] = Query(default=None),
+        side: Optional[str] = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=1000),
+    ) -> dict[str, Any]:
+        store = PersonalStore(settings.personal_db)
+        try:
+            payload = evaluate_journal_outcomes(
+                store,
+                horizon=horizon,
+                days=days,
+                code=code,
+                side=side,
+                limit=limit,
+                benchmark_code=settings.backtest_benchmark or None,
+                adjust_mode=settings.backtest_adjust_mode,
+                today=date.today(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+        payload["available_horizons"] = list(HORIZONS)
+        return _json_safe(payload)
 
     @app.get("/api/margin/stocks")
     def margin_stocks(

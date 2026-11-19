@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from .models import (
+    AccountPositionSnapshot,
+    AccountSnapshot,
     AdjustFactor,
     BondYield,
     BrokerPosition,
@@ -34,6 +36,7 @@ from .models import (
     QualityIssue,
     RestrictedRelease,
     SectorAmount,
+    TradePlan,
     TradingStatus,
 )
 
@@ -307,6 +310,7 @@ CREATE TABLE IF NOT EXISTS trade_journal (
   target_price REAL,
   mistake_type TEXT,
   notes TEXT,
+  plan_id INTEGER,
   created_at TEXT NOT NULL
 );
 
@@ -356,6 +360,72 @@ CREATE TABLE IF NOT EXISTS margin_stock (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (trade_date, code)
 );
+
+CREATE TABLE IF NOT EXISTS account_snapshot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_alias TEXT NOT NULL DEFAULT '同花顺',
+  as_of TEXT NOT NULL,
+  cash REAL,
+  available_cash REAL,
+  market_value REAL,
+  equity REAL,
+  source TEXT NOT NULL DEFAULT 'ths_screenshot',
+  source_file TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  ocr_engine TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (account_alias, as_of)
+);
+CREATE INDEX IF NOT EXISTS idx_account_snapshot_date
+  ON account_snapshot(as_of);
+
+CREATE TABLE IF NOT EXISTS account_position_snapshot (
+  snapshot_id INTEGER NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT,
+  quantity REAL NOT NULL DEFAULT 0,
+  available_quantity REAL,
+  avg_cost REAL,
+  market_price REAL,
+  market_value REAL,
+  pnl REAL,
+  PRIMARY KEY (snapshot_id, code),
+  FOREIGN KEY (snapshot_id) REFERENCES account_snapshot(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS trade_plan (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_date TEXT NOT NULL,
+  valid_until TEXT,
+  code TEXT NOT NULL,
+  name TEXT,
+  side TEXT NOT NULL,
+  entry_low REAL NOT NULL,
+  entry_high REAL NOT NULL,
+  stop_loss REAL,
+  target_price REAL,
+  risk_budget_pct REAL,
+  risk_budget_amount REAL,
+  max_position_pct REAL,
+  requested_quantity REAL,
+  account_snapshot_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'draft',
+  thesis TEXT,
+  catalyst TEXT,
+  invalidation TEXT,
+  horizon_days INTEGER,
+  analysis_id INTEGER,
+  decision_signal_id INTEGER,
+  preview_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (account_snapshot_id) REFERENCES account_snapshot(id)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_plan_date
+  ON trade_plan(plan_date, status);
+CREATE INDEX IF NOT EXISTS idx_trade_plan_code
+  ON trade_plan(code, side);
 """
 
 
@@ -432,6 +502,7 @@ class PersonalStore:
                 ("source", "TEXT NOT NULL DEFAULT 'manual'"),
                 ("snapshot", "TEXT"),
                 ("broker_trade_id", "INTEGER"),
+                ("plan_id", "INTEGER"),
             ),
         }
         for table, columns in wanted.items():
@@ -444,6 +515,11 @@ class PersonalStore:
             for column, ddl in columns:
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_journal_plan "
+            "ON trade_journal(plan_id)"
+        )
+
     def close(self) -> None:
         self._conn.close()
 
@@ -1419,6 +1495,11 @@ class PersonalStore:
             "data_quality_event",
             "backtest_run",
             "trade_journal",
+            "broker_trade",
+            "broker_position",
+            "account_snapshot",
+            "account_position_snapshot",
+            "trade_plan",
         )
         counts = {
             table: int(
@@ -1464,6 +1545,7 @@ class PersonalStore:
         source: str = "manual",
         snapshot: Optional[str] = None,
         broker_trade_id: Optional[int] = None,
+        plan_id: Optional[int] = None,
     ) -> int:
         with self._transaction() as conn:
             cursor = conn.execute(
@@ -1472,8 +1554,8 @@ class PersonalStore:
                   (trade_date, code, side, quantity, price, amount, reason,
                    analysis_id, decision_signal_id, order_id, stop_loss,
                    target_price, mistake_type, notes, source, snapshot,
-                   broker_trade_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   broker_trade_id, plan_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade_date.isoformat(),
@@ -1493,6 +1575,7 @@ class PersonalStore:
                     source,
                     snapshot,
                     broker_trade_id,
+                    plan_id,
                     _now_iso(),
                 ),
             )
@@ -1681,6 +1764,284 @@ class PersonalStore:
         ]
 
     # ------------------------------------------------------------------
+    # Account snapshots (screenshot/manual observations)
+    # ------------------------------------------------------------------
+    def upsert_account_snapshot(self, snapshot: AccountSnapshot) -> int:
+        """Create or replace one alias+date snapshot and all its positions."""
+
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO account_snapshot
+                  (account_alias, as_of, cash, available_cash, market_value,
+                   equity, source, source_file, content_hash, ocr_engine,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_alias, as_of) DO UPDATE SET
+                  cash=excluded.cash,
+                  available_cash=excluded.available_cash,
+                  market_value=excluded.market_value,
+                  equity=excluded.equity,
+                  source=excluded.source,
+                  source_file=excluded.source_file,
+                  content_hash=excluded.content_hash,
+                  ocr_engine=excluded.ocr_engine,
+                  updated_at=excluded.updated_at
+                """,
+                (
+                    snapshot.account_alias,
+                    snapshot.as_of.isoformat(),
+                    snapshot.cash,
+                    snapshot.available_cash,
+                    snapshot.market_value,
+                    snapshot.equity,
+                    snapshot.source,
+                    snapshot.source_file,
+                    snapshot.content_hash,
+                    snapshot.ocr_engine,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM account_snapshot WHERE account_alias = ? AND as_of = ?",
+                (snapshot.account_alias, snapshot.as_of.isoformat()),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("account snapshot upsert did not return an id")
+            snapshot_id = int(row["id"])
+            conn.execute(
+                "DELETE FROM account_position_snapshot WHERE snapshot_id = ?",
+                (snapshot_id,),
+            )
+            if snapshot.positions:
+                conn.executemany(
+                    """
+                    INSERT INTO account_position_snapshot
+                      (snapshot_id, code, name, quantity, available_quantity,
+                       avg_cost, market_price, market_value, pnl)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            snapshot_id,
+                            position.code,
+                            position.name,
+                            position.quantity,
+                            position.available_quantity,
+                            position.avg_cost,
+                            position.market_price,
+                            position.market_value,
+                            position.pnl,
+                        )
+                        for position in snapshot.positions
+                    ],
+                )
+        return snapshot_id
+
+    def get_account_positions(
+        self, snapshot_id: int
+    ) -> list[AccountPositionSnapshot]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM account_position_snapshot
+            WHERE snapshot_id = ?
+            ORDER BY COALESCE(market_value, 0) DESC, code
+            """,
+            (int(snapshot_id),),
+        ).fetchall()
+        return [
+            AccountPositionSnapshot(
+                code=row["code"],
+                name=row["name"] or "",
+                quantity=float(row["quantity"] or 0.0),
+                available_quantity=row["available_quantity"],
+                avg_cost=row["avg_cost"],
+                market_price=row["market_price"],
+                market_value=row["market_value"],
+                pnl=row["pnl"],
+            )
+            for row in rows
+        ]
+
+    def get_latest_account_snapshot(
+        self,
+        *,
+        account_alias: Optional[str] = None,
+        include_positions: bool = True,
+    ) -> Optional[dict[str, Any]]:
+        conditions = ""
+        params: list[Any] = []
+        if account_alias:
+            conditions = " WHERE account_alias = ?"
+            params.append(account_alias)
+        row = self._conn.execute(
+            "SELECT * FROM account_snapshot"
+            + conditions
+            + " ORDER BY as_of DESC, id DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        if include_positions:
+            payload["positions"] = self.get_account_positions(payload["id"])
+        return payload
+
+    def get_account_snapshot(
+        self, snapshot_id: int, *, include_positions: bool = True
+    ) -> Optional[dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM account_snapshot WHERE id = ?", (int(snapshot_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        if include_positions:
+            payload["positions"] = self.get_account_positions(payload["id"])
+        return payload
+
+    def account_position_codes(
+        self, *, account_alias: Optional[str] = None
+    ) -> list[str]:
+        """Codes in the latest snapshot, for per-stock margin coverage."""
+
+        snapshot = self.get_latest_account_snapshot(
+            account_alias=account_alias, include_positions=True
+        )
+        if snapshot is None:
+            return []
+        return sorted(
+            {
+                position.code
+                for position in snapshot.get("positions", [])
+                if position.quantity > 0
+            }
+        )
+
+    def list_account_snapshots(
+        self, *, limit: int = 20, account_alias: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        conditions = ""
+        params: list[Any] = []
+        if account_alias:
+            conditions = " WHERE s.account_alias = ?"
+            params.append(account_alias)
+        params.append(int(limit))
+        rows = self._conn.execute(
+            """
+            SELECT s.*, COUNT(p.code) AS position_count
+            FROM account_snapshot s
+            LEFT JOIN account_position_snapshot p ON p.snapshot_id = s.id
+            """
+            + conditions
+            + " GROUP BY s.id ORDER BY s.as_of DESC, s.id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Trade plans
+    # ------------------------------------------------------------------
+    def create_trade_plan(self, plan: TradePlan) -> int:
+        now = _now_iso()
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO trade_plan
+                  (plan_date, valid_until, code, name, side, entry_low,
+                   entry_high, stop_loss, target_price, risk_budget_pct,
+                   risk_budget_amount, max_position_pct, requested_quantity,
+                   account_snapshot_id, status, thesis, catalyst, invalidation,
+                   horizon_days, analysis_id, decision_signal_id, preview_json,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                _trade_plan_values(plan) + (now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def update_trade_plan(self, plan_id: int, plan: TradePlan) -> bool:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE trade_plan SET
+                  plan_date=?, valid_until=?, code=?, name=?, side=?,
+                  entry_low=?, entry_high=?, stop_loss=?, target_price=?,
+                  risk_budget_pct=?, risk_budget_amount=?, max_position_pct=?,
+                  requested_quantity=?, account_snapshot_id=?, status=?,
+                  thesis=?, catalyst=?, invalidation=?, horizon_days=?,
+                  analysis_id=?, decision_signal_id=?, preview_json=?,
+                  updated_at=?
+                WHERE id=?
+                """,
+                _trade_plan_values(plan) + (_now_iso(), int(plan_id)),
+            )
+            return cursor.rowcount > 0
+
+    def update_trade_plan_status(self, plan_id: int, status: str) -> bool:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE trade_plan SET status=?, updated_at=? WHERE id=?",
+                (status, _now_iso(), int(plan_id)),
+            )
+            return cursor.rowcount > 0
+
+    def get_trade_plan(self, plan_id: int) -> Optional[dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM trade_plan WHERE id = ?", (int(plan_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload.update(self._plan_progress(int(plan_id)))
+        return payload
+
+    def list_trade_plans(
+        self, *, status: Optional[str] = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        conditions = ""
+        params: list[Any] = []
+        if status:
+            conditions = " WHERE status = ?"
+            params.append(status)
+        params.append(int(limit))
+        rows = self._conn.execute(
+            "SELECT * FROM trade_plan"
+            + conditions
+            + " ORDER BY plan_date DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        plans: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            payload.update(self._plan_progress(int(payload["id"])))
+            plans.append(payload)
+        return plans
+
+    def _plan_progress(self, plan_id: int) -> dict[str, Any]:
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) AS fill_count,
+                   COALESCE(SUM(quantity), 0) AS filled_quantity,
+                   COALESCE(SUM(ABS(amount)), 0) AS filled_amount,
+                   MAX(trade_date) AS last_fill_date
+            FROM trade_journal WHERE plan_id = ?
+            """,
+            (int(plan_id),),
+        ).fetchone()
+        quantity = float(row["filled_quantity"] or 0.0)
+        amount = float(row["filled_amount"] or 0.0)
+        return {
+            "fill_count": int(row["fill_count"] or 0),
+            "filled_quantity": quantity,
+            "filled_amount": amount,
+            "fill_vwap": (amount / quantity) if quantity > 0 else None,
+            "last_fill_date": row["last_fill_date"],
+        }
+
+    # ------------------------------------------------------------------
     # Per-stock margin (持仓股两融)
     # ------------------------------------------------------------------
     def upsert_margin_stock(self, rows: Iterable[MarginStockRow]) -> int:
@@ -1746,6 +2107,33 @@ class PersonalStore:
             )
             for row in self._conn.execute(sql, params).fetchall()
         ]
+
+
+def _trade_plan_values(plan: TradePlan) -> tuple[Any, ...]:
+    return (
+        plan.plan_date.isoformat(),
+        plan.valid_until.isoformat() if plan.valid_until else None,
+        plan.code,
+        plan.name,
+        plan.side,
+        plan.entry_low,
+        plan.entry_high,
+        plan.stop_loss,
+        plan.target_price,
+        plan.risk_budget_pct,
+        plan.risk_budget_amount,
+        plan.max_position_pct,
+        plan.requested_quantity,
+        plan.account_snapshot_id,
+        plan.status,
+        plan.thesis,
+        plan.catalyst,
+        plan.invalidation,
+        plan.horizon_days,
+        plan.analysis_id,
+        plan.decision_signal_id,
+        plan.preview_json,
+    )
 
 
 def _bar_from_row(row: sqlite3.Row) -> DailyBar:

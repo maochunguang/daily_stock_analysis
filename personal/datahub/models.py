@@ -511,3 +511,68 @@ class MarginStockRow:
             self.rqye,
             self.source,
         )
+
+
+@dataclass(frozen=True)
+class AccountPositionSnapshot:
+    """One observed holding from a broker/app screenshot.
+
+    Codes are normalized (``600519.SH``). This is a point-in-time observation,
+    not the transaction-reconstructed position in ``broker_position``.
+    """
+
+    code: str
+    name: str = ""
+    quantity: float = 0.0
+    available_quantity: float | None = None
+    avg_cost: float | None = None
+    market_price: float | None = None
+    market_value: float | None = None
+    pnl: float | None = None
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    """Confirmed account state observed on a date (screenshot/manual)."""
+
+    account_alias: str
+    as_of: date
+    cash: float | None = None
+    available_cash: float | None = None
+    market_value: float | None = None
+    equity: float | None = None
+    source: str = "ths_screenshot"
+    source_file: str = ""
+    content_hash: str = ""
+    ocr_engine: str = ""
+    positions: tuple[AccountPositionSnapshot, ...] = ()
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class TradePlan:
+    """A pre-trade plan with explicit risk budget and invalidation rules."""
+
+    plan_date: date
+    code: str
+    side: str
+    entry_low: float
+    entry_high: float
+    name: str = ""
+    valid_until: date | None = None
+    stop_loss: float | None = None
+    target_price: float | None = None
+    risk_budget_pct: float | None = None
+    risk_budget_amount: float | None = None
+    max_position_pct: float | None = None
+    requested_quantity: float | None = None
+    account_snapshot_id: int | None = None
+    status: str = "draft"
+    thesis: str = ""
+    catalyst: str = ""
+    invalidation: str = ""
+    horizon_days: int | None = None
+    analysis_id: int | None = None
+    decision_signal_id: int | None = None
+    preview_json: str = ""
+    id: int | None = None

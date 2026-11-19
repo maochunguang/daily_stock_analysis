@@ -9,7 +9,10 @@ import type {
   BrokerJournalRow,
   BrokerPositionRow,
   BrokerSnapshot,
+  TradePlan,
 } from '../../types/personal';
+import { TonghuashunImport } from './TonghuashunImport';
+import { fileToBase64 } from './fileEncoding';
 
 const TABLE_HEAD_CLASS =
   'border-b border-border/60 text-left text-xs uppercase tracking-[0.12em] text-secondary-text';
@@ -52,6 +55,10 @@ const COPY = {
     noData: '暂无数据，先导入交割单',
     importFailed: '导入失败',
     emptyJournal: '暂无交易日志',
+    planLabel: '关联交易计划（可选）',
+    noPlan: '不关联',
+    planHint: '只有代码和方向匹配的新成交会写入 plan_id',
+    planLinked: '已关联计划成交',
   },
   en: {
     title: 'Ledger (statements / positions / decision snapshots)',
@@ -88,6 +95,10 @@ const COPY = {
     noData: 'No data yet — import a statement first',
     importFailed: 'Import failed',
     emptyJournal: 'Journal is empty',
+    planLabel: 'Link trade plan (optional)',
+    noPlan: 'No link',
+    planHint: 'Only matching code/side fills receive plan_id',
+    planLinked: 'Plan-linked fills',
   },
 } as const;
 
@@ -111,6 +122,8 @@ export const LedgerPanel: React.FC = () => {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [activePlans, setActivePlans] = useState<TradePlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState('');
 
   const reload = useCallback(async () => {
     try {
@@ -120,6 +133,16 @@ export const LedgerPanel: React.FC = () => {
       ]);
       setPositions(positionsData.positions);
       setJournal(journalData.journal);
+      try {
+        const plansData = await personalApi.tradePlans('');
+        setActivePlans(
+          plansData.plans.filter(
+            (plan) => plan.status !== 'closed' && plan.status !== 'cancelled',
+          ),
+        );
+      } catch {
+        // A plan endpoint failure must not hide the working ledger.
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -135,15 +158,10 @@ export const LedgerPanel: React.FC = () => {
       setError('');
       setSummary(null);
       try {
-        const buffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i += 0x8000) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-        }
         const payload = {
           filename: file.name,
-          content_b64: btoa(binary),
+          content_b64: await fileToBase64(file),
+          plan_id: selectedPlanId ? Number(selectedPlanId) : null,
         };
         const result = await personalApi.brokerImport(payload);
         setSummary(result);
@@ -155,7 +173,7 @@ export const LedgerPanel: React.FC = () => {
         if (fileRef.current) fileRef.current.value = '';
       }
     },
-    [reload],
+    [reload, selectedPlanId],
   );
 
   const held = positions.filter((row) => row.quantity > 0);
@@ -165,9 +183,27 @@ export const LedgerPanel: React.FC = () => {
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
+      <TonghuashunImport />
+
       <Card title={copy.importTitle} variant="bordered" className="xl:col-span-2">
         <p className="text-sm text-secondary-text">{copy.importHint}</p>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="min-w-[220px]">
+            <span className="mb-1 block text-xs text-secondary-text">{copy.planLabel}</span>
+            <select
+              className="input-surface input-focus-glow h-10 w-full rounded-xl border bg-transparent px-3 text-sm text-foreground focus:outline-none"
+              value={selectedPlanId}
+              onChange={(event) => setSelectedPlanId(event.target.value)}
+            >
+              <option value="">{copy.noPlan}</option>
+              {activePlans.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  #{plan.id} {plan.plan_date} {plan.side === 'buy' ? copy.buy : copy.sell} {plan.code}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-muted-text">{copy.planHint}</span>
+          </label>
           <input
             ref={fileRef}
             type="file"
@@ -191,6 +227,9 @@ export const LedgerPanel: React.FC = () => {
               {copy.imported}: {summary.imported} {copy.rowsLabel} · {copy.journalLabel} +
               {summary.journal_added}
               {summary.skipped_total ? ` · ${copy.skippedLabel} ${summary.skipped_total}` : ''}
+              {summary.plan_id
+                ? ` · ${copy.planLinked} ${summary.plan_linked}`
+                : ''}
             </span>
           ) : null}
         </div>

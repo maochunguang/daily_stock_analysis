@@ -19,8 +19,8 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 128 |
-| `last_updated` | 2026-11-16 |
+| `test_count` | 162 |
+| `last_updated` | 2026-11-19 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
 | `ui_patch` | `patches/0001-personal-web-integration.patch` |
@@ -38,7 +38,9 @@ adds:
   cross-source validation.
 - A cost-aware portfolio backtest engine for upstream AI advice and personal
   strategies.
-- Fund analytics, trade journal, and review reports (later phases).
+- Broker statement ledger, Tonghuashun account screenshots, trade plans with
+  risk-budget previews, portfolio risk, and D+N decision outcomes.
+- Fund analytics and review reports (later phases).
 - A local Web console for non-CLI operation.
 - A Windows QMT bridge for future execution.
 
@@ -96,12 +98,16 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
 | `personal/datahub/market.py` | Market-level syncs: index futures + margin balance |
 | `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
-| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows for watchlist/holdings codes (RM-42) |
+| `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows for watchlist ∪ broker positions ∪ latest account snapshot (RM-42) |
 | `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
 | `personal/datahub/validate.py` | RM-41 data passport: identities, ranges, trading days, jumps, cross-metric ratios, optional external spot checks |
 | `personal/datahub/broker.py` | RM-12/15 broker statement import: alias-mapped CSV/TSV/XLSX parse, moving-average cost positions, idempotent upsert |
 | `personal/datahub/decision.py` | RM-12 decision snapshot: market state (composite/breadth/limit-up/sector/per-stock margin) at each trade |
+| `personal/datahub/screenshot.py` | RM-45 local RapidOCR Tonghuashun screenshot import; editable structured draft; never stores image/raw OCR/account ids |
+| `personal/analytics/trade_plans.py` | RM-43 pure fee-aware risk-budget sizing and post-trade exposure preview; no writes/orders |
+| `personal/analytics/portfolio_risk.py` | RM-43 snapshot-based concentration, cash, Beta/volatility, correlation, liquidity; explicit market-data coverage |
+| `personal/analytics/journal_outcomes.py` | RM-44 D+1/5/20/60 outcomes, adjusted entry, benchmark excess, MAE/MFE, plan-vs-fill comparison, Wilson summary |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares (EM list API with per-symbol `f84` fallback, CHG-0025) + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
@@ -165,6 +171,10 @@ degraded capability report. The Web `/api/status` and CLI `info` surface it.
 | `broker_trade` | `row_hash` unique; parsed statement rows (RM-15) |
 | `broker_position` | `code`; moving-average cost / realized P&L / dividends / fees |
 | `margin_stock` | `(trade_date, code)`; per-stock margin rows for watchlist ∪ holdings (RM-42) |
+| `account_snapshot` | `(account_alias, as_of)` unique; screenshot/manual account equity/cash snapshot |
+| `account_position_snapshot` | `(snapshot_id, code)`; observed holdings, separate from broker_position |
+| `trade_plan` | explicit pre-trade plan, risk budget, status, preview JSON |
+| `trade_journal.plan_id` | optional link from fills to one trade plan |
 
 **Read rule:** `PersonalStore.get_bars()` never mixes sources. It selects one
 source: among `preferred_sources`, the one with the most rows in the requested
@@ -189,8 +199,11 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main breadth --days N` | Show stored market breadth rows |
 | `python -m personal.cli.main schedule --at 06:00,12:00,18:00 [--once]` | RM-05 daily scheduler (compose service personal-sync); runs post-sync validation |
 | `python -m personal.cli.main validate [--days N] [--dataset D] [--online] [--json]` | RM-41 indicator data health report |
-| `python -m personal.cli.main broker-import --file F [--map k=v] [--no-journal]` | RM-12/15 broker statement import (dedupe + cost + snapshot) |
+| `python -m personal.cli.main broker-import --file F [--map k=v] [--no-journal] [--plan-id ID]` | RM-12/15 broker statement import (dedupe + cost + snapshot) |
 | `python -m personal.cli.main broker-positions` / `journal [--days N] [--code C]` | Ledger positions / trade journal with snapshots |
+| `python -m personal.cli.main account-import --file F [--alias A] [--as-of D] [--save]` | RM-45 local OCR screenshot to account snapshot draft/confirm |
+| `python -m personal.cli.main plans [--status S] [--limit N]` | RM-43 trade plans with fill progress |
+| `python -m personal.cli.main journal-outcomes [--horizon N] [--days N] [--code C] [--side S]` | RM-44 D+N/MAE/MFE/plan-vs-fill outcomes |
 | `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
@@ -218,8 +231,15 @@ the page route is `/personal`.
 | GET | `/api/market/macro?days=N` | CN/US spreads + release calendar |
 | GET | `/api/market/composite` | Composite market-state score |
 | GET | `/api/market/validate?days=N&online=bool` | RM-41 data health report (11 datasets, offline by default) |
-| POST | `/api/broker/import` | Broker statement import (JSON body: filename + content_b64 + column_map) |
+| POST | `/api/broker/import` | Broker statement import (JSON body: filename + content_b64 + column_map + optional plan_id) |
 | GET | `/api/broker/positions`, `/api/broker/journal?limit=` | Ledger positions / journal with decision snapshots |
+| POST | `/api/account-snapshots/parse` | RM-45 screenshot OCR preview (no DB write) |
+| POST | `/api/account-snapshots` | Confirm account snapshot (same alias+date upserts) |
+| GET | `/api/account-snapshots/latest`, `/api/account-snapshots?limit=` | Latest/history snapshots |
+| GET | `/api/portfolio/risk` | RM-43 snapshot-based portfolio risk |
+| POST | `/api/trade-plans/preview` | Pure what-if plan preview (no DB write) |
+| POST/GET | `/api/trade-plans`, `/api/trade-plans/{id}` | Plan create/list/detail (status PATCH, full edit PUT) |
+| GET | `/api/journal/outcomes?horizon=&days=&code=&side=&limit=` | RM-44 D+N outcomes + summary |
 | GET | `/api/margin/stocks?days=N&code=` | RM-42 per-stock margin detail (watchlist ∪ ledger holdings) |
 | GET | `/api/market/futures?days=N` | Index futures rows (oldest → newest) |
 | GET | `/api/market/margin?days=N` | Margin balance rows (oldest → newest) |
@@ -231,8 +251,14 @@ the page route is `/personal`.
 | GET | `/api/upstream/recent` | Recent analyses/signals |
 | GET | `/api/qmt/health` | QMT bridge health |
 
-Web UI tabs: `总览` (status/coverage/runs/quality + sync freshness), `深度复盘` (card grid: data-health, composite, TRIN breadth, index futures, member rank, margin, limit-up, PCR, flows, crowding, macro — registry `apps/dsa-web/src/components/personal/ReviewCards.tsx`), `数据` (sync + coverage),
-`回测` (demo/replay + metrics/SVG chart/trades), `插件`, `上游`
+Web UI tabs: `总览` (status/coverage/runs/quality + sync freshness), `深度复盘`
+(card grid: data-health, composite, TRIN breadth, index futures, member rank,
+margin, limit-up, PCR, flows, crowding, macro — registry
+`apps/dsa-web/src/components/personal/ReviewCards.tsx`), `账本`
+(LedgerPanel: statement import + plan link + journal + Tonghuashun screenshot
+snapshot), `交易计划` (TradePlanPanel: risk card + plan CRUD/preview),
+`决策结果` (DecisionOutcomePanel: D+N summary/table/detail), `数据` (sync +
+coverage), `回测` (demo/replay + metrics/SVG chart/trades), `插件`, `上游`
 (analyses/signals), `QMT` (health check).
 
 Sync request body:
@@ -316,7 +342,23 @@ instrument name; limit prices from previous close + board rules.
   uses Sina main-contract series, which jumps on contract rolls.
 - Backtests default to hfq (backward-adjusted) prices; limit prices are scaled
   into the same space. `none` reproduces raw-price behavior for debugging.
-- Fund analytics, trade journal UI, review reports are Phase 2.
+- Tonghuashun OCR is local-only (`rapidocr-onnxruntime`, bundled models); it
+  requires Pillow + OpenCV runtime libs and HEIC needs `pillow-heif`. OCR output
+  is always an editable draft; account numbers/raw OCR text/images are not
+  stored. Manual entry remains available if OCR is unavailable.
+- Account screenshots are **point-in-time snapshots**, not continuous equity.
+  TWR/XIRR/cash-flow attribution is not implemented. Portfolio risk and plan
+  preview use the latest snapshot (or explicit snapshot id); stale snapshots
+  warn after 7 days. Screenshot positions never overwrite broker-position
+  reconstruction.
+- Portfolio Beta/volatility/correlation/liquidity require local daily bars.
+  Coverage is reported; the UI must not present partial coverage as whole-account
+  risk. Risk limits are configurable via `PERSONAL_RISK_*`.
+- Journal outcomes are computed on demand. D+N uses the Nth bar strictly after
+  the trade date; pending/unavailable rows are explicit. Benchmark missing leaves
+  excess fields null. Existing journal snapshots store trade-date market state,
+  not a rigorous real-time availability timestamp (T+1 data can appear).
+- Fund analytics and automated review reports remain Phase 2.
 - QMT bridge is a scaffold; not tested against real 中信建投 QMT.
 - Standalone web console is local-only and has no authentication (bind to
   `127.0.0.1`). The integrated `/personal-api/*` is covered by upstream auth
@@ -356,3 +398,16 @@ instrument name; limit prices from previous close + board rules.
 | `CHG-0014` | Personal user guide + mandatory manual rule |
 | `CHG-0015` | Adjustment-aware backtest, calendar/status sync, cross-source checks |
 | `CHG-0016` | DeepSeek official web-search provider + settings schema |
+| `CHG-0017` | Market breadth (TRIN) import and storage |
+| `CHG-0018` | Deep-review tab with futures/margin cards |
+| `CHG-0019` | Self-hosted news-intel private-host gate (patch 0003) |
+| `CHG-0020` | Daily scheduled personal sync (RM-05) |
+| `CHG-0021` | P1/P2 deep-market indicator cards (RM-32..RM-40) |
+| `CHG-0022` | Option PCR from SSE official daily statistics |
+| `CHG-0023` | Indicator data validation / cross-check (RM-41) |
+| `CHG-0024` | WebUI config persistence via `ENV_FILE` on a data volume |
+| `CHG-0025` | Per-symbol ETF-share fallback when EM list is blocked |
+| `CHG-0026` | 18:00 same-day sync round |
+| `CHG-0027` | Broker statement ledger, decision snapshots, per-stock margin |
+| `CHG-0028` | Trade plans, portfolio risk, D+N decision outcomes |
+| `CHG-0029` | Tonghuashun screenshot OCR account snapshots |

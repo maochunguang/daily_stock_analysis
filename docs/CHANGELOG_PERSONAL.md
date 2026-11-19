@@ -1623,3 +1623,179 @@ cd apps/dsa-web && npm run build
 - Manual journal entries with reason editing; link analyses/decision signals.
 - Per-stock daily bars so the ledger can show market value.
 - Margin-stock history backfill for newly imported holdings (120-day chunks).
+
+## [2026-11-19] CHG-0028 — Trade plans, portfolio risk, and D+N decision outcomes
+
+### Metadata
+- id: CHG-0028
+- date: 2026-11-19
+- status: done
+- area: analytics | datahub | web | docs
+- related: RM-11, RM-43, RM-44, CHG-0027, CHG-0029
+
+### Summary
+Adds the missing pre-trade and post-trade decision loop:
+
+1. **Trade plans** (`trade_plan`): price-range entry, stop/target, risk budget
+   (percent or fixed amount), max position, requested quantity, thesis,
+   catalyst, invalidation, horizon, status, and optional account snapshot.
+   Broker statement imports can link matching fills via `trade_journal.plan_id`;
+   plan lists show fill count, cumulative quantity, VWAP and last fill.
+2. **Risk preview** (`analytics/trade_plans.py`): pure read-only calculation
+   using the latest/selected account snapshot. Buy plans use the range high,
+   stop-exit fees, whole lots, risk budget, cash, and max position (including an
+   existing same-code holding). Sell plans cap at snapshot available quantity.
+   Returns planned loss, risk-used %, reward/risk, post-trade cash/weight/Top5,
+   warnings and blockers. Saving re-runs preview and rejects blockers.
+3. **Portfolio risk** (`analytics/portfolio_risk.py`): snapshot-based cash,
+   stock/ETF mix, Top1/Top5, HHI, 60-day beta, covariance volatility, top
+   correlations, 20-day liquidity/exit days. Local-bar coverage is explicit;
+   coverage below 80% is labeled incomplete. Snapshot >7 days warns.
+4. **Decision outcomes** (`analytics/journal_outcomes.py`): D+1/5/20/60 using the
+   Nth bar strictly after the trade date, adjusted entry price, benchmark
+   excess, MAE/MFE, sell-side aligned direction, plan entry range/quantity
+   deviation, market-state context, completed/pending/unavailable states, and
+   Wilson intervals. No outcome table: results are recalculated on demand.
+5. **UI**: new `交易计划` and `决策结果` tabs; risk card; plan editor drawer;
+   outcome summary/table/detail drawer. Ledger import gains optional plan link.
+
+No continuous account NAV/TWR/XIRR: snapshots are point-in-time observations.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/models.py` | `AccountSnapshot`, `AccountPositionSnapshot`, `TradePlan` |
+| `personal/datahub/store.py` | account snapshot/position snapshot/trade-plan schema; `trade_journal.plan_id` migration; CRUD/fill progress |
+| `personal/analytics/trade_plans.py` | New: fee-aware risk-budget sizing and post-trade preview |
+| `personal/analytics/portfolio_risk.py` | New: concentration, Beta/volatility/correlation/liquidity with coverage |
+| `personal/analytics/journal_outcomes.py` | New: D+N/MAE/MFE/benchmark/plan-vs-fill analytics |
+| `personal/datahub/broker.py` | optional `plan_id`; matching code/side fills only |
+| `personal/config.py` | OCR + risk thresholds (`PERSONAL_OCR_*`, `PERSONAL_RISK_*`) |
+| `personal/api/app.py` | snapshot/risk/plan/outcome routes; broker import `plan_id` |
+| `personal/cli/main.py` | `plans`, `journal-outcomes`, broker `--plan-id` |
+| `apps/dsa-web/src/components/personal/TradePlanPanel.tsx` | New |
+| `apps/dsa-web/src/components/personal/TradePlanEditor.tsx` | New |
+| `apps/dsa-web/src/components/personal/PortfolioRiskCard.tsx` | New |
+| `apps/dsa-web/src/components/personal/DecisionOutcomePanel.tsx` | New |
+| `apps/dsa-web/src/pages/PersonalPage.tsx`, `api/personal.ts`, `types/personal.ts` | tabs, client methods, types |
+| `personal/tests/test_trade_plans.py`, `test_portfolio_risk.py`, `test_journal_outcomes.py`, `test_plan_api.py` | 24 tests |
+| `apps/dsa-web/src/api/__tests__/personal.test.ts` | client tests |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.9, §4.10, §4.8 plan link, CLI/env/tables |
+| docs | AI_CONTEXT, ROADMAP, architecture |
+
+### Commands
+```bash
+python -m personal.cli.main plans --status active
+python -m personal.cli.main journal-outcomes --horizon 20 --days 365
+python -m personal.cli.main broker-import --file 交割单.csv --plan-id 3
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- `pytest personal/tests`: 162 passed (includes real OCR smoke).
+- New backend tests cover fee-aware sizing, min commission, lot rounding,
+  existing-position cap, sell availability, preview no-write, concentration,
+  Beta/vol, D+N bar selection, buy/sell MAE/MFE, splits, pending/unavailable,
+  benchmark missing, plan comparison, Wilson summary, API routes and error paths.
+- Real API E2E with a generated Tonghuashun-style PNG: OCR parsed equity +
+  two holdings, confirmed snapshot, created a plan with 9,900 suggested shares
+  and no blockers, risk endpoint returned Top1/cash, plan list persisted.
+- `npm run build` passes; changed-file ESLint passes; new Vitest tests 5 pass.
+- Full Vitest suite: 1,385 passed, 2 pre-existing unrelated failures
+  (`DesktopUpdateIndicator` native `title` governance; DecisionSignalsPage
+  timeline refresh test). Not caused by these files.
+
+### Notes / Migration
+- Old DBs get `trade_journal.plan_id` via `_migrate`; new tables use `IF NOT EXISTS`.
+- Plans require a confirmed account snapshot for preview/save; otherwise 400.
+- Plan status is user-maintained; linked fills do not auto-close a plan.
+- Portfolio risk and outcomes use local bars only and never fetch fallback data.
+- Screenshot snapshots are separate from statement positions; no overwrite.
+- Per-stock margin sync covers `watchlist ∪ broker_position ∪ latest account
+  snapshot`, so screenshot-only holdings also get margin detail.
+
+### Next
+- Manual journal entry/edit and outcome mistake tags.
+- Finish RM-11 attribution/industry exposure; then strategy executor/walk-forward.
+- Automated daily/weekly review reports and actionable alerts.
+
+## [2026-11-19] CHG-0029 — Tonghuashun screenshot OCR account snapshots
+
+### Metadata
+- id: CHG-0029
+- date: 2026-11-19
+- status: done
+- area: datahub | web | docker | docs
+- related: RM-45, CHG-0028
+
+### Summary
+Adds local-only Tonghuashun screenshot import for the real account input the user
+will use. PNG/JPEG/WebP/HEIC/HEIF up to 8MB are decoded with Pillow (+
+`pillow-heif`), OCR’d with bundled RapidOCR ONNX models, and parsed into an
+**editable draft** (account totals + holdings rows). Confirmation writes
+`account_snapshot` / `account_position_snapshot`; the image, raw OCR text, full
+account number and original account id are never stored or logged. Manual entry
+uses the same form if OCR is unavailable.
+
+Parsing handles:
+- account aliases 总资产/可用资金/现金/持仓市值 and nearest numeric value;
+- holdings header detection by code/name/quantity/available/cost/price/value/P&L;
+- OCR coordinate-based row grouping and column assignment;
+- `1,234.56`, `1.23万`, `1.23亿`, and OCR comma/dot confusion such as
+  `123.456.78` → `123456.78`;
+- missing account fields with explicit derivation warnings (cash+market value,
+  etc.);
+- same alias+date re-confirm replaces that day’s snapshot; positions are atomic.
+
+Docker adds `libgl1`, `libglib2.0-0`, `libgomp1`; requirements add Pillow,
+pillow-heif and `rapidocr-onnxruntime`. Models are bundled in the wheel and
+verified local (no runtime download).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/screenshot.py` | New: image decode/limits, RapidOCR adapter, account/table parser, draft validation/confirm |
+| `personal/datahub/models.py`, `store.py` | account snapshot tables + accessors |
+| `personal/api/app.py` | `/api/account-snapshots/parse`, confirm/latest/list |
+| `personal/cli/main.py` | `account-import --file ... [--save]` |
+| `apps/dsa-web/src/components/personal/TonghuashunImport.tsx` | Upload → preview → editable rows → confirm; latest snapshot view; manual entry |
+| `apps/dsa-web/src/components/personal/LedgerPanel.tsx` | Mount screenshot import and plan link |
+| `requirements.txt`, `docker/Dockerfile` | OCR dependencies/runtime libs |
+| `personal/tests/test_screenshot_import.py`, `test_screenshot_ocr_smoke.py` | Parser/confirmation + real OCR smoke |
+| `apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx` | Manual-entry/confirm and empty state |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.8.1, env, tables, limitations |
+| docs | CHANGELOG, AI_CONTEXT, ROADMAP, architecture, `.env.example`, `config/personal.example.env` |
+
+### Commands
+```bash
+python -m personal.cli.main account-import --file 同花顺.png
+python -m personal.cli.main account-import --file 同花顺.png --as-of 2026-11-19 --save
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- Real OCR smoke on a generated 980×260 Chinese Tonghuashun-style holdings
+  screenshot: 总资产 1,234,567.89, 可用资金 123,456.78, 600519 100 股 @1500 /
+  现价 1600 / 市值 160000 / 盈亏 10000 all parsed correctly; OCR confidence
+  ~0.996-0.999.
+- OCR model files verified inside site-packages (`ch_PP-OCRv4_det/rec`,
+  classifier), so initialization is offline.
+- API E2E with the same image: parse 200, confirm 200, snapshot positions 2;
+  resulting portfolio risk top1 12.96%, cash 10%.
+- `pytest`: 162 passed; `npm run build` passes; changed-file ESLint passes;
+  manual-entry Vitest passes.
+- Full frontend suite has the same two pre-existing unrelated failures noted in
+  CHG-0028.
+
+### Notes / Migration
+- HEIC support requires `pillow-heif`; if missing, use PNG/JPEG or manual entry.
+- OCR is intentionally a draft, never auto-confirm; account numbers are ignored.
+- Screenshot snapshots are not continuous NAV; risk uses latest snapshot.
+- `_load_image` caps file size; API strict-validates base64.
+- Docker image grows by OCR/OpenCV/ONNX dependencies (~100MB+).
+
+### Next
+- Optional multiple account aliases and reconciliation against statement-derived
+  positions (explicitly user-confirmed, never automatic overwrite).
+- OCR aliases for more brokers/apps; screenshot date/account metadata detection.
+- Continuous cash/NAV import (CSV/QMT) for TWR/XIRR in a later batch.

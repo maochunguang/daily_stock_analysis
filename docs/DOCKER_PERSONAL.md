@@ -9,6 +9,11 @@
 > QMT 桥是 Windows-only，**不能**运行在 NAS 容器里。NAS 负责数据、回测、报告和
 > Web 页面；QMT 实盘/行情桥仍需在 Windows 机器上单独运行。
 
+> **同花顺截图 OCR：** 镜像内置 RapidOCR ONNX 模型和 OpenCV/ONNX 运行库，识别在
+> 容器内 CPU 完成，不上传云端；镜像因此增加约 100MB+。首次识别会初始化模型，
+> 之后常驻内存。若 NAS 内存很紧，可设 `PERSONAL_OCR_ENABLED=false`，在页面用
+> 「手工录入」录账户快照。
+
 ## 1. 前置条件
 
 - NAS 支持 Docker / Docker Compose（Synology DSM、QNAP Container Station 等）
