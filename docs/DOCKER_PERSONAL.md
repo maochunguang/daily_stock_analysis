@@ -205,6 +205,11 @@ cd /volume2/docker/daily_stock_analysis && docker compose up -d --force-recreate
 
 `TUSHARE_TOKEN` 从项目目录 `.env` 由 compose 变量替换注入 personal-sync。
 
+> **personal-sync 也必须设置 `ENV_FILE=/app/data/runtime.env`。** 该服务独立于
+> server，若只给 server 设置，定时任务读不到 WebUI 的 `STOCK_LIST`，日线/状态/
+> 复权同步会显示 0 行。2026-11-19 已在 NAS compose 中补齐并验证 13 只自选股
+> 入库（备份 `docker-compose.yml.bak-20261119-bars`）。
+
 ### WebUI 配置（LLM 密钥 / 自选股）持久化
 
 **事故原因（2026-11-18 修复）**：上游把 WebUI 保存的配置写入 `ENV_FILE`
