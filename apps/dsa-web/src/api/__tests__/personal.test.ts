@@ -32,6 +32,17 @@ describe('personalApi account/plan endpoints', () => {
     });
   });
 
+  it('uses the margin stocks endpoint mounted by the personal API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ stocks: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await personalApi.marginStocks(30);
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      '/personal-api/api/margin/stocks?days=30',
+    );
+  });
+
   it('builds journal outcome query params', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ rows: [], summary: {}, horizon: 20 }),

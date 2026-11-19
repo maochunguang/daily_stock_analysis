@@ -171,7 +171,7 @@ export const personalApi = {
       body: JSON.stringify(body),
     }),
   marginStocks: (days = 30) =>
-    request<{ stocks: MarginStockEntry[] }>(`/market/stocks?days=${days}`),
+    request<{ stocks: MarginStockEntry[] }>(`/margin/stocks?days=${days}`),
   brokerImport: (body: PersonalBrokerImportRequest) =>
     request<BrokerImportSummary>('/broker/import', {
       method: 'POST',
