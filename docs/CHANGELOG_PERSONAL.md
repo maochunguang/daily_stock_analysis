@@ -1692,7 +1692,7 @@ cd apps/dsa-web && npm run build
 ```
 
 ### Verification
-- `pytest personal/tests`: 162 passed (includes real OCR smoke).
+- `pytest personal/tests`: 163 passed (includes real OCR smoke).
 - New backend tests cover fee-aware sizing, min commission, lot rounding,
   existing-position cap, sell availability, preview no-write, concentration,
   Beta/vol, D+N bar selection, buy/sell MAE/MFE, splits, pending/unavailable,
@@ -1713,6 +1713,11 @@ cd apps/dsa-web && npm run build
 - Screenshot snapshots are separate from statement positions; no overwrite.
 - Per-stock margin sync covers `watchlist ∪ broker_position ∪ latest account
   snapshot`, so screenshot-only holdings also get margin detail.
+- Personal settings now read Docker/WebUI `ENV_FILE` and fall back to upstream
+  `STOCK_LIST` when `PERSONAL_STOCK_LIST` is empty. Daily bars/status/adjust
+  sync covers watchlist ∪ broker positions ∪ latest snapshot holdings, so
+  screenshot-only holdings get local bars for risk/outcomes without a manual
+  code list.
 
 ### Next
 - Manual journal entry/edit and outcome mistake tags.
@@ -1782,7 +1787,7 @@ cd apps/dsa-web && npm run build
   classifier), so initialization is offline.
 - API E2E with the same image: parse 200, confirm 200, snapshot positions 2;
   resulting portfolio risk top1 12.96%, cash 10%.
-- `pytest`: 162 passed; `npm run build` passes; changed-file ESLint passes;
+- `pytest`: 163 passed; `npm run build` passes; changed-file ESLint passes;
   manual-entry Vitest passes.
 - Full frontend suite has the same two pre-existing unrelated failures noted in
   CHG-0028.

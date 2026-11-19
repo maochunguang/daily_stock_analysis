@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 162 |
+| `test_count` | 163 |
 | `last_updated` | 2026-11-19 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |

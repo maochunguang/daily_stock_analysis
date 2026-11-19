@@ -130,6 +130,14 @@ def get_settings() -> Settings:
 
     _load_env_file(ROOT / "config" / "personal.env")
     _load_env_file(ROOT / ".env")
+    # Docker/WebUI writes runtime settings (e.g. STOCK_LIST) to ENV_FILE.
+    # Load it last so explicit personal.env/.env values still win.
+    runtime_env = _env("ENV_FILE")
+    if runtime_env:
+        runtime_path = Path(runtime_env).expanduser()
+        _load_env_file(
+            runtime_path if runtime_path.is_absolute() else (ROOT / runtime_path).resolve()
+        )
 
     allowlist = {
         item.strip()
@@ -158,7 +166,9 @@ def get_settings() -> Settings:
         tushare_token=_env("TUSHARE_TOKEN"),
         stock_list=tuple(
             item.strip()
-            for item in _env("PERSONAL_STOCK_LIST").replace(";", ",").split(",")
+            for item in (
+                _env("PERSONAL_STOCK_LIST") or _env("STOCK_LIST")
+            ).replace(";", ",").split(",")
             if item.strip()
         ),
         data_source_priority=priority,

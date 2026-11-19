@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from ..config import Settings
+from .normalize import normalize_code
 from .market import (
     last_completed_trade_date,
     sync_bond_yield,
@@ -252,6 +253,23 @@ def _run_dataset(
 
     if dataset not in ("bars", "adjust", "calendar", "status"):
         raise ValueError(f"unknown dataset {dataset!r}")
+    if dataset in ("bars", "adjust", "status"):
+        # Personal daily bars must cover actual holdings, not just the manual
+        # watchlist. Skip non-A-share codes that upstream's STOCK_LIST may hold.
+        tracked = list(
+            dict.fromkeys(
+                [
+                    *codes,
+                    *store.broker_position_codes(),
+                    *store.account_position_codes(),
+                ]
+            )
+        )
+        codes = [
+            item
+            for item in tracked
+            if normalize_code(item).endswith((".SH", ".SZ", ".BJ"))
+        ]
     if not codes and dataset != "calendar":
         log("[schedule] no stock list configured; skipping")
         return 0
