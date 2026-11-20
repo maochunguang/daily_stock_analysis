@@ -79,3 +79,17 @@ def weekday_dates(start: date, end: date) -> list[date]:
             dates.append(current)
         current += timedelta(days=1)
     return dates
+
+
+def date_chunks(start, end, chunk_days):
+    """Split a long date range into ascending calendar-day chunks."""
+
+    from datetime import timedelta
+
+    chunks = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=chunk_days - 1), end)
+        chunks.append((cursor, chunk_end))
+        cursor = chunk_end + timedelta(days=1)
+    return chunks

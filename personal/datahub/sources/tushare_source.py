@@ -157,6 +157,132 @@ class TushareSource:
             if str(row.get("is_open")) == "1"
         ]
 
+    def fetch_index_dailybasic(
+        self, code: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Raw ``index_dailybasic`` rows (needs a 2000-point token)."""
+
+        return self._call(
+            "index_dailybasic",
+            {
+                "ts_code": normalize_code(code),
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+            "ts_code,trade_date,close,pe,pe_ttm",
+        )
+
+    def fetch_margin_summary(self, start: date, end: date) -> list[dict[str, Any]]:
+        """Raw ``margin`` rows (exchange-level margin summary, yuan)."""
+
+        return self._call(
+            "margin",
+            {
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+        )
+
+    def fetch_margin_detail(
+        self, code: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Raw ``margin_detail`` rows for one instrument (yuan)."""
+
+        return self._call(
+            "margin_detail",
+            {
+                "ts_code": normalize_code(code),
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+        )
+
+    def fetch_fut_mapping(
+        self, continuous_code: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Raw ``fut_mapping`` rows (main-contract map for e.g. ``IF.CFX``)."""
+
+        return self._call(
+            "fut_mapping",
+            {
+                "ts_code": continuous_code,
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+        )
+
+    def fetch_fut_daily(
+        self, code: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Raw ``fut_daily`` rows for one contract (CFFEX: ``*.CFX``)."""
+
+        return self._call(
+            "fut_daily",
+            {
+                "ts_code": code,
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+        )
+
+    def fetch_index_daily(
+        self, code: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        """Raw ``index_daily`` rows (spot index bars for basis math)."""
+
+        return self._call(
+            "index_daily",
+            {
+                "ts_code": normalize_code(code),
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+            "ts_code,trade_date,close,pre_close,amount",
+        )
+
+    def fetch_daily_by_date(self, trade_date: date) -> list[dict[str, Any]]:
+        """All stocks for one session via ``daily`` (~5.5k rows)."""
+
+        return self._call(
+            "daily",
+            {"trade_date": trade_date.strftime("%Y%m%d")},
+            "ts_code,trade_date,close,pre_close,change,vol,amount",
+        )
+
+    def fetch_stock_name_map(self) -> dict[str, str]:
+        """``ts_code -> name`` for the whole market via ``stock_basic``."""
+
+        rows = self._call("stock_basic", {}, "ts_code,name")
+        return {
+            str(row.get("ts_code")): str(row.get("name") or "").strip()
+            for row in rows
+        }
+
+    def fetch_share_float(self, start: date, end: date) -> list[dict[str, Any]]:
+        """Raw ``share_float`` rows in a float-date window (shares in 股)."""
+
+        return self._call(
+            "share_float",
+            {
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+            },
+        )
+
+    def fetch_daily_close_map(self, trade_date: date) -> dict[str, float]:
+        """``code -> close`` for one session via ``daily`` (whole market)."""
+
+        rows = self._call(
+            "daily",
+            {"trade_date": trade_date.strftime("%Y%m%d")},
+            "ts_code,close",
+        )
+        return {
+            str(row.get("ts_code")): float(row["close"])
+            for row in rows
+            if row.get("close") is not None
+        }
+
     def fetch_instrument_name(self, code: str) -> str:
         full = normalize_code(code)
         body, suffix = full.split(".")

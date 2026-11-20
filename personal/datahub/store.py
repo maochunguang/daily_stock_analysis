@@ -1126,6 +1126,26 @@ class PersonalStore:
             for row in self._conn.execute(sql, params).fetchall()
         ]
 
+    def delete_index_valuations(
+        self,
+        code: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> int:
+        """Delete rows matching code/source; returns the removed count."""
+
+        conditions: list[str] = []
+        params: list[Any] = []
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._transaction() as conn:
+            cursor = conn.execute("DELETE FROM index_valuation" + where, params)
+            return max(0, cursor.rowcount)
+
     def upsert_margin_balance(self, rows: Iterable[MarginBalance]) -> int:
         payloads = [row.to_row() for row in rows]
         if not payloads:
@@ -2187,7 +2207,12 @@ class PersonalStore:
                   (trade_date, code, name, rzye, rzye_buy, rqye, source, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_date, code) DO UPDATE SET
-                  name=excluded.name,
+                  -- Tushare detail rows carry no name; never blank a stored one
+                  name=CASE
+                    WHEN excluded.name IS NULL OR excluded.name = ''
+                    THEN margin_stock.name
+                    ELSE excluded.name
+                  END,
                   rzye=excluded.rzye,
                   rzye_buy=excluded.rzye_buy,
                   rqye=excluded.rqye,
@@ -2212,6 +2237,18 @@ class PersonalStore:
                 "SELECT DISTINCT code FROM margin_stock ORDER BY code"
             ).fetchall()
         ]
+
+    def margin_stock_names(self) -> dict[str, str]:
+        """Latest non-empty instrument name per stored margin code."""
+
+        out: dict[str, str] = {}
+        for row in self._conn.execute(
+            "SELECT code, name FROM margin_stock"
+            " WHERE name IS NOT NULL AND name <> ''"
+            " ORDER BY trade_date ASC"
+        ).fetchall():
+            out[row["code"]] = row["name"]
+        return out
 
     def get_margin_stock(
         self,

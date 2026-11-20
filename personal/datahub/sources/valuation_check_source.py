@@ -1,13 +1,14 @@
-"""Official current index PE for cross-checking the Legulegu history.
+"""Official current index PE for cross-checking the stored valuation history.
 
-Legulegu provides the long weekly history needed for percentiles.  The index
-providers publish an independent current value that can validate the *level*:
+The index providers publish an independent current value that can validate the
+*level* of whichever series is stored (Tushare ``index_dailybasic`` daily, or
+the weekly Legulegu fallback):
 
 - 中证指数 ``indicator/{code}indicator.xls``: ``市盈率1（总股本）`` is the
-  total-share PE1; it is compared with Legulegu's static ``addLyrPe`` because
-  both use the total-share base.
+  total-share PE1; it is compared with the stored static PE because both use
+  the total-share base.
 - 国证指数 ``index_all_cni``: ``PE滚动`` is the rolling/TTM PE and matches
-  Legulegu's ``addTtmPe``.
+  the stored TTM series.
 
 The official endpoints only expose the latest value (CSI: recent 20 sessions),
 so they are used for a level cross-check, never for the 1/3/5-year percentile
@@ -38,7 +39,7 @@ OFFICIAL_VALUATION_TARGETS: dict[str, dict[str, str]] = {
         "official_field": "市盈率1",
         "official_metric": "中证 PE1（总股本）",
         "legu_metric": "pe_static",
-        "legu_label": "乐咕静态 PE",
+        "legu_label": "静态 PE（总股本）",
     },
     "000688.SH": {
         "source": "csindex",
@@ -46,7 +47,7 @@ OFFICIAL_VALUATION_TARGETS: dict[str, dict[str, str]] = {
         "official_field": "市盈率1",
         "official_metric": "中证 PE1（总股本）",
         "legu_metric": "pe_static",
-        "legu_label": "乐咕静态 PE",
+        "legu_label": "静态 PE（总股本）",
     },
     "399006.SZ": {
         "source": "cni",
@@ -54,7 +55,7 @@ OFFICIAL_VALUATION_TARGETS: dict[str, dict[str, str]] = {
         "official_field": "PE滚动",
         "official_metric": "国证 PE滚动（TTM）",
         "legu_metric": "pe_ttm",
-        "legu_label": "乐咕 PE-TTM",
+        "legu_label": "PE-TTM（滚动）",
     },
     "399673.SZ": {
         "source": "cni",
@@ -62,7 +63,7 @@ OFFICIAL_VALUATION_TARGETS: dict[str, dict[str, str]] = {
         "official_field": "PE滚动",
         "official_metric": "国证 PE滚动（TTM）",
         "legu_metric": "pe_ttm",
-        "legu_label": "乐咕 PE-TTM",
+        "legu_label": "PE-TTM（滚动）",
     },
 }
 

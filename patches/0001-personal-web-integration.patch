@@ -1545,10 +1545,10 @@ index 0000000..ff7ebf0
 +};
 diff --git a/apps/dsa-web/src/components/personal/ReviewCards.tsx b/apps/dsa-web/src/components/personal/ReviewCards.tsx
 new file mode 100644
-index 0000000..630828d
+index 0000000..7497cd6
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/ReviewCards.tsx
-@@ -0,0 +1,1796 @@
+@@ -0,0 +1,1819 @@
 +import type React from 'react';
 +import { Landmark, RefreshCw, ShieldCheck, TrendingDown } from 'lucide-react';
 +import {
@@ -1691,8 +1691,11 @@ index 0000000..630828d
 +    valuation5y: '近5年',
 +    valuationSamples: '样本',
 +    valuationUpdated: '更新',
++    valuationDay: '日',
 +    valuationWeek: '周',
 +    valuationMonth: '月',
++    valuationSourceTushare: 'Tushare 日频',
++    valuationSourceLegu: '乐咕周频',
 +    valuationLow: '低估区',
 +    valuationLowMid: '偏低',
 +    valuationMid: '中性',
@@ -1705,7 +1708,7 @@ index 0000000..630828d
 +    valuationCheck: '交叉校验',
 +    valuationChecking: '校验中…',
 +    valuationCheckTitle: '官方交叉校验',
-+    valuationCheckLegu: '乐咕值',
++    valuationCheckLegu: '本地值',
 +    valuationCheckOfficial: '官方值',
 +    valuationCheckDiff: '偏差',
 +    valuationCheckStatus: '状态',
@@ -1719,7 +1722,7 @@ index 0000000..630828d
 +      '官方源仅提供当前值（中证近 20 日、国证最新），用于水平校验，不参与历史分位；偏差不等于数据错误。',
 +    valuationHighRatio: '最高',
 +    valuationHint:
-+      '分位 = 当前 PE-TTM 在窗口内周频样本中的百分位（排名）；括号内为“当前 PE ÷ 该窗口最高 PE”。分位低只代表排名低，例如 2% 分位表示约 2% 的样本低于当前值，不等于当前值是最高的 2%。PE-TTM 为加权滚动市盈率，来源乐咕乐股；仅反映历史位置，不构成买卖建议。',
++      '数据源：Tushare 日频（需 2000 积分 token），未配置或失败时自动降级为乐咕周频。分位 = 当前 PE-TTM 在窗口内样本中的百分位（排名）；括号内为“当前 PE ÷ 该窗口最高 PE”。分位低只代表排名低，例如 2% 分位表示约 2% 的样本低于当前值，不等于当前值是最高的 2%。PE-TTM 为加权滚动市盈率；仅反映历史位置，不构成买卖建议。',
 +    healthTitle: '数据体检',
 +    healthScore: '健康分',
 +    healthOk: '正常',
@@ -1839,8 +1842,11 @@ index 0000000..630828d
 +    valuation5y: '5Y',
 +    valuationSamples: 'Samples',
 +    valuationUpdated: 'Updated',
++    valuationDay: 'd',
 +    valuationWeek: 'w',
 +    valuationMonth: 'm',
++    valuationSourceTushare: 'Tushare daily',
++    valuationSourceLegu: 'Legulegu weekly',
 +    valuationLow: 'Cheap',
 +    valuationLowMid: 'Low',
 +    valuationMid: 'Neutral',
@@ -1853,7 +1859,7 @@ index 0000000..630828d
 +    valuationCheck: 'Cross-check',
 +    valuationChecking: 'Checking…',
 +    valuationCheckTitle: 'Official cross-check',
-+    valuationCheckLegu: 'Legu',
++    valuationCheckLegu: 'Local',
 +    valuationCheckOfficial: 'Official',
 +    valuationCheckDiff: 'Diff',
 +    valuationCheckStatus: 'Status',
@@ -1867,7 +1873,7 @@ index 0000000..630828d
 +      'Official sources publish only the current value (CSI: last 20 sessions; CNI: latest). Used for level checks, not percentile history; a difference is not automatically a data error.',
 +    valuationHighRatio: 'of high',
 +    valuationHint:
-+      'Percentile = rank of the current PE-TTM among weekly samples in the window; the parenthesised value is current PE ÷ that window’s highest PE. A low percentile means a low rank, not that PE is that percentage of the high (2% percentile ≠ 2% of the high). PE-TTM is the cap-weighted rolling PE from Legulegu; historical position only — not investment advice.',
++      'Source: Tushare daily index valuation (needs a 2000-point token); falls back to the weekly Legulegu feed when unconfigured or failing. Percentile = rank of the current PE-TTM among window samples; the parenthesised value is current PE ÷ that window’s highest PE. A low percentile means a low rank, not that PE is that percentage of the high (2% percentile ≠ 2% of the high). PE-TTM is the cap-weighted rolling PE; historical position only — not investment advice.',
 +    healthTitle: 'Data health check',
 +    healthScore: 'Health',
 +    healthOk: 'OK',
@@ -2371,7 +2377,19 @@ index 0000000..630828d
 +    ['5y', copy.valuation5y],
 +  ] as const;
 +  const freqSuffix = (freq: string) =>
-+    freq === 'weekly' ? copy.valuationWeek : freq === 'monthly' ? copy.valuationMonth : '';
++    freq === 'daily'
++      ? copy.valuationDay
++      : freq === 'weekly'
++        ? copy.valuationWeek
++        : freq === 'monthly'
++          ? copy.valuationMonth
++          : '';
++  const sourceLabel =
++    valuation.source === 'tushare'
++      ? copy.valuationSourceTushare
++      : valuation.source === 'legulegu'
++        ? copy.valuationSourceLegu
++        : valuation.source || '';
 +  const checkBadge = (status: string) => {
 +    if (status === 'ok') return { variant: 'success' as const, label: copy.valuationCheckOk };
 +    if (status === 'warn') return { variant: 'warning' as const, label: copy.valuationCheckWarn };
@@ -2384,6 +2402,11 @@ index 0000000..630828d
 +      <div className="flex flex-wrap items-center justify-between gap-3">
 +        <p className="text-xs text-secondary-text">
 +          {valuation.as_of ? `${copy.valuationUpdated} ${valuation.as_of}` : ''}
++          {sourceLabel ? (
++            <span className="ml-2 rounded-full border border-border/60 bg-hover/40 px-1.5 py-0.5 text-[10px] text-muted-text">
++              {sourceLabel}
++            </span>
++          ) : null}
 +        </p>
 +        <div className="flex shrink-0 items-center gap-2">
 +          <button
@@ -4922,10 +4945,10 @@ index 0000000..d4cbd80
 +};
 diff --git a/apps/dsa-web/src/components/personal/__tests__/IndexValuationCard.test.tsx b/apps/dsa-web/src/components/personal/__tests__/IndexValuationCard.test.tsx
 new file mode 100644
-index 0000000..21203a1
+index 0000000..cb7081b
 --- /dev/null
 +++ b/apps/dsa-web/src/components/personal/__tests__/IndexValuationCard.test.tsx
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,188 @@
 +import { fireEvent, render, screen } from '@testing-library/react';
 +import { describe, expect, it, vi } from 'vitest';
 +import {
@@ -4963,6 +4986,7 @@ index 0000000..21203a1
 +      code: '000300.SH',
 +      name: '沪深300',
 +      available: true,
++      source: 'legulegu',
 +      as_of: '2026-11-19',
 +      stale_days: 0,
 +      sample_freq: 'weekly',
@@ -4987,7 +5011,7 @@ index 0000000..21203a1
 +const check: PersonalIndexValuationCheckResponse = {
 +  checked_at: '2026-11-19T20:00:00',
 +  note: '官方源只提供当前值；口径差异不等于数据错误。',
-+  warnings: ['科创50: 乐咕 95.85 vs 官方 85.57，偏差 +12.0%'],
++  warnings: ['科创50: 本地 95.85 vs 官方 85.57，偏差 +12.0%'],
 +  rows: [
 +    {
 +      code: '000300.SH',
@@ -5000,7 +5024,7 @@ index 0000000..21203a1
 +      official_source: '中证指数',
 +      official_metric: '中证 PE1（总股本）',
 +      legu_metric: 'pe_static',
-+      legu_label: '乐咕静态 PE',
++      legu_label: '静态 PE（总股本）',
 +      diff_pct: -3.8,
 +    },
 +    {
@@ -5014,7 +5038,7 @@ index 0000000..21203a1
 +      official_source: '中证指数',
 +      official_metric: '中证 PE1（总股本）',
 +      legu_metric: 'pe_static',
-+      legu_label: '乐咕静态 PE',
++      legu_label: '静态 PE（总股本）',
 +      diff_pct: 12,
 +    },
 +  ],
@@ -5079,7 +5103,7 @@ index 0000000..21203a1
 +    expect(screen.getByText('官方交叉校验')).toBeTruthy();
 +    expect(screen.getByText('-3.8%')).toBeTruthy();
 +    expect(screen.getByText('口径差异')).toBeTruthy();
-+    expect(screen.getByText(/科创50: 乐咕 95.85/)).toBeTruthy();
++    expect(screen.getByText(/科创50: 本地 95.85/)).toBeTruthy();
 +
 +    fireEvent.click(screen.getByRole('button', { name: '交叉校验' }));
 +    expect(onCheckValuation).toHaveBeenCalledTimes(1);
@@ -5088,6 +5112,29 @@ index 0000000..21203a1
 +  it('shows an explicit empty state before the dataset is synced', () => {
 +    render(<IndexValuationCard {...baseProps} valuation={null} />);
 +    expect(screen.getByText(/暂无估值数据/)).toBeTruthy();
++  });
++
++  it('adapts the sample suffix and source chip to the daily Tushare feed', () => {
++    const daily: PersonalIndexValuationResponse = {
++      ...valuation,
++      source: 'tushare',
++      rows: [
++        {
++          ...valuation.rows[0],
++          source: 'tushare',
++          sample_freq: 'daily' as const,
++          pe_ttm_equal: null,
++          windows: {
++            '1y': windowSummary('1y', 244, 10.2),
++            '3y': windowSummary('3y', 732, 22.4),
++            '5y': windowSummary('5y', 1215, 31.7),
++          },
++        },
++      ],
++    };
++    render(<IndexValuationCard {...baseProps} valuation={daily} />);
++    expect(screen.getByText('Tushare 日频')).toBeTruthy();
++    expect(screen.getByText('244日')).toBeTruthy();
 +  });
 +});
 diff --git a/apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx b/apps/dsa-web/src/components/personal/__tests__/TonghuashunImport.test.tsx
@@ -5188,44 +5235,6 @@ index 0000000..271e4fd
 +  }
 +  return btoa(binary);
 +}
-diff --git a/apps/dsa-web/src/i18n/uiText.ts b/apps/dsa-web/src/i18n/uiText.ts
-index 7a43dc5..d4d53e6 100644
---- a/apps/dsa-web/src/i18n/uiText.ts
-+++ b/apps/dsa-web/src/i18n/uiText.ts
-@@ -59,6 +59,7 @@ const zh = {
-   'layout.nav.decisionSignals': 'AI 建议',
-   'layout.nav.dataCenter': '数据中心',
-   'layout.nav.home': '首页',
-+  'layout.nav.personal': '个人扩展',
-   'layout.nav.portfolio': '持仓',
-   'layout.nav.settings': '设置',
-   'layout.nav.screening': '选股',
-@@ -70,6 +71,8 @@ const zh = {
-   'layout.route.alerts.title': '告警',
-   'layout.route.backtest.description': '回测任务与结果浏览',
-   'layout.route.backtest.title': '回测',
-+  'layout.route.personal.description': '个人数据质量、成本回测、插件与 QMT',
-+  'layout.route.personal.title': '个人扩展',
-   'layout.route.chat.description': '多轮策略问答与历史会话管理',
-   'layout.route.chat.title': '问股',
-   'layout.route.decisionSignals.description': 'AI 建议、风险与观察条件',
-@@ -1063,6 +1066,7 @@ const en: Record<UiTextKey, string> = {
-   'layout.nav.decisionSignals': 'AI signals',
-   'layout.nav.dataCenter': 'Data center',
-   'layout.nav.home': 'Home',
-+  'layout.nav.personal': 'Personal',
-   'layout.nav.portfolio': 'Portfolio',
-   'layout.nav.settings': 'Settings',
-   'layout.nav.screening': 'Screening',
-@@ -1074,6 +1078,8 @@ const en: Record<UiTextKey, string> = {
-   'layout.route.alerts.title': 'Alerts',
-   'layout.route.backtest.description': 'Backtest jobs and result review',
-   'layout.route.backtest.title': 'Backtest',
-+  'layout.route.personal.description': 'Personal data quality, cost-aware backtests, plugins and QMT',
-+  'layout.route.personal.title': 'Personal extension',
-   'layout.route.chat.description': 'Multi-turn strategy Q&A and sessions',
-   'layout.route.chat.title': 'Ask',
-   'layout.route.decisionSignals.description': 'AI recommendations, risks, and watch conditions',
 diff --git a/apps/dsa-web/src/pages/PersonalPage.tsx b/apps/dsa-web/src/pages/PersonalPage.tsx
 new file mode 100644
 index 0000000..d8fa0c0
@@ -6491,10 +6500,10 @@ index 0000000..d8fa0c0
 +export default PersonalPage;
 diff --git a/apps/dsa-web/src/types/personal.ts b/apps/dsa-web/src/types/personal.ts
 new file mode 100644
-index 0000000..b02ceec
+index 0000000..4fc802b
 --- /dev/null
 +++ b/apps/dsa-web/src/types/personal.ts
-@@ -0,0 +1,772 @@
+@@ -0,0 +1,773 @@
 +export interface PersonalCoverageRow {
 +  code: string;
 +  source: string;
@@ -6790,9 +6799,10 @@ index 0000000..b02ceec
 +  code: string;
 +  name: string;
 +  available: boolean;
++  source: string | null;
 +  as_of: string | null;
 +  stale_days: number | null;
-+  sample_freq: 'weekly' | 'monthly' | 'unknown';
++  sample_freq: 'daily' | 'weekly' | 'monthly' | 'unknown';
 +  pe_ttm: number | null;
 +  pe_ttm_equal: number | null;
 +  pe_static: number | null;
@@ -6803,7 +6813,7 @@ index 0000000..b02ceec
 +
 +export interface PersonalIndexValuationResponse {
 +  rows: PersonalIndexValuationRow[];
-+  source: string;
++  source: string | null;
 +  as_of: string | null;
 +  windows: string[];
 +  available: boolean;

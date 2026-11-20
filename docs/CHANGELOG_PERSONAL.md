@@ -2029,3 +2029,352 @@ grep -n "Index valuation (RM-46)" docs/AI_CONTEXT.md
 
 ### Next
 - Commit/push and redeploy remain separate user decisions.
+
+## [2026-11-20] CHG-0033 — Valuation switches to daily Tushare with Legulegu fallback
+
+### Metadata
+- id: CHG-0033
+- date: 2026-11-20
+- status: done
+- area: datahub | analytics | web | docs
+- related: RM-46, CHG-0030
+
+### Summary
+The user upgraded the Tushare account to 2000 points, unlocking
+`index_dailybasic`. The `valuation` dataset now prefers the **daily** Tushare
+series for the four broad indexes and falls back to the weekly Legulegu feed
+per index when the token is missing, lacks permission, or fails. Percentile
+windows therefore hold ~244/727/1212 daily samples (1y/3y/5y) instead of 52
+weekly ones, and the deep-review card adapts: a source chip
+(`Tushare 日频` / `乐咕周频`) and sample suffix (`日`/`周`/`月`) follow the
+detected source. The analytics layer picks one storage source per index by
+newest trade date (row count tie-break) and never mixes frequencies inside a
+window. A fully successful Tushare sync purges the superseded weekly Legulegu
+rows. Requests are paced: ~380-day chunks with ≥0.5s spacing (~20 calls per
+run, well under the 2000-point interface limit) and the existing
+minute/hourly rate-limit handling. The cross-check now labels the compared
+series generically (本地静态/TTM) because it works against whichever source is
+stored; measured with Tushare daily data: 沪深300 +1.4% (一致), 创业板50 +0.9%
+(一致), 创业板指 +11.6% (口径差异), 科创50 static +127% (需复核 — Tushare's
+static profit base diverges on STAR constituents; the card still shows PE-TTM).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/tushare_source.py` | Public `fetch_index_dailybasic` (ts_code/date range, minimal fields) |
+| `personal/datahub/sources/valuation_tushare_source.py` | New: chunked daily fetch, YYYYMMDD parsing, 200-row floor, `is_daily` flag |
+| `personal/datahub/market.py` | `sync_index_valuation` Tushare-first with per-index Legulegu fallback (auto mode only), daily/weekly floors, legulegu purge |
+| `personal/datahub/store.py` | `delete_index_valuations(code, source)` |
+| `personal/analytics/index_valuation.py` | `_preferred_source` auto-selection, `daily` sample frequency, per-row `source`, source-neutral cross-check wording |
+| `personal/datahub/sources/valuation_check_source.py` | Source-neutral `legu_label` (静态 PE（总股本）/PE-TTM（滚动）), docstring |
+| `apps/dsa-web/src/components/personal/ReviewCards.tsx` | `日` suffix + source chip + updated hint (Tushare daily primary) |
+| `apps/dsa-web/src/types/personal.ts` | Row `source`, `sample_freq` gains `daily`, response `source` nullable |
+| `personal/tests/test_index_valuation.py` | Tushare parse/chunk/fallback/purge/detection/cross-check tests |
+| `apps/dsa-web/src/components/personal/__tests__/IndexValuationCard.test.tsx` | Daily suffix + source chip test; fixture updates |
+| `docs/USER_GUIDE_PERSONAL.md`, `docs/AI_CONTEXT.md`, `docs/ROADMAP_PERSONAL.md`, `docs/PERSONAL_EXTENSION_ARCHITECTURE.md`, `docs/DOCKER_PERSONAL.md` | Daily-first semantics, fallback rule, pacing, methodology notes |
+
+### Commands
+```bash
+export TUSHARE_TOKEN=...  # 2000-point token in config/personal.env (gitignored)
+python -m personal.cli.main sync --dataset valuation
+cd apps/dsa-web && npm run build
+```
+
+### Verification
+- `pytest personal/tests`: **185 passed** (was 178; 7 new tests).
+- `compileall personal` passes.
+- Targeted Vitest 10 passed; full Vitest **1,392 passed**, 2 skipped, and the
+  only 2 failures are the pre-existing unrelated ones
+  (`DesktopUpdateIndicator` title governance, `DecisionSignalsPage` timeline
+  refresh).
+- Real Tushare fetch (2000-point token) into a temp DB: 4,964 daily rows,
+  range 2021-10-12 → 2026-11-20, `source=tushare`, `sample_freq=daily`;
+  percentiles 1y/3y/5y = 沪深300 17.7/64.0/76.0% (n=243/727/1212), 创业板指
+  0.4/7.2/4.3%, 创业板50 0.4/0.1/0.1%, 科创50 2.5/42.0/65.2%.
+- Real cross-check on 2026-11-20 (Tushare source): 沪深300 静态 13.97 vs 中证
+  PE1 13.78 (+1.4%, 一致); 创业板50 20.14 vs 国证 19.95 (+0.9%, 一致);
+  创业板指 25.08 vs 国证 22.47 (+11.6%, 口径差异); 科创50 静态 187.76 vs 中证
+  82.73 (+127%, 需复核 — methodology, card main metric stays PE-TTM).
+- NAS deployment (linux/amd64 image, compose recreate): valuation sync
+  reported 1,823 net rows (4,964 daily Tushare rows inserted minus 3,141
+  superseded weekly Legulegu rows), `GET /personal-api/api/market/index-valuation`
+  returns `source=tushare`, `sample_freq=daily`, as_of 2026-11-20, percentiles
+  matching the local run; 科创50's 1y window now reaches the October spike
+  (window high 263.9) that the weekly sampling missed.
+- NAS config fix: `TUSHARE_TOKEN=` was left empty in the NAS `.env`, and the
+  compose line `TUSHARE_TOKEN=${TUSHARE_TOKEN}` injected that empty string into
+  `stock-personal-sync`, shadowing the real token in `data/runtime.env`
+  (`_load_env_file` never overrides existing env keys). Removed the line from
+  the NAS compose (backup `docker-compose.yml.bak-20261120`); both containers
+  now load the token via `ENV_FILE`. Pitfall documented in
+  `docs/DOCKER_PERSONAL.md`.
+
+### Notes / Migration
+- Requires `TUSHARE_TOKEN` with 2000 points for the daily series; without it
+  the behaviour is unchanged (weekly Legulegu) — no config migration needed.
+- `_preferred_source` is read-time only; existing weekly rows keep working and
+  are replaced/purged by the next successful Tushare sync.
+- The daily fetch runs ~20 paced requests per sync round (06:00/12:00/18:00),
+  far below the 2000-point per-interface limit; `index_dailybasic` publishes
+  the current day around the evening close, so the 18:00 round already carries
+  same-day PE.
+- Tushare PE methodology differs from CSI/CNI on some indexes; the cross-check
+  surfaces this as `口径差异`/`需复核` instead of silently accepting it.
+
+### Next
+- Candidate follow-ups on the 2000-point tier: `margin`/`margin_detail` as a
+  fallback for exchange margin, `fut_daily` for CFFEX contracts, `share_float`
+  for restricted-release; keep exchange/official sources primary where they
+  already work.
+
+## [2026-11-20] CHG-0034 — Tushare sources for futures/margin/release + backfill path
+
+### Metadata
+- id: CHG-0034
+- date: 2026-11-20
+- status: done
+- area: datahub | cli | docs
+- related: CHG-0033, RM-42, RM-05
+
+### Summary
+With the 2000-point Tushare tier, three more deep-review datasets gained a
+Tushare-backed source beside the official/exchange adapters:
+
+- **Index futures (primary)**: official CFFEX data rebuilt from
+  `fut_mapping` (continuous → main contract per day) + `fut_daily` (per
+  contract) + `index_daily` spot closes. `oi_chg` is recomputed across the
+  assembled continuous series so contract rolls do not fake a jump. The
+  AkShare/Sina adapter remains the fallback.
+- **Margin balance (fallback + forced backfill)**: `margin` provides
+  exchange summaries including 融资买入额 (`rzmre`), so 沪市/深市/总计 market
+  rows are fully equivalent to the exchange official source; `margin_detail`
+  is queried per code, making long-range per-stock history cost one request
+  per code instead of one per day. The exchange scrape stays primary (it also
+  yields board splits); Tushare takes over when the scrape returns nothing or
+  when `sync --dataset margin --via-tushare` is set (no 120-day cap). Tushare
+  detail rows carry no instrument name and the store now guards upserts so a
+  blank name never overwrites a stored one.
+- **Release calendar (fallback)**: `share_float` aggregates per float-date
+  (count, shares in 股 matching the Eastmoney unit); market value is estimated
+  from latest closes and omitted entirely for any day with a missing price
+  rather than showing a partial estimate. Eastmoney (official 实际解禁市值)
+  stays primary.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/tushare_source.py` | Raw adapters: `fetch_margin_summary`, `fetch_margin_detail`, `fetch_fut_mapping`, `fetch_fut_daily`, `fetch_index_daily`, `fetch_share_float`, `fetch_daily_close_map` |
+| `personal/datahub/sources/margin_tushare_source.py` | New: summary parser (SSE/SZSE→沪市/深市/总计, BSE excluded) + per-code detail parser + throttled client |
+| `personal/datahub/sources/futures_tushare_source.py` | New: mapping→contract→daily assembly, continuous `oi_chg`, basis math |
+| `personal/datahub/sources/release_tushare_source.py` | New: float-date aggregation + latest-close MV estimate |
+| `personal/datahub/market.py` | `sync_index_futures` Tushare primary; `sync_margin_balance` fallback + `prefer_tushare` (cap skip); `sync_restricted_release` fallback |
+| `personal/datahub/store.py` | `margin_stock` upsert name guard |
+| `personal/cli/main.py` | `sync --via-tushare` flag |
+| `personal/tests/test_market.py` | Parser/source/fallback/CLI/name-guard tests |
+| docs | USER_GUIDE §5/§7.6/§7.7, AI_CONTEXT, DOCKER_PERSONAL, ROADMAP |
+
+### Commands
+```bash
+python -m personal.cli.main sync --dataset futures --start 2025-05-01   # Tushare primary
+python -m personal.cli.main sync --dataset margin --via-tushare --start 2025-05-01
+python -m personal.cli.main sync --dataset valuation
+```
+
+### Verification
+- `pytest personal/tests`: **196 passed**; `compileall` passes.
+- Real fetches (2000-point token, temp DB):
+  - futures 2026-05-01→2026-11-19: 540 rows in ~7.5s (~25 requests), basis_pct
+    2026-11-19: IF -1.48%, IH -1.52%, IM -1.05% (贴水), `source=tushare_futures`.
+  - margin via-tushare 2026-09-01→2026-11-19 with 3 codes: 312 rows in ~1.3s
+    (56 trading days × 3 market rows + 144 stock rows); 600519.SH 2026-11-19
+    rzye 14.49亿 matches the exchange-detail value; 总计 = 沪市 + 深市 exact.
+  - release December window: daily aggregates with MV estimates (close map
+    complete); unit check confirmed Eastmoney 实际解禁数量 is also 股.
+- Parser tests cover BSE exclusion, 总计 summation, rzmre mapping, roll-aware
+  `oi_chg`, missing-close MV omission, CLI flag routing, and the name guard.
+
+### Notes / Migration
+- `fut_mapping`/`fut_daily` row caps at 2000 points are far above the per-run
+  needs (272-day mapping ≈ 272 rows; contracts live ≤ ~8 months).
+- Roll-day `oi_chg`: NAS validate flagged `futures/oi_chg_out_of_range` on
+  contract-switch days (e.g. 2026-09-18) because OI levels of two different
+  contracts are not comparable during migration. The Tushare source now sets
+  `oi_chg=None` on the first day of a new main contract and the futures
+  history was re-backfilled. Remaining warnings (e.g. IC 2025-12-18,
+  持仓 -66%) are **genuine same-contract OI decay during roll season** — the
+  expiring contract bleeds OI to the next contract for a few days *before*
+  the volume-based mapping switches, so the continuous OI dip is real and
+  informative; these validate warnings are expected artifacts of roll weeks,
+  not data errors.
+- Pre-existing 2026-11-19 `sector/amount_vs_turnover` error (66% vs the
+  85%-115% band) is unrelated to this change: the THS snapshot stored that
+  day is partial and snapshot-only sources cannot be re-fetched. The 2026-11-20
+  snapshot ratio is 100.5%, so the pipeline is healthy; the stale error ages
+  out of validate's window.
+- Tushare margin summary rows use the exchange-official totals (including
+  ETF/bond instruments) exactly like the scraped summary; board rows stay
+  exchange-only, so mixing sources never creates inconsistent board math.
+- `prefer_tushare` ignores the `source` injection (CLI backfill path).
+- Futures/margin tables have no source column (PK date+key); a Tushare re-run
+  overwrites rows in place, which is the intended history refresh path.
+- Tushare detail rows arrive nameless; `sync_margin_balance` prefills blank
+  names from the latest non-empty name already stored per code
+  (`PersonalStore.margin_stock_names()`), and the upsert guard keeps any
+  stored name from being blanked. NAS margin backfill: 5,727 rows across 16
+  codes (2025-05-19 → 2026-11-19) in ~6s with names preserved.
+
+### Next
+- Optionally route `turnover` through `index_daily` amounts as a third-source
+  fallback; keep exchange/official primary elsewhere.
+
+## [2026-11-21] CHG-0035 — TRIN breadth computed from Tushare, import-arms demoted to fallback
+
+### Metadata
+- id: CHG-0035
+- date: 2026-11-21
+- status: done
+- area: datahub | cli | docs
+- related: CHG-0033/0034, RM-17, RM-31
+
+### Summary
+The deep-review TRIN no longer depends on the external easy-daily-trading
+snapshot project. A new `breadth` dataset computes the Arms Index locally from
+Tushare full-market `daily` data (2000 points, one request per trading day):
+up/down/flat counts by `change`, volume/amount sums (converted to 亿股/亿元),
+`TRIN` plus the amount-based `trin_amount` cross-value, `adv_ratio`, the
+A-share band/interpretation text, the 上证指数 anchor (`index_daily`
+000001.SH) and the rolling `trin_pct` percentile against stored history.
+
+Universe matches the imported series: 沪深A股 excluding `.BJ` (北交所) and
+ST/退市 instruments via `stock_basic` names. Dual-source check on
+2026-11-17: Tushare 1197/3713/117 (total 5027, TRIN 0.654) vs the imported
+easy-daily row 1192/3717/117 (total 5026, TRIN 0.652) — the small delta is
+that Tushare uses real exchange amounts while the old snapshot estimated
+amounts as 股数×收盘价. The scheduled 06:00/12:00/18:00 rounds now include
+`breadth` (last 10 days); the free `import-arms` snapshot import stays
+available as the manual fallback and previously imported rows remain until a
+Tushare row overwrites the same date. easy-daily's 指数背离 signal tags are
+not reproduced by this path (card shows `—`).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/tushare_source.py` | `fetch_daily_by_date` (full market), `fetch_stock_name_map`; `fetch_index_daily` gains `pre_close` |
+| `personal/datahub/sources/arms_source.py` | New: `aggregate_market_rows` (universe/unit filters, TRIN math) + `TushareArmsSource` |
+| `personal/datahub/market.py` | `sync_market_breadth` (calendar days, 450-trading-day cap, percentile enrichment) |
+| `personal/datahub/schedule.py` | `breadth` dataset in DEFAULT_DATASETS + dispatch |
+| `personal/cli/main.py` | `sync --dataset breadth` routing |
+| `personal/tests/test_schedule.py`, `personal/tests/test_market.py` | Dataset coverage, aggregation units/universe/identity, percentile storage, token requirement, CLI routing |
+| docs | USER_GUIDE §0/§4.6/§4.7/§5/§7.5, AI_CONTEXT, DOCKER_PERSONAL, ROADMAP |
+
+### Commands
+```bash
+python -m personal.cli.main sync --dataset breadth --start 2025-10-16
+python -m personal.cli.main breadth --days 5
+```
+
+### Verification
+- `pytest personal/tests`: **200 passed**; `compileall` passes.
+- Real fetch (temp DB, 3 days): 2026-11-17 Tushare 1197/3713/117 total 5027
+  TRIN 0.654 adv 23.81% vs imported easy-daily 1192/3717/117 total 5026
+  TRIN 0.652 adv 23.7%; 2026-11-19 TRIN 0.466 (up 606), 2026-11-20 TRIN 0.207
+  (up 266, 恐慌区) — the gap left by the snapshot dependency is closed.
+- `count_identity` / `adv_ratio_recompute` / `trin_range` validate rules hold
+  on the computed rows by construction.
+
+### Notes / Migration
+- One full-market `daily` call per trading day: ~370 requests (~3 min) for a
+  1.5-year backfill; scheduled rounds only fetch the last 10 trading days.
+- Trading days come from the local calendar, so calendar must be synced first
+  (it already is, dataset #1 in every round).
+- BREADTH_MAX_DAYS=450 caps a single run; narrow the range instead.
+- 指数背离/signal tags remain an easy-daily snapshot feature; if that signal
+  is wanted from Tushare data later, port the divergence rules into
+  `personal/datahub/breadth.py`.
+
+### Next
+- Port the 指数背离 (index-vs-TRIN divergence) rules to the Tushare path.
+- Optionally compute an equal-weight turnover version (TRIN by amount only)
+  if the volume basis ever looks skewed.
+
+## [2026-11-21] CHG-0036 — Deep-review history uniformly backfilled to 2020-01-01
+
+### Metadata
+- id: CHG-0036
+- date: 2026-11-21
+- status: done
+- area: datahub | validate | docs
+- related: CHG-0033/0034/0035
+
+### Summary
+All deep-review datasets that physically support history were backfilled to
+2020-01-01 on the NAS. Vendor row caps discovered by probing required chunked
+fetches and one new source:
+
+- **Caps probed**: `margin` truncates at **4000 rows** (2020→2026 range came
+  back as exactly 4000, newest-first) → summary chunked at 500 calendar days;
+  `share_float` returns one row per **holder** and truncates at **6000** (a
+  single month runs 5k+ rows) → chunked at 30 days; `fut_mapping`,
+  `index_daily` and `margin_detail` return the full 6.7-year range (~1700
+  rows) in one call.
+- **Valuation**: `sync_index_valuation` gained a `start` override so the
+  daily series extends to 2020-01-02 (`index_dailybasic` covers 2020+).
+- **Turnover**: new `TushareTurnoverSource` — 上证指数 `000001.SH` +
+  深证综指 `399106.SZ` `index_daily` amounts equal SSE/SZSE stock turnover
+  (deviation ~0.1% vs stored exchange figures on 2026-11-19). Wired as the
+  automatic fallback when the exchange scrape returns nothing and via
+  `sync_turnover(prefer_tushare=True)` for the long-range backfill.
+- **Release**: `share_float` chunking; the Eastmoney primary covers the whole
+  2020 range in one call with official 实际解禁市值, cross-checked against
+  Tushare (2020-01-02: 6 家 both).
+- **Validate**: `margin/incomplete_scopes` now expects 3 scopes on dates
+  without board rows (Tushare backfill is market-rows-only; board rows come
+  exclusively from the exchange detail) and 7 when board rows exist.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/sources/base.py` | Shared `date_chunks` helper |
+| `personal/datahub/sources/margin_tushare_source.py` | 500-day summary chunking |
+| `personal/datahub/sources/release_tushare_source.py` | 30-day `share_float` chunking (holder rows) |
+| `personal/datahub/sources/turnover_tushare_source.py` | New: index-amount turnover fallback |
+| `personal/datahub/sources/valuation_tushare_source.py` | Explicit `start` override |
+| `personal/datahub/sources/tushare_source.py` | `fetch_index_daily` gains `amount` |
+| `personal/datahub/market.py` | `sync_index_valuation(start=...)`, `sync_turnover(prefer_tushare=...)` + fallback |
+| `personal/datahub/validate.py` | margin scope expectation 3/7 |
+| `personal/tests/test_market.py`, `personal/tests/test_validate.py` | Chunking, unit conversion, fallback, scope-rule tests |
+
+### Commands
+```bash
+# staged backfills on NAS (2020-01-01 -> now)
+python -m personal.cli.main sync --dataset futures --start 2020-01-01
+python -m personal.cli.main sync --dataset margin --via-tushare --start 2020-01-01
+python -m personal.cli.main sync --dataset breadth --start 2020-01-01   # chunked by 450 trading days
+python -m personal.cli.main sync --dataset release --start 2020-01-01   # EM wide range
+python -m personal.cli.main sync --dataset pcr --start 2020-01-01       # looped <=120-day windows
+python -c "... sync_turnover(prefer_tushare=True, start=2020-01-01)"
+python -c "... sync_index_valuation(start=2020-01-01)"
+```
+
+### Verification
+- `pytest personal/tests`: **207 passed**; `compileall` passes.
+- Local real fetches: margin 2020Q1 290 rows (600519 rzye 109.2亿, realistic);
+  turnover 2020-01 16 trading days (~7000-8000亿 totals); release 2020-2021
+  285 days via chunked Tushare, matching EM (6 家 on 2020-01-02 both);
+  valuation extended to 2020-01-02 (000300: 1,668 daily rows).
+- NAS results reported after the staged runs (see session record).
+
+### Notes / Migration
+- **Not backfilled to 2020** (physically impossible):
+  - `limit_up_stats` — Eastmoney pools keep only ~30 trading days.
+  - `sector_amount` / `etf_share` — same-day snapshot APIs, no history.
+  - `futures_rank` — CFFEX official member CSVs cost ~4 requests per day
+    (~5,300 requests for 2020→2025); kept at the 2025-05-19 extent.
+- `market_breadth` rows before 2026-11-19 keep easy-daily's 指数背离 blanks;
+  Tushare rows overwrite by date as the backfill progresses.
+- Board-level margin rows exist only from 2025-05-19 (exchange detail); older
+  dates carry the 3 market scopes only, which validate now accepts.
+
+### Next
+- Optionally backfill `futures_rank` if the CFFEX archive proves tolerant to
+  a long crawl.

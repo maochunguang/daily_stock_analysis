@@ -28,7 +28,7 @@
 | 做盘前交易计划、看组合风险 | `/personal` → 交易计划 | §4.9 |
 | 评估每笔交易 D+N 结果 | `/personal` → 决策结果 | §4.10 |
 | 校验指标数据准确性 / 交叉验证 | 深度复盘「数据体检」卡片，或 `validate --online` | §4.6、§5 |
-| 导入/查看市场宽度（阿姆氏 TRIN） | `import-arms` + `breadth`，API `/api/market/breadth` | §5、§7.5 |
+| 查看市场宽度（阿姆氏 TRIN） | 深度复盘卡 + `breadth`/`import-arms`（兜底），API `/api/market/breadth` | §5、§7.5 |
 | 看已装插件 | `/personal` → 插件，或 `plugins` | §4.4、§8 |
 | 检查 Windows QMT 桥 | `/personal` → QMT | §4.5、§9 |
 | 部署到 NAS | Docker Compose | §2.2、[DOCKER_PERSONAL.md](DOCKER_PERSONAL.md) |
@@ -162,7 +162,7 @@ python -m personal.cli.main info
 |---|---|---|
 | `PERSONAL_API_ENABLED` | `true` | 是否在 `/personal-api` 挂载个人 API |
 | `PERSONAL_STOCK_LIST` | 空 | 默认股票池，逗号分隔，如 `600519,000001,510050` |
-| `TUSHARE_TOKEN` | 空 | Tushare token；只在本地 env 文件里填 |
+| `TUSHARE_TOKEN` | 空 | Tushare token；只在本地 env 文件里填。Docker 里放 `data/runtime.env`（`ENV_FILE`）；不要在 compose 里注入空值，空字符串会遮蔽 runtime.env。2000 积分档可解锁指数估值日频主源（§4.6） |
 | `PERSONAL_DATA_SOURCE_PRIORITY` | `tushare,baostock,akshare,tencent` | 自动模式的优先级；`tencent` 目前未实现，会被跳过 |
 | `DEEPSEEK_SEARCH_API_KEYS` | 空 | DeepSeek 官方网页搜索密钥（上游 AI 报告的新闻搜索用，与 LLM 的 `DEEPSEEK_API_KEYS` 相互独立），在 Web 设置页「数据源」分类里配置 |
 | `PERSONAL_DB` | `data/personal.db` | 个人库路径；Docker 内为 `/app/data/personal.db` |
@@ -365,7 +365,7 @@ python -m personal.cli.main info
 | 数据体检 | 11 个指标数据集的健康分、各集最新日期/问题数、明细（恒等式/日期/跳变/跨指标/外部抽检） | 质量 | 每次定时同步后自动 + 卡片按钮手动重跑 |
 | 市场综合状态 | 各指标一年滚动分位加权 → 0-100 综合分 + 状态灯（冰点/偏冷/中性/偏热/过热），分量表带顺势/逆向标签 | 综合 | 随各指标自动计算 |
 | 指数估值分位 | 沪深300 / 创业板指 / 创业板50 / 科创50 的加权 PE-TTM、等权 PE、近 1/3/5 年周频分位及“当前/窗口最高”比值；可按需与中证/国证官方值交叉校验 | 估值 | 定时同步 / 「更新」按钮（valuation 数据集）；「交叉校验」按需请求 |
-| 市场宽度（TRIN） | 当日 TRIN/分位带、涨跌家数、上证指数、判读与背离、30 日曲线 | 量能 | CLI `import-arms`（§7.5） |
+| 市场宽度（TRIN） | 当日 TRIN/分位带、涨跌家数、上证指数、判读与背离、30 日曲线 | 量能 | 定时同步 / 「更新」按钮（breadth 数据集，Tushare 全市场计算） |
 | 期指做空压力 | IF/IH/IC/IM 基差/基差率/持仓量、30 日基差率曲线 | 定价 | 定时同步 / 「更新」按钮 |
 | 期指会员持仓 | 前 20 会员持买单量/持卖单量/**净空占比**（中金所官方 CSV） | 定价（逆向） | 同上 |
 | 融资余额 | 两融总计 + 5 日变化、沪/深、四板块余额 | 杠杆 | 同上 |
@@ -438,45 +438,52 @@ dsa-personal validate --online
 
 **计算口径与限制：**
 
-- 数据源为乐咕乐股指数估值接口；免费档**日线是付费功能**，系统使用**周频**
-  历史（约 52 点/年、156 点/3 年、260 点/5 年），每周只保留一个样本，当周
-  用最新交易日值替换，避免按日同步把最近一周重复加权。
-- 主口径 `PE-TTM` 是**加权滚动市盈率**（乐咕 `addTtmPe`）；卡片同时显示
-  等权 PE（`ttmPe`）供参考。指数 PE 为正数才参与计算。
-- 分位 = 当前 PE 在窗口内（含当周最新值）`≤ 当前值` 的样本占比，范围 0-100%；
+- 数据源分两级：**主源 Tushare `index_dailybasic` 日频**（需要 2000 积分
+  token，约 244 样本/年、727 样本/3 年、1212 样本/5 年）；未配置 token、权限
+  不足或请求失败时**自动降级为乐咕乐股周频**（约 52 样本/年，每周保留一个
+  样本，当周用最新交易日值替换）。两个源不混用：每个指数取最新数据日期更
+  近的源计算分位，卡片顶部会标注当前来源（`Tushare 日频` / `乐咕周频`）。
+- 主口径 `PE-TTM` 是**加权滚动市盈率**（Tushare `pe_ttm` 或乐咕
+  `addTtmPe`，均为总股本口径）。等权 PE 只有乐咕源提供，Tushare 源下该行
+  显示 `—`。指数 PE 为正数才参与计算。
+- 分位 = 当前 PE 在窗口内（含最新值）`≤ 当前值` 的样本占比，范围 0-100%；
   分位越低表示相对该窗口越便宜。窗口最小样本：1 年 10 个、3 年 30 个、
   5 年 50 个；不足时显示“样本不足”，不硬算。
-- 分位后的括号是**当前 PE ÷ 该窗口最高 PE**，例如 `1.9%（最高 49.3%）`
-  表示：过去一年约 1.9% 的周样本低于当前 PE，当前 PE 约为一年最高点的
+- 分位后的括号是**当前 PE ÷ 该窗口最高 PE**，例如 `0.4%（最高 49.3%）`
+  表示：过去一年约 0.4% 的样本低于当前 PE，当前 PE 约为一年最高点的
   49.3%。**分位是排名，括号才是比值；2% 分位不等于最高点的 2%。**
 - 颜色只表达历史位置：≤20% 低估区、20-40% 偏低、40-60% 中性、60-80% 偏高、
   >80% 高估区。**不是买卖信号**，也不能替代盈利周期、行业结构变化的判断。
 - 最新数据超过 7 天会在卡片底部提示“数据陈旧”；手动「更新」只刷新
   `valuation` 数据集，不重跑整轮同步。
+- 请求频率：Tushare 同步按 ~380 天分块、每块间隔 ≥0.5 秒，一轮约 20 个请求；
+  定时任务每天 3 轮，远低于 2000 积分档的接口限频。
 - 该卡片只做指数层面估值，不读取个股 PE，也不改变自选股/持仓数据。
 
 **交叉校验（卡片「交叉校验」按钮）：**
 
-官方源只提供当前值，不能替代历史分位，但可以用来校验乐咕当前水平是否明显偏离：
+官方源只提供当前值，不能替代历史分位，但可以用来校验当前估值水平是否明显偏离：
 
 | 指数 | 官方源 | 对比口径 |
 |---|---|---|
-| 沪深300 / 科创50 | 中证指数 `市盈率1（总股本）` | 乐咕**静态 PE**（同为总股本口径） |
-| 创业板指 / 创业板50 | 国证指数 `PE滚动` | 乐咕 **PE-TTM**（同为滚动口径） |
+| 沪深300 / 科创50 | 中证指数 `市盈率1（总股本）` | 本地**静态 PE**（同为总股本口径） |
+| 创业板指 / 创业板50 | 国证指数 `PE滚动` | 本地 **PE-TTM**（同为滚动口径） |
 
 - 偏差 ≤5%：`一致`；5%-15%：`口径差异`；>15%：`需复核`。
 - 官方值缺失或接口失败时显示 `不可用`，不影响主卡片。
 - **偏差不等于数据错误**：加权方式、股本口径、财报切换时点都可能造成差异。
-  2026-11-19 实测：沪深300 静态 PE 偏差约 -3.8%，创业板指/创业板50 滚动 PE
-  偏差约 -2%~-3%，科创50 静态 PE 偏差约 +12%（科创50 的 TTM 与官方 PE1
-  不可直接比较，卡片仍以乐咕 TTM 展示，交叉校验单独标注口径）。
+  实测（2026-11-20，Tushare 日频源）：沪深300 静态 PE 偏差 +1.4%（一致）、
+  创业板50 +0.9%（一致）、创业板指 TTM +11.6%（口径差异）、科创50 静态 PE
+  偏差极大（+127%，`需复核`——Tushare 静态口径对科创板利润基期处理不同，
+  卡片主口径仍展示 PE-TTM）。乐咕周频源下创业板指/创业板50 偏差约
+  -2%~-3%，科创50 约 +12%。交叉校验的作用就是把这类口径差异显式标出来。
 - 交叉校验是**按需请求**（中证近 20 个交易日文件 + 国证最新列表），不进入
-  每日定时同步，避免无谓的外部依赖；历史分位始终只使用乐咕序列。
+  每日定时同步，避免无谓的外部依赖；历史分位始终只使用已入库的估值序列。
 
 命令行/API：
 
 ```bash
-# 手动刷新四个指数的周频估值历史
+# 手动刷新四个指数的估值历史（Tushare 日频优先，未配置 token 时乐咕周频）
 python -m personal.cli.main sync --dataset valuation
 # 或容器内
 docker compose exec personal-sync python -m personal.cli.main sync --dataset valuation
@@ -491,7 +498,7 @@ POST /personal-api/api/market/sync  {"dataset":"valuation"}
 ### 4.7 定时同步（RM-05）
 
 Docker Compose 提供 **personal-sync** 副服务（与 server 共享 `data/personal.db`），
-每天 **06:00 / 12:00 / 18:00**（容器时区 Asia/Shanghai）各跑一轮增量同步 15 个数据集：
+每天 **06:00 / 12:00 / 18:00**（容器时区 Asia/Shanghai）各跑一轮增量同步 16 个数据集：
 
 - **06:00**：常规增量，自愈缺口；
 - **12:00**：补齐交易所次日早间才发布的两融数据（06:00 只能拿到 T-2）；
@@ -506,16 +513,17 @@ Docker Compose 提供 **personal-sync** 副服务（与 server 共享 `data/pers
 | 3 | 日线 bars | 前 15 天 | 增量幂等 upsert |
 | 4 | 复权因子 adjust | 前 30 天 | Tushare 免费档 1 次/小时 |
 | 5 | 期指 futures | 前 10 天 | IF/IH/IC/IM + 基差 |
-| 6 | 指数估值 valuation | 全量周频 | 乐咕乐股；4 个宽基指数 PE-TTM |
-| 7 | 成交概况 turnover | 前 30 天 | 两融交易占比的分母 |
-| 8 | 两融 margin | 前 10 天 | T+1 发布，见 §7.6 |
-| 9 | 期指持仓 cffex_rank | 前 10 天 | 中金所前 20 会员 |
-| 10 | 涨停梯队 zt | 前 10 天 | 东财涨停池/炸板/昨涨停 |
-| 11 | 期权 PCR pcr | 前 10 天 | 上交所官方统计，无第三方限频 |
-| 12 | 行业拥挤 sector | 最近已收盘交易日快照 | 同花顺行业成交额 |
-| 13 | ETF 份额 etf_share | 最近已收盘交易日快照 | 份额序列自建积累 |
-| 14 | 中美利差 bond | 全量历史 | 东财债券收益率 |
-| 15 | 解禁 release | 后 45 天 | 东财解禁汇总 |
+| 6 | 指数估值 valuation | 全量日频 | Tushare index_dailybasic（乐咕周频兜底） |
+| 7 | 市场宽度 breadth | 前 10 天 | Tushare 全市场 daily 本地算 TRIN |
+| 8 | 成交概况 turnover | 前 30 天 | 两融交易占比的分母 |
+| 9 | 两融 margin | 前 10 天 | T+1 发布，见 §7.6 |
+| 10 | 期指持仓 cffex_rank | 前 10 天 | 中金所前 20 会员 |
+| 11 | 涨停梯队 zt | 前 10 天 | 东财涨停池/炸板/昨涨停 |
+| 12 | 期权 PCR pcr | 前 10 天 | 上交所官方统计，无第三方限频 |
+| 13 | 行业拥挤 sector | 最近已收盘交易日快照 | 同花顺行业成交额 |
+| 14 | ETF 份额 etf_share | 最近已收盘交易日快照 | 份额序列自建积累 |
+| 15 | 中美利差 bond | 全量历史 | 东财债券收益率 |
+| 16 | 解禁 release | 后 45 天 | 东财解禁汇总 |
 
 - 所有行情类数据集的结束日都截到**最近已收盘交易日**（15:00 前=上一交易日），
   避免盘前/半日数据入库；涨停池接口会忽略未来日期，截断尤其必要。
@@ -733,7 +741,7 @@ python -m personal.cli.main <command> [options]
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
 | `sync` | 同步全部个人数据集 | `--dataset bars\|adjust\|calendar\|status\|futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
-| `import-arms` | 导入阿姆氏（TRIN）日快照 | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
+| `import-arms` | 导入阿姆氏（TRIN）日快照（免费兜底；正式路径为 `sync --dataset breadth`） | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
 | `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
 | `schedule` | 定时增量同步（默认 06:00 每日循环，可多时点） | `--at HH:MM[,HH:MM]`、`--datasets`、`--arms-dir`、`--once`（立即跑一轮并退出） |
 | `validate` | 指标数据体检（恒等式/取值域/交易日/跳变/跨指标/外部抽检） | `--days N`（默认 400，0=全部）、`--dataset NAME`（可重复）、`--online`、`--json` |
@@ -786,11 +794,17 @@ python -m personal.cli.main import-arms \
   --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
 python -m personal.cli.main breadth --days 5
 
+# 市场宽度 TRIN（Tushare 全市场 daily 本地计算）
+python -m personal.cli.main sync --dataset breadth --start 2026-11-01
+
 # 股指期货主力合约（IF/IH/IC/IM + 基差）与融资余额（分板块）
+# futures：Tushare 官方 CFFEX 数据为主（2000 积分 token），AkShare 兜底
 python -m personal.cli.main sync --dataset futures --start 2026-11-10 --end 2026-11-17
 python -m personal.cli.main sync --dataset margin --start 2026-11-10 --end 2026-11-17
+# 两融历史回补走 Tushare（每股一次请求，无 120 天上限；需 2000 积分 token）
+python -m personal.cli.main sync --dataset margin --via-tushare --start 2025-05-01
 
-# 四个宽基指数的周频 PE 历史（深度复盘估值分位）
+# 四个宽基指数的估值历史（Tushare 日频主源，乐咕周频兜底）
 python -m personal.cli.main sync --dataset valuation
 
 # 立即跑一轮完整定时同步（验证用）
@@ -944,23 +958,31 @@ python -m personal.cli.main schedule --once --at 06:00
 
 ### 7.5 市场宽度与阿姆氏指标（TRIN）
 
-市场宽度表 `market_breadth` 存每个交易日的全市场汇总，供「深度复盘」（建设中）
-和 API `/api/market/breadth?days=N` 使用。
+市场宽度表 `market_breadth` 存每个交易日的全市场汇总，供「深度复盘」
+「市场宽度（TRIN）」卡和 API `/api/market/breadth?days=N` 使用。
 
-**数据来源**：另一个本地项目 `easy-daily-trading`（`tools/arms_index.py`，腾讯/新浪
-前复权日线，剔除北交所与 ST）。在那边每天跑一次：
+**数据来源（2026-11-21 起）**：Tushare 全市场 `daily`（2000 积分 token）本地计算，
+**每交易日一次请求**，不再依赖外部项目：
 
 ```bash
-cd /Users/mao/vibecoding/easy-daily-trading
-python3 tools/arms_index.py --days 3          # 更新 cache/arms_index/daily/
+# 定时任务每天自动跑（breadth 数据集）；手动补历史：
+python -m personal.cli.main sync --dataset breadth --start 2025-10-16
+python -m personal.cli.main breadth --days 5
 ```
 
-然后回这边导入（可重复执行，按日期幂等覆盖）：
+- 市场范围：沪深 A 股，剔除北交所（`.BJ`）与 ST/退市标的，与已导入序列同口径
+  （2026-11-17 双源比对：Tushare 1197/3713 vs easy-daily 1192/3717，TRIN
+  0.654 vs 0.652，差异来自 Tushare 用**真实成交额**、旧快照用“股数×收盘价”估算）
+- TRIN 由涨跌家数比 ÷ 涨跌成交量比计算；`trin_amount` 为按成交额口径的交叉值
+- 上证指数锚（`index_daily` 000001.SH）随行入库
+- 免费**兜底**：原 `easy-daily-trading` 快照导入通道保留（token 失效或断网时手动补）
+
+**免费兜底导入（手动，可选）**：
 
 ```bash
+cd /Users/mao/vibecoding/easy-daily-trading && python3 tools/arms_index.py --days 3
 python -m personal.cli.main import-arms \
   --dir /Users/mao/vibecoding/easy-daily-trading/cache/arms_index/daily
-python -m personal.cli.main breadth --days 5
 ```
 
 **口径**（移植自 easy-daily-trading，A 股 250 日实测分位，不套美股 1.0 中枢）：
@@ -968,26 +990,39 @@ python -m personal.cli.main breadth --days 5
 - `TRIN = (上涨家数 ÷ 下跌家数) ÷ (上涨成交量 ÷ 下跌成交量)`；另存按成交额口径的 `TRIN(额)` 交叉校验
 - 分位带：`<0.405 极低`、`0.579 偏低`、`0.780 中低位`、`1.122 中高位`、`1.428 偏高`、`1.747 高位`、`>1.747 极高`
 - 判读必须结合**上涨占比**：同样 TRIN 0.40，普涨日=量能集中在龙头（健康）；普跌日=资金抱团避险（恐慌但常近短期底）
-- 指数背离（对照上证指数 20 日窗口）：`顶部信号` = 指数新高但量能跟不上，警惕回落；`底部信号` = 指数新低且抛压集中，常近短期底。**背离是风险提示，不是买卖信号**
+- 指数背离（对照上证指数 20 日窗口）：`顶部信号` = 指数新高但量能跟不上，警惕回落；`底部信号` = 指数新低且抛压集中，常近短期底。**背离是风险提示，不是买卖信号**（该信号由 easy-daily 快照计算；Tushare 路径暂不生成，显示 `—`）
 - 成交量单位为亿股、成交额为亿元（表列名带 `_yi` 后缀即为此含义）
 
-**已导入数据**：2025-10-16 ~ 2026-11-17 共 265 个交易日（来源标记 `easy_daily_trading`）。
+**已导入数据**：2025-10-16 ~ 2026-11-17 共 265 个交易日（`easy_daily_trading`）；
+2026-11-19 起由 Tushare 计算（`tushare_arms`），历史日期会被重跑逐步覆盖为同一口径。
 
 ### 7.6 股指期货与融资余额口径
 
-**股指期货**（`index_futures` 表，来源 AkShare `futures_main_sina` + 新浪现货指数）：
+**股指期货**（`index_futures` 表）：主源 Tushare `fut_mapping` + `fut_daily`
+（2000 积分 token，官方 CFFEX 数据）+ `index_daily` 现货；未配置 token 或失败时
+回退到 AkShare `futures_main_sina` + 新浪现货指数。
 
-- 主力连续合约 IF0（沪深300）/ IH0（上证50）/ IC0（中证500）/ IM0（中证1000）
+- 主力连续由 `fut_mapping` 逐日映射到当月主力合约（IF/IH/IC/IM 对应现货
+  000300/000016/000905/000852）
 - `basis = 期货收盘 − 现货收盘`；`basis_pct = basis / 现货 × 100`
-- 贴水（负）= 对冲/做空压力大；主力换月时主力连续价格有跳空，跨月比较需注意
+- 贴水（负）= 对冲/做空压力大；`oi_chg` 按主力连续口径跨换月计算（不是单合约
+  的官方 oi_chg）；新主力合约首日 `oi_chg` 留空。换月周内旧主力合约持仓会
+  向新合约迁移、连续持仓量提前回落，数据体检会因此出现 `oi_chg_out_of_range`
+  提示——这是换月的固有现象，不是数据错误
 
-**融资余额**（`margin_balance` 表，来源上交所/深交所官方数据）：
+**融资余额**（`margin_balance` 表）：交易所官方数据为主（上交所/深交所）；
+Tushare `margin`/`margin_detail`（2000 积分）为兜底，也可用
+`sync --dataset margin --via-tushare` 强制走 Tushare 做长区间回补（每股一次
+请求，无 120 天上限）。
 
-- `market` 行：沪市/深市/总计，官方汇总口径（含基金/债券标的）；深市官方单位为亿元，入库统一为元
-- `board` 行：沪主板/科创板/深主板/创业板，由每日**个股明细**按代码前缀聚合（60x/688-689/000-003/300-302），**仅股票**
+- `market` 行：沪市/深市/总计，官方汇总口径（含基金/债券标的）；Tushare 兜底
+  只产 `market` 行（`rzye/rzye_buy/rqye/rzrqye` 齐全），不产板块行
+- `board` 行：沪主板/科创板/深主板/创业板，由每日**个股明细**按代码前缀聚合
+  （60x/688-689/000-003/300-302），**仅股票**，只来自交易所明细
 - 板块之和 < 汇总之差 = ETF/债券/可转债等非股票标的
-- T+1 发布；明细按日逐日拉取，单次同步区间 ≤ 120 天（`MARGIN_MAX_DAYS`）
-- 上交所明细单页 2000 行，同步时自动翻页收齐
+- T+1 发布；交易所明细按日逐日拉取，单次同步区间 ≤ 120 天（`MARGIN_MAX_DAYS`）
+- 上交所明细单页 2000 行，同步时自动翻页收齐；Tushare 个股行不带简称，入库时
+  不会清空已有名称
 
 ### 7.7 深度市场指标口径（P1/P2 卡片）
 
@@ -1000,7 +1035,7 @@ python -m personal.cli.main breadth --days 5
 | 行业拥挤度 | 同花顺行业一览 `总成交额`（90 个行业） | 占比=板块成交额/合计；250 日分位>90%=拥挤警戒（快照自建，从启用日积累） |
 | ETF 份额 | 东财 ETF 快照（7 只宽基固定名单） | 份额无历史 API，每日快照自建序列；份额骤增=宽基托底资金 |
 | 中美利差 | 东财 `bond_zh_us_yield_em`（全量历史） | 10Y/2Y 利差走阔压制风险偏好（月/周级别） |
-| 解禁日历 | 东财解禁汇总 | 未来 45 天逐日家数/实际解禁市值 |
+| 解禁日历 | 东财解禁汇总（主）；Tushare `share_float` 兜底 | 未来 45 天逐日家数/实际解禁市值；Tushare 兜底用最新收盘价估算市值（缺价当日留空），家数/数量口径一致 |
 | 综合状态 | 上述指标 + TRIN 上涨占比 | 一年滚动分位（样本<20 跳过）平均；0-25 冰点 / 25-40 偏冷 / 40-60 中性 / 60-75 偏热 / 75-100 过热 |
 
 ## 8. 插件使用与开发

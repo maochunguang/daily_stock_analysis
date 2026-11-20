@@ -111,6 +111,34 @@ class TestValidateStore:
         rules = {item.rule for item in report.findings}
         assert "identity_market_total" in rules
 
+    def test_margin_market_only_scope_is_accepted(self, store):
+        # Tushare 历史回补只产 market 行：无板块行的日期预期口径为 3，不告警。
+        day = DAYS[-1]
+        store.upsert_margin_balance(
+            [
+                _margin("market", "沪市", day, 6e11),
+                _margin("market", "深市", day, 5e11),
+                _margin("market", "总计", day, 1.1e12),
+            ]
+        )
+        report = validate_store(store, days=60, datasets=["margin"], now=NOW)
+        rules = [item.rule for item in report.findings if item.trade_date == day]
+        assert "incomplete_scopes" not in rules
+        assert "identity_market_total" not in rules
+
+    def test_margin_partial_market_scope_warns(self, store):
+        # 2 个 market 口径（缺深市）依旧要告警。
+        day = DAYS[-1]
+        store.upsert_margin_balance(
+            [
+                _margin("market", "沪市", day, 6e11),
+                _margin("market", "总计", day, 6e11),
+            ]
+        )
+        report = validate_store(store, days=60, datasets=["margin"], now=NOW)
+        rules = [item.rule for item in report.findings if item.trade_date == day]
+        assert "incomplete_scopes" in rules
+
     def test_pcr_recompute_error(self, store):
         store.upsert_option_pcr(
             [

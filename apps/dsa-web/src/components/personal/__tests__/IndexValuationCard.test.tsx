@@ -35,6 +35,7 @@ const valuation: PersonalIndexValuationResponse = {
       code: '000300.SH',
       name: '沪深300',
       available: true,
+      source: 'legulegu',
       as_of: '2026-11-19',
       stale_days: 0,
       sample_freq: 'weekly',
@@ -59,7 +60,7 @@ const valuation: PersonalIndexValuationResponse = {
 const check: PersonalIndexValuationCheckResponse = {
   checked_at: '2026-11-19T20:00:00',
   note: '官方源只提供当前值；口径差异不等于数据错误。',
-  warnings: ['科创50: 乐咕 95.85 vs 官方 85.57，偏差 +12.0%'],
+  warnings: ['科创50: 本地 95.85 vs 官方 85.57，偏差 +12.0%'],
   rows: [
     {
       code: '000300.SH',
@@ -72,7 +73,7 @@ const check: PersonalIndexValuationCheckResponse = {
       official_source: '中证指数',
       official_metric: '中证 PE1（总股本）',
       legu_metric: 'pe_static',
-      legu_label: '乐咕静态 PE',
+      legu_label: '静态 PE（总股本）',
       diff_pct: -3.8,
     },
     {
@@ -86,7 +87,7 @@ const check: PersonalIndexValuationCheckResponse = {
       official_source: '中证指数',
       official_metric: '中证 PE1（总股本）',
       legu_metric: 'pe_static',
-      legu_label: '乐咕静态 PE',
+      legu_label: '静态 PE（总股本）',
       diff_pct: 12,
     },
   ],
@@ -151,7 +152,7 @@ describe('IndexValuationCard', () => {
     expect(screen.getByText('官方交叉校验')).toBeTruthy();
     expect(screen.getByText('-3.8%')).toBeTruthy();
     expect(screen.getByText('口径差异')).toBeTruthy();
-    expect(screen.getByText(/科创50: 乐咕 95.85/)).toBeTruthy();
+    expect(screen.getByText(/科创50: 本地 95.85/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '交叉校验' }));
     expect(onCheckValuation).toHaveBeenCalledTimes(1);
@@ -160,5 +161,28 @@ describe('IndexValuationCard', () => {
   it('shows an explicit empty state before the dataset is synced', () => {
     render(<IndexValuationCard {...baseProps} valuation={null} />);
     expect(screen.getByText(/暂无估值数据/)).toBeTruthy();
+  });
+
+  it('adapts the sample suffix and source chip to the daily Tushare feed', () => {
+    const daily: PersonalIndexValuationResponse = {
+      ...valuation,
+      source: 'tushare',
+      rows: [
+        {
+          ...valuation.rows[0],
+          source: 'tushare',
+          sample_freq: 'daily' as const,
+          pe_ttm_equal: null,
+          windows: {
+            '1y': windowSummary('1y', 244, 10.2),
+            '3y': windowSummary('3y', 732, 22.4),
+            '5y': windowSummary('5y', 1215, 31.7),
+          },
+        },
+      ],
+    };
+    render(<IndexValuationCard {...baseProps} valuation={daily} />);
+    expect(screen.getByText('Tushare 日频')).toBeTruthy();
+    expect(screen.getByText('244日')).toBeTruthy();
   });
 });

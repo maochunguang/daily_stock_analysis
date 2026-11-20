@@ -140,8 +140,11 @@ const REVIEW_COPY = {
     valuation5y: '近5年',
     valuationSamples: '样本',
     valuationUpdated: '更新',
+    valuationDay: '日',
     valuationWeek: '周',
     valuationMonth: '月',
+    valuationSourceTushare: 'Tushare 日频',
+    valuationSourceLegu: '乐咕周频',
     valuationLow: '低估区',
     valuationLowMid: '偏低',
     valuationMid: '中性',
@@ -154,7 +157,7 @@ const REVIEW_COPY = {
     valuationCheck: '交叉校验',
     valuationChecking: '校验中…',
     valuationCheckTitle: '官方交叉校验',
-    valuationCheckLegu: '乐咕值',
+    valuationCheckLegu: '本地值',
     valuationCheckOfficial: '官方值',
     valuationCheckDiff: '偏差',
     valuationCheckStatus: '状态',
@@ -168,7 +171,7 @@ const REVIEW_COPY = {
       '官方源仅提供当前值（中证近 20 日、国证最新），用于水平校验，不参与历史分位；偏差不等于数据错误。',
     valuationHighRatio: '最高',
     valuationHint:
-      '分位 = 当前 PE-TTM 在窗口内周频样本中的百分位（排名）；括号内为“当前 PE ÷ 该窗口最高 PE”。分位低只代表排名低，例如 2% 分位表示约 2% 的样本低于当前值，不等于当前值是最高的 2%。PE-TTM 为加权滚动市盈率，来源乐咕乐股；仅反映历史位置，不构成买卖建议。',
+      '数据源：Tushare 日频（需 2000 积分 token），未配置或失败时自动降级为乐咕周频。分位 = 当前 PE-TTM 在窗口内样本中的百分位（排名）；括号内为“当前 PE ÷ 该窗口最高 PE”。分位低只代表排名低，例如 2% 分位表示约 2% 的样本低于当前值，不等于当前值是最高的 2%。PE-TTM 为加权滚动市盈率；仅反映历史位置，不构成买卖建议。',
     healthTitle: '数据体检',
     healthScore: '健康分',
     healthOk: '正常',
@@ -288,8 +291,11 @@ const REVIEW_COPY = {
     valuation5y: '5Y',
     valuationSamples: 'Samples',
     valuationUpdated: 'Updated',
+    valuationDay: 'd',
     valuationWeek: 'w',
     valuationMonth: 'm',
+    valuationSourceTushare: 'Tushare daily',
+    valuationSourceLegu: 'Legulegu weekly',
     valuationLow: 'Cheap',
     valuationLowMid: 'Low',
     valuationMid: 'Neutral',
@@ -302,7 +308,7 @@ const REVIEW_COPY = {
     valuationCheck: 'Cross-check',
     valuationChecking: 'Checking…',
     valuationCheckTitle: 'Official cross-check',
-    valuationCheckLegu: 'Legu',
+    valuationCheckLegu: 'Local',
     valuationCheckOfficial: 'Official',
     valuationCheckDiff: 'Diff',
     valuationCheckStatus: 'Status',
@@ -316,7 +322,7 @@ const REVIEW_COPY = {
       'Official sources publish only the current value (CSI: last 20 sessions; CNI: latest). Used for level checks, not percentile history; a difference is not automatically a data error.',
     valuationHighRatio: 'of high',
     valuationHint:
-      'Percentile = rank of the current PE-TTM among weekly samples in the window; the parenthesised value is current PE ÷ that window’s highest PE. A low percentile means a low rank, not that PE is that percentage of the high (2% percentile ≠ 2% of the high). PE-TTM is the cap-weighted rolling PE from Legulegu; historical position only — not investment advice.',
+      'Source: Tushare daily index valuation (needs a 2000-point token); falls back to the weekly Legulegu feed when unconfigured or failing. Percentile = rank of the current PE-TTM among window samples; the parenthesised value is current PE ÷ that window’s highest PE. A low percentile means a low rank, not that PE is that percentage of the high (2% percentile ≠ 2% of the high). PE-TTM is the cap-weighted rolling PE; historical position only — not investment advice.',
     healthTitle: 'Data health check',
     healthScore: 'Health',
     healthOk: 'OK',
@@ -820,7 +826,19 @@ export const IndexValuationCard: ReviewCardComponent = ({
     ['5y', copy.valuation5y],
   ] as const;
   const freqSuffix = (freq: string) =>
-    freq === 'weekly' ? copy.valuationWeek : freq === 'monthly' ? copy.valuationMonth : '';
+    freq === 'daily'
+      ? copy.valuationDay
+      : freq === 'weekly'
+        ? copy.valuationWeek
+        : freq === 'monthly'
+          ? copy.valuationMonth
+          : '';
+  const sourceLabel =
+    valuation.source === 'tushare'
+      ? copy.valuationSourceTushare
+      : valuation.source === 'legulegu'
+        ? copy.valuationSourceLegu
+        : valuation.source || '';
   const checkBadge = (status: string) => {
     if (status === 'ok') return { variant: 'success' as const, label: copy.valuationCheckOk };
     if (status === 'warn') return { variant: 'warning' as const, label: copy.valuationCheckWarn };
@@ -833,6 +851,11 @@ export const IndexValuationCard: ReviewCardComponent = ({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-secondary-text">
           {valuation.as_of ? `${copy.valuationUpdated} ${valuation.as_of}` : ''}
+          {sourceLabel ? (
+            <span className="ml-2 rounded-full border border-border/60 bg-hover/40 px-1.5 py-0.5 text-[10px] text-muted-text">
+              {sourceLabel}
+            </span>
+          ) : null}
         </p>
         <div className="flex shrink-0 items-center gap-2">
           <button

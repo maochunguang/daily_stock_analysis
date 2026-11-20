@@ -16,6 +16,9 @@ from personal.datahub.sources.valuation_source import (
     keep_week_latest,
     parse_legulegu_payload,
 )
+from personal.datahub.sources.valuation_tushare_source import (
+    parse_tushare_dailybasic,
+)
 from personal.datahub.store import PersonalStore
 
 
@@ -38,6 +41,32 @@ def _weekly_rows(
                 name="test",
                 pe_ttm=start_pe + index * step,
                 pe_ttm_equal=start_pe + index * step + 10,
+                source=source,
+            )
+        )
+    return rows
+
+
+def _daily_rows(
+    code: str,
+    *,
+    end: date,
+    count: int,
+    start_pe: float,
+    step: float,
+    source: str = "tushare",
+) -> list[IndexValuation]:
+    rows: list[IndexValuation] = []
+    for index in range(count):
+        day = end - timedelta(days=count - 1 - index)
+        rows.append(
+            IndexValuation(
+                code=code,
+                trade_date=day,
+                name="test",
+                pe_ttm=start_pe + index * step,
+                pe_static=start_pe + index * step + 1,
+                close=4000,
                 source=source,
             )
         )
@@ -189,6 +218,237 @@ def test_report_percentiles_cheap_and_expensive(tmp_path):
 
         stale = index_valuation_report(store, as_of=end + timedelta(days=10))
         assert stale["rows"][0]["stale_days"] == 10
+    finally:
+        store.close()
+
+
+def test_parse_tushare_dailybasic_rows():
+    raw = [
+        {
+            "ts_code": "000300.SH",
+            "trade_date": "20261119",
+            "close": 3984.84,
+            "pe": 13.77,
+            "pe_ttm": 12.69,
+        },
+        {"trade_date": "bad-date", "pe_ttm": 12.0},
+        {"trade_date": "20261118", "pe_ttm": None},
+        {"trade_date": "20261117", "pe_ttm": -1},
+    ]
+    rows = parse_tushare_dailybasic(raw, code="000300.SH")
+    assert [row.trade_date.isoformat() for row in rows] == ["2026-11-19"]
+    assert rows[0].pe_ttm == pytest.approx(12.69)
+    assert rows[0].pe_static == pytest.approx(13.77)
+    assert rows[0].close == pytest.approx(3984.84)
+    assert rows[0].source == "tushare"
+    assert rows[0].pe_ttm_equal is None
+
+
+def test_tushare_source_chunks_requests_and_enforces_floor():
+    from personal.datahub.sources.valuation_tushare_source import (
+        TushareValuationSource,
+    )
+
+    calls: list[tuple[str, str, str]] = []
+
+    class _FakeClient:
+        def fetch_index_dailybasic(self, code, start, end):
+            calls.append((code, start.isoformat(), end.isoformat()))
+            # Only the first chunk returns rows; the rest are empty.
+            if len(calls) > 1:
+                return []
+            return [
+                {
+                    "trade_date": (start + timedelta(days=index)).strftime("%Y%m%d"),
+                    "pe": 13.0,
+                    "pe_ttm": 12.5,
+                    "close": 3900,
+                }
+                for index in range(220)
+            ]
+
+    source = TushareValuationSource(
+        client=_FakeClient(), min_interval=0, history_days=800, chunk_days=380
+    )
+    rows = source.fetch_index_valuation("000300.SH")
+    assert len(calls) == 3  # 800-day history split into 380-day chunks
+    assert calls[0][0] == "000300.SH"
+    assert len(rows) == 220
+    assert all(row.source == "tushare" for row in rows)
+
+    sparse = TushareValuationSource(
+        client=_FakeClient(), min_interval=0, history_days=100, chunk_days=380, min_rows=200
+    )
+    with pytest.raises(Exception, match="daily observations"):
+        sparse.fetch_index_valuation("000300.SH")
+
+
+def test_sync_prefers_tushare_daily_and_purges_legulegu(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    store = PersonalStore(tmp_path / "personal.db")
+    end = date(2026, 11, 19)
+    try:
+        store.replace_index_valuations(
+            "000300.SH",
+            _weekly_rows("000300.SH", end=end, count=60, start_pe=10, step=0.1),
+        )
+
+        class _FakeTushare:
+            name = "tushare"
+            is_daily = True
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def fetch_index_valuation(self, code):
+                return _daily_rows(code, end=end, count=300, start_pe=10, step=0.01)
+
+        monkeypatch.setattr(
+            "personal.config.get_settings",
+            lambda: SimpleNamespace(tushare_token="fake"),
+        )
+        monkeypatch.setattr(
+            "personal.datahub.sources.valuation_tushare_source.TushareValuationSource",
+            _FakeTushare,
+        )
+        result = sync_index_valuation(store)
+        assert result.dataset == "valuation"
+        assert len(store.get_index_valuations(source="tushare")) == 4 * 300
+        # The superseded weekly series is removed once the daily sync succeeds.
+        assert store.get_index_valuations(source="legulegu") == []
+        report = index_valuation_report(store, as_of=end)
+        assert report["source"] == "tushare"
+        assert report["rows"][0]["sample_freq"] == "daily"
+        assert report["rows"][0]["windows"]["1y"]["samples"] == 300
+    finally:
+        store.close()
+
+
+def test_sync_falls_back_to_legulegu_when_tushare_fails(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from personal.datahub.sources.base import SourceUnavailable
+
+    store = PersonalStore(tmp_path / "personal.db")
+    end = date(2026, 11, 19)
+
+    class _FakeTushare:
+        name = "tushare"
+        is_daily = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fetch_index_valuation(self, code):
+            raise SourceUnavailable("no permission for index_dailybasic")
+
+    class _FakeLegulegu:
+        name = "legulegu"
+
+        def fetch_index_valuation(self, code):
+            return _weekly_rows(code, end=end, count=60, start_pe=10, step=0.1)
+
+    try:
+        monkeypatch.setattr(
+            "personal.config.get_settings",
+            lambda: SimpleNamespace(tushare_token="fake"),
+        )
+        monkeypatch.setattr(
+            "personal.datahub.sources.valuation_tushare_source.TushareValuationSource",
+            _FakeTushare,
+        )
+        monkeypatch.setattr(
+            "personal.datahub.sources.valuation_source.LeguleguValuationSource",
+            _FakeLegulegu,
+        )
+        result = sync_index_valuation(store)
+        assert result.rows == 4 * 60
+        assert len(store.get_index_valuations(source="legulegu")) == 4 * 60
+        assert store.get_index_valuations(source="tushare") == []
+        report = index_valuation_report(store, as_of=end)
+        assert report["source"] == "legulegu"
+        assert report["rows"][0]["sample_freq"] == "weekly"
+    finally:
+        store.close()
+
+
+def test_report_prefers_freshest_source_per_index(tmp_path):
+    store = PersonalStore(tmp_path / "personal.db")
+    end = date(2026, 11, 19)
+    try:
+        # 创业板指: stale daily series loses to a fresh weekly fallback.
+        store.replace_index_valuations(
+            "399006.SZ",
+            _daily_rows(
+                "399006.SZ",
+                end=end - timedelta(days=10),
+                count=300,
+                start_pe=10,
+                step=0.01,
+            ),
+        )
+        store.replace_index_valuations(
+            "399006.SZ",
+            _weekly_rows(
+                "399006.SZ", end=end, count=60, start_pe=20, step=0.1, source="legulegu"
+            ),
+            source="legulegu",
+        )
+        # 沪深300: daily series only.
+        store.replace_index_valuations(
+            "000300.SH",
+            _daily_rows("000300.SH", end=end, count=300, start_pe=10, step=0.01),
+            source="tushare",
+        )
+        report = index_valuation_report(store, as_of=end)
+        by_code = {row["code"]: row for row in report["rows"]}
+        assert by_code["000300.SH"]["source"] == "tushare"
+        assert by_code["000300.SH"]["sample_freq"] == "daily"
+        assert by_code["399006.SZ"]["source"] == "legulegu"
+        assert by_code["399006.SZ"]["sample_freq"] == "weekly"
+    finally:
+        store.close()
+
+
+def test_delete_index_valuations(tmp_path):
+    store = PersonalStore(tmp_path / "personal.db")
+    end = date(2026, 11, 19)
+    try:
+        store.replace_index_valuations(
+            "000300.SH",
+            _daily_rows("000300.SH", end=end, count=10, start_pe=10, step=0.1),
+            source="tushare",
+        )
+        assert store.delete_index_valuations(code="000300.SH", source="legulegu") == 0
+        assert store.delete_index_valuations(code="000300.SH", source="tushare") == 10
+        assert store.get_index_valuations(code="000300.SH") == []
+    finally:
+        store.close()
+
+
+def test_cross_check_uses_detected_source(tmp_path):
+    store = PersonalStore(tmp_path / "personal.db")
+    end = date(2026, 11, 19)
+    try:
+        store.replace_index_valuations(
+            "000300.SH",
+            _daily_rows("000300.SH", end=end, count=260, start_pe=10, step=0.01),
+            source="tushare",
+        )
+        official = {
+            "000300.SH": {
+                "official_pe": 13.77,
+                "official_date": "2026-11-19",
+                "official_source": "中证指数",
+                "official_metric": "中证 PE1（总股本）",
+            }
+        }
+        report = valuation_cross_check(store, official, source=None)
+        row = report["rows"][0]
+        assert row["status"] in {"ok", "warn", "error"}
+        assert row["legu_pe"] is not None
+        assert row["legu_label"] == "静态 PE（总股本）"
     finally:
         store.close()
 

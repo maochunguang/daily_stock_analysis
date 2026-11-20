@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 178 |
+| `test_count` | 207 |
 | `last_updated` | 2026-11-19 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -95,11 +95,17 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/adjust.py` | qfq/hfq adjustment; Tushare `adj_factor` convention |
 | `personal/datahub/tradability.py` | T+1, 100-share lots, suspension, price limits |
 | `personal/datahub/quality.py` | OHLC/duplicate/jump/cross-source/missing-day checks |
-| `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import |
-| `personal/datahub/market.py` | Market-level syncs: index futures, index valuation, margin balance |
+| `personal/datahub/breadth.py` | TRIN (Arms Index) bands/interpretation + easy-daily-trading snapshot import (free fallback) |
+| `personal/datahub/sources/arms_source.py` | TRIN from Tushare full-market `daily` (one request per trading day); 沪深A股 excl. `.BJ`/ST, volume/amount aggregates + 上证指数 anchor |
+| `personal/datahub/market.py` | Market-level syncs: index futures (Tushare primary/AkShare fallback), index valuation, breadth (Tushare-computed TRIN), margin balance (exchange primary/Tushare fallback or `--via-tushare`), release calendar (EM primary/Tushare fallback) |
 | `personal/datahub/sources/futures_source.py` | CFFEX main contracts (IF/IH/IC/IM) + spot index basis via AkShare |
-| `personal/datahub/sources/valuation_source.py` | RM-46 Legulegu weekly PE history for 000300.SH/399006.SZ/399673.SZ/000688.SH; ISO-week dedupe |
+| `personal/datahub/sources/valuation_source.py` | RM-46 Legulegu **weekly** PE history fallback for 000300.SH/399006.SZ/399673.SZ/000688.SH; ISO-week dedupe |
+| `personal/datahub/sources/valuation_tushare_source.py` | RM-46 primary daily PE via Tushare `index_dailybasic` (2000-point token); ~380-day chunks, ≥0.5s spacing, 200-row floor |
 | `personal/datahub/sources/valuation_check_source.py` | RM-46 official current PE: CSI PE1 (total-share) and CNI PE滚动 (TTM) |
+| `personal/datahub/sources/margin_tushare_source.py` | Tushare `margin`/`margin_detail` (2000 pts): market summary rows (SSE/SZSE/总计, yuan incl. rzmre) + per-code detail rows; no board splits |
+| `personal/datahub/sources/futures_tushare_source.py` | Tushare `fut_mapping`+`fut_daily`+`index_daily` (2000 pts): official CFFEX main-contract series, continuous-view `oi_chg`, basis vs spot |
+| `personal/datahub/sources/release_tushare_source.py` | Tushare `share_float` (2000 pts): per-float-date aggregates; MV estimated from latest closes, omitted when any price is missing |
+| `personal/datahub/sources/turnover_tushare_source.py` | Tushare `index_daily` amounts (上证指数+深证综指 ≈ 全部沪深A股, ~0.1% deviation): turnover fallback + long-range backfill |
 | `personal/datahub/sources/margin_source.py` | Exchange margin summaries + per-board splits + per-stock rows; SSE name from `securityAbbr`; watchlist ∪ broker ∪ snapshot ∪ existing margin codes (RM-42) |
 | `personal/datahub/schedule.py` | RM-05 daily scheduler: ordered dataset syncs + sync_state freshness |
 | `personal/datahub/composite.py` | Composite market-state score (rolling percentiles, pro/contrarian) |
@@ -110,7 +116,7 @@ multi-asset derivatives beyond future ETF options.
 | `personal/analytics/trade_plans.py` | RM-43 pure fee-aware risk-budget sizing and post-trade exposure preview; no writes/orders |
 | `personal/analytics/portfolio_risk.py` | RM-43 snapshot-based concentration, cash, Beta/volatility, correlation, liquidity; explicit market-data coverage |
 | `personal/analytics/journal_outcomes.py` | RM-44 D+1/5/20/60 outcomes, adjusted entry, benchmark excess, MAE/MFE, plan-vs-fill comparison, Wilson summary |
-| `personal/analytics/index_valuation.py` | RM-46 percentile windows, sample floors, frequency/stale days, metric-aware official cross-check; UI also shows current/window-high ratio |
+| `personal/analytics/index_valuation.py` | RM-46 percentile windows, sample floors, frequency/stale days, per-index source auto-selection (freshest source wins, never mixed), metric-aware official cross-check; UI also shows current/window-high ratio |
 | `personal/datahub/sources/sentiment_source.py` | Limit-up ladder stats (Eastmoney pools) |
 | `personal/datahub/sources/flows_source.py` | Exchange turnover + broad ETF shares (EM list API with per-symbol `f84` fallback, CHG-0025) + THS sector crowding |
 | `personal/datahub/sources/rates_source.py` | CN/US bond yields + restricted-release calendar |
@@ -208,6 +214,8 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main account-import --file F [--alias A] [--as-of D] [--save]` | RM-45 local OCR screenshot to account snapshot draft/confirm |
 | `python -m personal.cli.main plans [--status S] [--limit N]` | RM-43 trade plans with fill progress |
 | `python -m personal.cli.main journal-outcomes [--horizon N] [--days N] [--code C] [--side S]` | RM-44 D+N/MAE/MFE/plan-vs-fill outcomes |
+| `python -m personal.cli.main sync --dataset margin --via-tushare --start D` | Margin history backfill via Tushare (per-code requests, no 120-day cap) |
+| `python -m personal.cli.main sync --dataset breadth [--start D]` | TRIN breadth computed from Tushare full-market daily (free fallback: `import-arms`) |
 | `python -m personal.cli.main sync --dataset futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release\|valuation` | Market indicator datasets |
 | `python -m personal.cli.main plugins` | List plugins |
 | `python -m personal.cli.main web --host H --port P` | Local Web console |
@@ -295,38 +303,46 @@ Backtest request bodies:
 | Item | Value |
 |---|---|
 | Targets | `000300.SH` 沪深300, `399006.SZ` 创业板指, `399673.SZ` 创业板50, `000688.SH` 科创50 |
-| Source | Legulegu `index-basic-pe`; `freq=week` only (daily history is paid); cookie page + MD5(Beijing date) token |
-| Table | `index_valuation (code, trade_date, source)`; `replace_index_valuations` rewrites one code's full series |
-| Metrics | `pe_ttm`=`addTtmPe` (cap-weighted), `pe_ttm_equal`=`ttmPe`, `pe_static`=`addLyrPe`, `pe_ttm_median`=`middleTtmPe` |
-| Dedupe | Keep the latest date per ISO week; the current week keeps the latest trading-day value |
+| Primary source | Tushare `index_dailybasic`, **daily** series, needs a 2000-point `TUSHARE_TOKEN`; `pe_ttm`→`pe_ttm`, `pe`→`pe_static`; no equal/median series (card shows 等权 `—`) |
+| Fallback source | Legulegu `index-basic-pe`, `freq=week` (daily history is paid); cookie page + MD5(Beijing date) token |
+| Source choice | `sync_index_valuation` uses Tushare when the token is set, per-index Legulegu fallback on failure; explicit `source=` injection skips the fallback |
+| Table | `index_valuation (code, trade_date, source)`; `replace_index_valuations` rewrites one code's full series; a fully successful Tushare sync purges the superseded `legulegu` rows |
+| Metrics | Tushare: `pe_ttm`, `pe` (static). Legulegu: `pe_ttm`=`addTtmPe` (cap-weighted), `pe_ttm_equal`=`ttmPe`, `pe_static`=`addLyrPe`, `pe_ttm_median`=`middleTtmPe` |
+| Dedupe | Tushare rows are already daily; Legulegu rows keep the latest date per ISO week |
 | Windows | `1y`=365d, `3y`=1095d, `5y`=1825d; min samples 10/30/50 |
 | Percentile | `count(value <= latest) / samples * 100`; lower = cheaper rank, range 0-100 |
 | Ratio | `latest / window.pe_max * 100`, rendered after the percentile as `（最高 N%）`; rank ≠ magnitude |
 | Zones | ≤20 `low`, ≤40 `low_mid`, ≤60 `mid`, ≤80 `high_mid`, >80 `high` |
-| Freshness | `stale_days > 7` warns; `sample_freq` inferred from the median gap |
-| Cross-check | CSI `市盈率1（总股本）` ↔ `pe_static` (000300/000688); CNI `PE滚动` ↔ `pe_ttm` (399006/399673) |
+| Freshness | `stale_days > 7` warns; `sample_freq` inferred from the median gap (daily ≤2d, weekly ≤10d, else monthly) |
+| Cross-check | CSI `市盈率1（总股本）` ↔ stored `pe_static` (000300/000688); CNI `PE滚动` ↔ stored `pe_ttm` (399006/399673) |
 | Status | `ok` ≤5%, `warn` 5-15%, `error` >15%, `unavailable` (missing official value) |
 | API | `GET /api/market/index-valuation`, `GET /api/market/index-valuation/check` |
-| CLI | `sync --dataset valuation` (ignores start/end; full weekly history per index) |
-| Frontend | `apps/dsa-web/src/types/personal.ts` → `PersonalIndexValuation*`; `ReviewCards.tsx` → `IndexValuationCard` (registry id `valuation`) |
+| CLI | `sync --dataset valuation` (ignores start/end; full history per index, ~20 Tushare requests at ≥0.5s spacing) |
+| Frontend | `apps/dsa-web/src/types/personal.ts` → `PersonalIndexValuation*`; `ReviewCards.tsx` → `IndexValuationCard` (registry id `valuation`); source chip + sample suffix adapt to daily/weekly |
 
 Operational semantics:
 
-- Per index: fetch → parse → ISO-week dedupe → require ≥52 weekly rows →
+- Per index: fetch → (dedupe for weekly) → floor check (daily ≥200, weekly ≥52) →
   `replace_index_valuations`. A failure on one index leaves the others updated and
   raises `partial valuation sync ...`, so `sync_state` records the run as failed
   and the scheduler retries.
 - Percentiles, zones, stale days and the cross-check are computed on read;
   nothing is persisted.
-- Cross-check is on demand only and never changes the weekly history. CSI is
+- `_preferred_source` picks one storage source per index by newest `trade_date`
+  (row count as tie-break), so the daily Tushare series wins once present while
+  a stale Tushare series loses to a freshly synced fallback.
+- Cross-check is on demand only and never changes the stored history. CSI is
   fetched directly from the official `indicator/{symbol}indicator.xls` because
   the image's akshare 1.19.x lacks `index_value_csindex`; CNI uses
   `ak.index_all_cni()`.
 - Official sources publish only current/recent values, so they validate the
   level, not the long-run percentile. A difference is a methodology signal, not
-  automatically a data bug.
-- The card shows weighted PE-TTM as the main value and equal-weight PE as a
-  secondary line; the 1/3/5-year cells show `percentile（最高 ratio%）`.
+  automatically a data bug. With the Tushare source, 创业板指 TTM runs ~+12%
+  against CNI and 科创50 static PE diverges strongly (flagged `需复核`); the
+  Legulegu series sits closer to the official values.
+- The card shows weighted PE-TTM as the main value (equal-weight PE as a
+  secondary line when the source provides it); the 1/3/5-year cells show
+  `percentile（最高 ratio%）`.
 
 ## Plugin contract
 
@@ -356,7 +372,12 @@ config_schema:
 | BaoStock | ✅ | ❌ | ✅ `query_trade_dates` | ✅ `query_stock_basic` name | ❌ | ❌ | Stable free fallback |
 | AkShare | ✅ | planned | ✅ `tool_trade_date_hist_sina` | ✅ `stock_individual_info_em` | planned | planned | Optional dependency |
 | Synthetic | ✅ | ❌ | derived from bars | ❌ | ❌ | ❌ | Offline demo/tests |
-| Legulegu | ❌ | ❌ | ❌ | index names | ❌ | ❌ | Weekly index PE for 4 broad indexes (RM-46); daily is paid; cookie + Beijing-date token |
+| Legulegu | ❌ | ❌ | ❌ | index names | ❌ | ❌ | Weekly index PE fallback for 4 broad indexes (RM-46); daily is paid; cookie + Beijing-date token |
+| Tushare `index_dailybasic` | ❌ | ❌ | ❌ | — | ❌ | ❌ | Daily index PE primary source, needs 2000 points (RM-46) |
+| Tushare `margin`/`margin_detail` | ❌ | ❌ | ❌ | — | ❌ | ❌ | Margin summary/detail fallback + `--via-tushare` backfill, 2000 points |
+| Tushare `fut_mapping`/`fut_daily` | ❌ | ❌ | ❌ | — | ❌ | ❌ | Official CFFEX main-contract futures primary, 2000 points |
+| Tushare `share_float` | ❌ | ❌ | ❌ | — | ❌ | ❌ | Release-calendar fallback (MV estimated from latest close), 2000 points |
+| Tushare `daily` (by date) / `stock_basic` | ✅ full-market | ❌ | ❌ | name map | ❌ | ❌ | TRIN breadth computation, 2000 points (CHG-0035) |
 
 Trading status is derived: suspension from calendar-vs-bar gaps; ST from the
 instrument name; limit prices from previous close + board rules.
@@ -365,15 +386,45 @@ instrument name; limit prices from previous close + board rules.
 
 - Upstream DB does not exist until the upstream app runs once.
 - Adjustment factors via Tushare free tier are rate-limited to 1/hour.
-- Index valuation (`index_valuation`) uses Legulegu **weekly** history because
-  daily history requires a paid account; percentiles therefore have weekly
-  granularity (about 52 samples/year), and the current week keeps only its
-  latest trading-day value. Tushare `index_dailybasic` is not permitted on the
-  free tier.
+- Index valuation prefers the **daily** Tushare `index_dailybasic` feed (needs a
+  2000-point `TUSHARE_TOKEN`); without a token — or when Tushare lacks
+  permission/fails — the sync falls back to the weekly Legulegu series per
+  index. Percentiles therefore have daily granularity (~244 samples/year) when
+  Tushare is used and weekly granularity (~52) on the fallback; sources are
+  never mixed inside one window. Tushare's PE methodology differs slightly from
+  CNI/CSI (创业板指 TTM ~+12%, 科创50 static strongly divergent — the cross-check
+  labels these instead of silently accepting them).
+- Index futures use official CFFEX data via Tushare (`fut_mapping`/`fut_daily`,
+  2000 points) as primary; the AkShare/Sina main-continuous adapter is the
+  fallback. `oi_chg` is recomputed across the continuous series and set to
+  `None` on the first day of a new main contract. During roll weeks the
+  expiring contract's OI decays for a few days before the mapping switches,
+  so `validate`'s `oi_chg_out_of_range` warnings on those days are expected
+  roll-season artifacts, not data errors.
+- Margin balance keeps the exchange scraper primary (it also yields board
+  splits); Tushare `margin`/`margin_detail` is the fallback when the exchange
+  scrape returns nothing, and `sync --dataset margin --via-tushare` forces it
+  for long-range backfills (no 120-day cap, one request per code, market rows
+  only — no board rows; blank names never overwrite stored ones).
+- Release calendar: Eastmoney primary (official 实际解禁市值); Tushare
+  `share_float` fallback aggregates per float-date and estimates market value
+  from latest closes, omitting the estimate for any day with missing prices.
+- Long-range Tushare backfills are chunked around vendor row caps: `margin`
+  caps at 4000 rows per call (500-day chunks), `share_float` at 6000 with one
+  row per holder (30-day chunks); `fut_mapping`/`index_daily`/`margin_detail`
+  carry the full 6.7-year range in one call. `sync_index_valuation(start=...)`
+  and `sync_turnover(prefer_tushare=True)` drive the 2020-01-01 backfills.
+- Market breadth (TRIN) is computed locally from Tushare full-market `daily`
+  (one request per trading day, 2000 points): 沪深A股 excluding `.BJ` and
+  ST/退市 instruments, matching the imported easy-daily-trading universe
+  (2026-11-17 dual-source check: 1197/3713 vs 1192/3717, TRIN 0.654 vs 0.652).
+  The free `import-arms` snapshot path stays as the manual fallback; Tushare
+  rows overwrite imported rows by date. easy-daily's 指数背离 signals are not
+  reproduced (card shows `—` for rows from the Tushare path).
 - Official index valuation sources only expose current values, not the long
   history needed for percentiles. The cross-check compares CSI PE1
-  (total-share) with Legulegu static PE and CNI PE滚动 with Legulegu
-  TTM; differences are labeled as methodology differences, not data errors.
+  (total-share) with the stored static PE and CNI PE滚动 with the stored TTM;
+  differences are labeled as methodology differences, not data errors.
 - Fund interfaces require Tushare 2000/5000 points or AkShare.
 - Trading status is derived, not provider-native. ST detection depends on a
   name lookup; without a name, the limit percentage may be too wide. Status
@@ -471,3 +522,7 @@ instrument name; limit prices from previous close + board rules.
 | `CHG-0030` | Index valuation percentiles + official CSI/CNI cross-check |
 | `CHG-0031` | Fix missing Shanghai margin names (`securityAbbr`) |
 | `CHG-0032` | Documentation: AI context completeness for the RM-46 change set |
+| `CHG-0033` | Valuation switches to daily Tushare `index_dailybasic` with Legulegu fallback |
+| `CHG-0034` | Tushare 2000-point sources for futures/margin/release + history backfill path |
+| `CHG-0035` | TRIN breadth computed from Tushare full-market daily; import-arms demoted to fallback |
+| `CHG-0036` | Deep-review history uniformly backfilled to 2020-01-01 (chunked Tushare sources, turnover fallback, margin scope rule) |

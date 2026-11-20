@@ -1,9 +1,11 @@
 """Index PE percentile ranks for the deep-review page.
 
-The valuation series is intentionally *weekly* (see
-``personal.datahub.sources.valuation_source``).  Percentiles use all weekly
-observations in a trailing window including the latest one; a low percentile
-means the current PE is cheap relative to that window, not a buy signal.
+The valuation series prefers the *daily* Tushare ``index_dailybasic`` feed
+(2000-point token, see ``personal.datahub.sources.valuation_tushare_source``)
+and falls back to the weekly Legulegu endpoint. Percentiles use all stored
+observations of one source in a trailing window including the latest one; a
+low percentile means the current PE is cheap relative to that window, not a
+buy signal. Sources are never mixed inside one window.
 
 No persistence and no network access here: the caller syncs the raw series
 first, then this module only reads the personal database.
@@ -59,7 +61,29 @@ def _sample_frequency(rows: Sequence[IndexValuation]) -> str:
     ]
     if not gaps:
         return "unknown"
-    return "weekly" if statistics.median(gaps) <= 10 else "monthly"
+    median_gap = statistics.median(gaps)
+    if median_gap <= 2:
+        return "daily"
+    if median_gap <= 10:
+        return "weekly"
+    return "monthly"
+
+
+def _preferred_source(store: PersonalStore, code: str) -> str | None:
+    """Pick one storage source per index; never mix frequencies in a window.
+
+    The freshest ``trade_date`` wins, with row count as tie-break so the
+    daily Tushare series beats the weekly Legulegu fallback once both are
+    present, while a stale Tushare series loses to a freshly synced fallback.
+    """
+
+    candidates: dict[str, tuple[date, int]] = {}
+    for row in store.get_index_valuations(code=code):
+        latest, count = candidates.get(row.source, (row.trade_date, 0))
+        candidates[row.source] = (max(latest, row.trade_date), count + 1)
+    if not candidates:
+        return None
+    return max(candidates.items(), key=lambda item: (item[1][0], item[1][1]))[0]
 
 
 def _window_summary(
@@ -104,18 +128,24 @@ def _index_report(
     name: str,
     *,
     as_of: date,
-    source: str,
+    source: str | None,
 ) -> dict[str, Any]:
-    rows = [
-        row
-        for row in store.get_index_valuations(code=code, end=as_of, source=source)
-        if row.pe_ttm is not None and row.pe_ttm > 0
-    ]
+    source = source or _preferred_source(store, code)
+    rows = (
+        [
+            row
+            for row in store.get_index_valuations(code=code, end=as_of, source=source)
+            if row.pe_ttm is not None and row.pe_ttm > 0
+        ]
+        if source
+        else []
+    )
     if not rows:
         return {
             "code": code,
             "name": name,
             "available": False,
+            "source": source,
             "as_of": None,
             "stale_days": None,
             "sample_freq": "unknown",
@@ -131,6 +161,7 @@ def _index_report(
         "code": code,
         "name": name,
         "available": True,
+        "source": source,
         "as_of": latest.trade_date.isoformat(),
         "stale_days": max(0, (as_of - latest.trade_date).days),
         "sample_freq": _sample_frequency(rows),
@@ -160,9 +191,14 @@ def index_valuation_report(
     store: PersonalStore,
     *,
     as_of: date | None = None,
-    source: str = "legulegu",
+    source: str | None = None,
 ) -> dict[str, Any]:
-    """Return the four deep-review valuation rows (always one per target)."""
+    """Return the four deep-review valuation rows (always one per target).
+
+    With ``source=None`` each index uses its freshest stored source (daily
+    Tushare preferred over the weekly Legulegu fallback); frequencies are
+    never mixed inside one window.
+    """
 
     today = as_of or date.today()
     rows = [
@@ -171,9 +207,10 @@ def index_valuation_report(
     ]
     available = [row for row in rows if row["available"]]
     latest_dates = [row["as_of"] for row in available if row["as_of"]]
+    detected = next((row["source"] for row in available if row["source"]), None)
     return {
         "rows": rows,
-        "source": source,
+        "source": source or detected,
         "as_of": max(latest_dates) if latest_dates else None,
         "windows": [label for label, _days in VALUATION_WINDOWS],
         "available": bool(available),
@@ -194,27 +231,36 @@ def valuation_cross_check(
     official_values: Mapping[str, Mapping[str, Any]],
     *,
     checked_at: datetime | None = None,
-    source: str = "legulegu",
+    source: str | None = None,
 ) -> dict[str, Any]:
-    """Compare stored Legulegu levels with official current values.
+    """Compare stored valuation levels with official current values.
 
     ``official_values`` is injected so tests and callers can use a fake source.
     The comparison is intentionally metric-aware: CSI's total-share PE1 is
-    compared with Legulegu's static series, while CNI's rolling PE is compared
-    with Legulegu's TTM series.
+    compared with the stored static series, while CNI's rolling PE is compared
+    with the stored TTM series. With ``source=None`` each index is checked on
+    its freshest stored source (Tushare daily preferred, Legulegu weekly
+    fallback).
     """
 
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     for code, name in INDEX_VALUATION_TARGETS:
         target = OFFICIAL_VALUATION_TARGETS.get(code)
-        history = [
-            row
-            for row in store.get_index_valuations(code=code, source=source)
-            if row.pe_ttm is not None and row.pe_ttm > 0
-        ]
+        used_source = source or _preferred_source(store, code)
+        history = (
+            [
+                row
+                for row in store.get_index_valuations(
+                    code=code, source=used_source
+                )
+                if row.pe_ttm is not None and row.pe_ttm > 0
+            ]
+            if used_source
+            else []
+        )
         if target is None or not history:
-            detail = "未配置官方校验源" if target is None else "乐咕无历史数据"
+            detail = "未配置官方校验源" if target is None else "本地无估值历史"
             rows.append(
                 {
                     "code": code,
@@ -243,7 +289,7 @@ def valuation_cross_check(
                     "code": code,
                     "name": name,
                     "status": "unavailable",
-                    "detail": f"乐咕缺少 {target['legu_label']}",
+                    "detail": f"本地缺少 {target['legu_label']}",
                     "legu_pe": None,
                     "official_pe": None,
                     "official_date": None,
@@ -254,8 +300,9 @@ def valuation_cross_check(
                     "diff_pct": None,
                 }
             )
-            warnings.append(f"{name}: 乐咕缺少 {target['legu_label']}")
+            warnings.append(f"{name}: 本地缺少 {target['legu_label']}")
             continue
+
         if "error" in official:
             detail = str(official["error"])
             rows.append(
@@ -298,7 +345,7 @@ def valuation_cross_check(
         rows.append(row)
         if status != "ok":
             warnings.append(
-                f"{name}: 乐咕 {row['legu_pe']} vs 官方 {row['official_pe']}，"
+                f"{name}: 本地 {row['legu_pe']} vs 官方 {row['official_pe']}，"
                 f"偏差 {diff_pct:+.1f}%"
             )
 

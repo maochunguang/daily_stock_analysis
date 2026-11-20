@@ -293,9 +293,10 @@ export interface PersonalIndexValuationRow {
   code: string;
   name: string;
   available: boolean;
+  source: string | null;
   as_of: string | null;
   stale_days: number | null;
-  sample_freq: 'weekly' | 'monthly' | 'unknown';
+  sample_freq: 'daily' | 'weekly' | 'monthly' | 'unknown';
   pe_ttm: number | null;
   pe_ttm_equal: number | null;
   pe_static: number | null;
@@ -306,7 +307,7 @@ export interface PersonalIndexValuationRow {
 
 export interface PersonalIndexValuationResponse {
   rows: PersonalIndexValuationRow[];
-  source: string;
+  source: string | null;
   as_of: string | null;
   windows: string[];
   available: boolean;

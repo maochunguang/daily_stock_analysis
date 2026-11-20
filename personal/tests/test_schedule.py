@@ -158,4 +158,5 @@ class TestRunScheduledSync:
             "margin",
             "bars",
             "calendar",
+            "breadth",
         }

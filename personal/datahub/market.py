@@ -7,7 +7,7 @@ functions instead of ``DataSyncService``. Every sync records freshness into
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Sequence
 
@@ -35,6 +35,8 @@ from .store import PersonalStore
 
 #: per-day exchange APIs; keep a sane upper bound per run
 MARGIN_MAX_DAYS = 120
+#: breadth sync costs one full-market ``daily`` request per trading day
+BREADTH_MAX_DAYS = 450
 DEFAULT_LOOKBACK_DAYS = 10
 #: A-share afternoon close; snapshot APIs before this still carry the prior close
 MARKET_CLOSE = time(15, 0)
@@ -99,20 +101,78 @@ class MarketSyncResult:
         }
 
 
+def _tushare_margin_source():
+    """Tushare margin adapter for the configured token, or ``None``."""
+
+    from ..config import get_settings
+    from .sources.margin_tushare_source import TushareMarginSource
+
+    token = get_settings().tushare_token
+    if not token:
+        return None
+    try:
+        return TushareMarginSource(token=token)
+    except SourceUnavailable:
+        return None
+
+
+def _tushare_futures_source():
+    """Tushare CFFEX adapter for the configured token, or ``None``."""
+
+    from ..config import get_settings
+    from .sources.futures_tushare_source import TushareFuturesSource
+
+    token = get_settings().tushare_token
+    if not token:
+        return None
+    try:
+        return TushareFuturesSource(token=token)
+    except SourceUnavailable:
+        return None
+
+
+def _tushare_release_source():
+    """Tushare share_float adapter for the configured token, or ``None``."""
+
+    from ..config import get_settings
+    from .sources.release_tushare_source import TushareReleaseSource
+
+    token = get_settings().tushare_token
+    if not token:
+        return None
+    try:
+        return TushareReleaseSource(token=token)
+    except SourceUnavailable:
+        return None
+
+
 def sync_index_futures(
     store: PersonalStore,
     *,
     start: date | None = None,
     end: date | None = None,
-    source: FuturesSource | None = None,
+    source=None,
 ) -> MarketSyncResult:
+    """Index futures: Tushare official CFFEX data primary, AkShare fallback.
+
+    Tushare rebuilds the main-contract series from ``fut_mapping`` +
+    ``fut_daily`` with spot closes from ``index_daily``; the Sina-based
+    AkShare adapter stays as the fallback (both need the optional akshare
+    package except Tushare, which is stdlib-only).
+    """
+
     end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
-    source = source or FuturesSource()
+    auto = source is None
+    selected = source
+    if auto:
+        selected = _tushare_futures_source() or FuturesSource()
     try:
-        rows = source.fetch_index_futures(start, end)
+        rows = selected.fetch_index_futures(start, end)
     except SourceUnavailable:
-        raise
+        if not auto or isinstance(selected, FuturesSource):
+            raise
+        rows = FuturesSource().fetch_index_futures(start, end)
     count = store.upsert_index_futures(rows)
     latest = max((row.trade_date for row in rows), default=None)
     return MarketSyncResult(
@@ -129,38 +189,87 @@ def sync_index_valuation(
     store: PersonalStore,
     *,
     source=None,
+    start: date | None = None,
 ) -> MarketSyncResult:
-    """Refresh weekly PE history for the deep-review valuation card.
+    """Refresh PE history for the deep-review valuation card.
 
-    Every index is replaced atomically after a successful fetch.  If one
-    index fails, already-fetched indexes stay updated but the run is reported
-    as failed so the scheduler retries and the freshness table does not hide
-    a partial series.
+    Prefers Tushare ``index_dailybasic`` (daily series, needs a 2000-point
+    token) and falls back to the weekly Legulegu endpoint per index when the
+    token is missing, lacks permission, or fails. Every index is replaced
+    atomically after a successful fetch; if one index fails the others stay
+    updated but the run is reported as failed so the scheduler retries and the
+    freshness table does not hide a partial series.
     """
 
+    from ..config import get_settings
     from .sources.valuation_source import (
         INDEX_VALUATION_TARGETS,
         LeguleguValuationSource,
         keep_week_latest,
     )
+    from .sources.valuation_tushare_source import TushareValuationSource
 
-    source = source or LeguleguValuationSource()
+    legulegu = LeguleguValuationSource()
+    # An explicitly injected source is used as-is (tests/forced runs); the
+    # Legulegu fallback only applies to the auto-selected primary source.
+    auto = source is None
+    if source is not None:
+        primary = source
+    else:
+        token = get_settings().tushare_token
+        primary = None
+        if token:
+            try:
+                primary = TushareValuationSource(token=token, start=start)
+            except SourceUnavailable:
+                primary = None
+    if primary is None:
+        primary = legulegu
+
     total = 0
     dates: list[date] = []
     errors: list[str] = []
+    tushare_codes: list[str] = []
     for code, _name in INDEX_VALUATION_TARGETS:
+        rows = None
+        used_name = ""
+        primary_error: Exception | None = None
         try:
-            rows = keep_week_latest(source.fetch_index_valuation(code))
-            if len(rows) < 52:
-                raise SourceUnavailable(
-                    f"only {len(rows)} weekly observations; refusing to replace history"
-                )
-            total += store.replace_index_valuations(
-                code, rows, source=getattr(source, "name", "legulegu")
+            rows = primary.fetch_index_valuation(code)
+            used_name = getattr(primary, "name", "legulegu")
+        except Exception as exc:  # noqa: BLE001 - try the fallback source
+            primary_error = exc
+        if rows is None and auto and primary is not legulegu:
+            try:
+                rows = legulegu.fetch_index_valuation(code)
+                used_name = "legulegu"
+            except Exception as exc:  # noqa: BLE001 - keep other indexes moving
+                errors.append(f"{code}: {primary_error}; fallback: {exc}")
+                continue
+        elif rows is None:
+            errors.append(f"{code}: {primary_error}")
+            continue
+
+        daily = bool(getattr(primary, "is_daily", False)) and used_name == getattr(
+            primary, "name", ""
+        )
+        if not daily:
+            rows = keep_week_latest(rows)
+        floor = 200 if daily else 52
+        if len(rows) < floor:
+            errors.append(
+                f"{code}: only {len(rows)} observations; refusing to replace history"
             )
-            dates.extend(row.trade_date for row in rows)
-        except Exception as exc:  # noqa: BLE001 - keep other indexes moving
-            errors.append(f"{code}: {exc}")
+            continue
+        total += store.replace_index_valuations(code, rows, source=used_name)
+        dates.extend(row.trade_date for row in rows)
+        if daily:
+            tushare_codes.append(code)
+
+    # The old Legulegu weekly rows would otherwise linger unused next to the
+    # daily Tushare series; drop them once the full daily sync succeeded.
+    for code in tushare_codes:
+        total -= store.delete_index_valuations(code=code, source="legulegu")
 
     if not dates:
         raise SourceUnavailable(
@@ -182,29 +291,146 @@ def sync_index_valuation(
     return result
 
 
+def sync_market_breadth(
+    store: PersonalStore,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    source=None,
+) -> MarketSyncResult:
+    """TRIN / Arms Index breadth computed from full-market daily data.
+
+    Tushare ``daily`` (one request per trading day) is the primary source so
+    the deep-review TRIN card no longer depends on the external
+    ``easy-daily-trading`` snapshots; the free ``import-arms`` path stays
+    available as a manual fallback and previously imported rows are kept until
+    a Tushare row overwrites the same date. Trading days come from the local
+    calendar, so backfill the calendar first when it is stale.
+    """
+
+    from .breadth import percentile_of
+    from ..config import get_settings
+    from .sources.arms_source import TushareArmsSource
+
+    end = _default_end(store, end)
+    start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+    days = store.get_trading_dates(start=start, end=end)
+    if len(days) > BREADTH_MAX_DAYS:
+        raise ValueError(
+            f"breadth sync range is capped at {BREADTH_MAX_DAYS} trading days "
+            "per run (one full-market request per day); narrow --start/--end"
+        )
+    if not days:
+        return MarketSyncResult(
+            dataset="breadth",
+            start=start,
+            end=end,
+            rows=0,
+            latest_date=None,
+            message="no trading days in range (sync the calendar first)",
+        )
+    if source is None:
+        token = get_settings().tushare_token
+        if not token:
+            raise SourceUnavailable(
+                "breadth sync needs TUSHARE_TOKEN; the free fallback is the "
+                "manual `import-arms` snapshot import"
+            )
+        source = TushareArmsSource(token=token)
+    rows = source.fetch_market_breadth(days)
+    history = [row.trin for row in store.get_market_breadth()]
+    enriched = [
+        replace(row, trin_pct=percentile_of(row.trin, [*history, row.trin]))
+        for row in rows
+    ]
+    count = store.upsert_market_breadth(enriched)
+    latest = max((row.trade_date for row in enriched), default=None)
+    return MarketSyncResult(
+        dataset="breadth",
+        start=start,
+        end=end,
+        rows=count,
+        latest_date=latest,
+        message="" if count else "no breadth rows returned for this range",
+    )
+
+
 def sync_margin_balance(
     store: PersonalStore,
     *,
     start: date | None = None,
     end: date | None = None,
-    source: MarginSource | None = None,
+    source=None,
     stock_codes: Sequence[str] = (),
+    prefer_tushare: bool = False,
 ) -> MarketSyncResult:
     """Margin balance sync; with ``stock_codes`` also keeps per-stock rows.
 
-    持仓股两融（RM-42）：代码列表通常为 自选股 ∪ 交割单持仓，与市场行共用
-    同一次逐日请求。
+    持仓股两融（RM-42）：代码列表通常为 自选股 ∪ 交割单持仓。The exchange
+    scraper is primary (it also yields board splits); Tushare ``margin`` /
+    ``margin_detail`` (2000-point token) takes over when the exchange scrape
+    returns nothing, or when ``prefer_tushare`` is set — the latter has no
+    120-day cap because per-code detail costs one request per code, which is
+    how history backfills run.
     """
+
     end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+    codes = tuple(dict.fromkeys(code.strip() for code in stock_codes if code and code.strip()))
+    tushare = _tushare_margin_source()
+    if prefer_tushare:
+        if tushare is None:
+            raise SourceUnavailable("prefer_tushare requires TUSHARE_TOKEN")
+        rows = tushare.fetch_margin_balance(start, end)
+        stock_rows = (
+            tushare.fetch_margin_stock_rows(codes, start, end) if codes else []
+        )
+        return _store_margin_rows(
+            store, start, end, rows, _prefill_stock_names(store, stock_rows)
+        )
     if (end - start).days > MARGIN_MAX_DAYS:
         raise ValueError(
             f"margin sync range is capped at {MARGIN_MAX_DAYS} days per run "
-            "(per-day exchange detail requests); narrow --start/--end"
+            "(per-day exchange detail requests); narrow --start/--end or use "
+            "--via-tushare"
         )
-    source = source or MarginSource()
-    codes = tuple(dict.fromkeys(code.strip() for code in stock_codes if code and code.strip()))
-    rows, stock_rows = source.fetch_margin_all(start, end, codes)
+    exchange = source or MarginSource()
+    rows, stock_rows = exchange.fetch_margin_all(start, end, codes)
+    if not rows and source is None and tushare is not None:
+        rows = tushare.fetch_margin_balance(start, end)
+        stock_rows = (
+            tushare.fetch_margin_stock_rows(codes, start, end) if codes else []
+        )
+    return _store_margin_rows(
+        store, start, end, rows, _prefill_stock_names(store, stock_rows)
+    )
+
+
+def _prefill_stock_names(store: PersonalStore, stock_rows: Sequence) -> Sequence:
+    """Fill blank Tushare-detail names from the codes already in the store."""
+
+    if not stock_rows:
+        return stock_rows
+    names = store.margin_stock_names()
+    if not names:
+        return stock_rows
+    return [
+        row
+        if (row.name or "").strip()
+        else replace(
+            row, name=names.get(row.code) or row.name, source=row.source
+        )
+        for row in stock_rows
+    ]
+
+
+def _store_margin_rows(
+    store: PersonalStore,
+    start: date,
+    end: date,
+    rows: Sequence,
+    stock_rows: Sequence,
+) -> MarketSyncResult:
     count = store.upsert_margin_balance(rows)
     if stock_rows:
         count += store.upsert_margin_stock(stock_rows)
@@ -219,24 +445,56 @@ def sync_margin_balance(
     )
 
 
+def _tushare_turnover_source():
+    """Tushare turnover adapter for the configured token, or ``None``."""
+
+    from ..config import get_settings
+    from .sources.turnover_tushare_source import TushareTurnoverSource
+
+    token = get_settings().tushare_token
+    if not token:
+        return None
+    try:
+        return TushareTurnoverSource(token=token)
+    except SourceUnavailable:
+        return None
+
+
 def sync_turnover(
     store: PersonalStore,
     *,
     start: date | None = None,
     end: date | None = None,
     source: TurnoverSource | None = None,
+    prefer_tushare: bool = False,
 ) -> MarketSyncResult:
     """Exchange turnover — the margin-trading-ratio denominator.
 
     The SSE interface returns full history in one call; SZSE costs one request
-    per day in range.
+    per day in range. Tushare `index_daily` amounts (上证指数 + 深证综指 ≈ 全部
+    沪深 A 股, ~0.1% deviation) backfill long ranges cheaply via
+    ``prefer_tushare`` and act as the fallback when the exchange scrape
+    returns nothing.
     """
     end = _default_end(store, end)
     start = start or end - timedelta(days=DEFAULT_LOOKBACK_DAYS)
-    _check_range(start, end)
-    source = source or TurnoverSource()
-    rows = source.fetch_turnover(start, end)
-    count = store.upsert_market_turnover(rows)
+    tushare = _tushare_turnover_source()
+    if prefer_tushare:
+        if tushare is None:
+            raise SourceUnavailable("prefer_tushare requires TUSHARE_TOKEN")
+        rows = tushare.fetch_turnover(start, end)
+    else:
+        _check_range(start, end)
+        exchange = source or TurnoverSource()
+        try:
+            rows = exchange.fetch_turnover(start, end)
+        except Exception:  # noqa: BLE001 - try the fallback source
+            if tushare is None:
+                raise
+            rows = []
+        if not rows and source is None and tushare is not None:
+            rows = tushare.fetch_turnover(start, end)
+    store.upsert_market_turnover(rows)
     return _result("turnover", start, end, rows)
 
 
@@ -345,13 +603,40 @@ def sync_restricted_release(
     *,
     start: date | None = None,
     end: date | None = None,
-    source: ReleaseSource | None = None,
+    source=None,
 ) -> MarketSyncResult:
+    """Release calendar: Eastmoney primary (official MV), Tushare fallback.
+
+    The Tushare ``share_float`` fallback aggregates per float-date and
+    estimates market value from latest closes; it never produces a partial
+    market-value estimate (missing price → None for that day).
+    """
+
     start = start if start is not None else date.today()
     end = end if end is not None else date.today() + timedelta(days=45)
     _check_range(start, end)
-    source = source or ReleaseSource()
-    rows = source.fetch_release_summary(start, end)
+    auto = source is None
+    selected = source or ReleaseSource()
+    tushare = _tushare_release_source() if auto else None
+    rows = None
+    selected_error: Exception | None = None
+    try:
+        rows = selected.fetch_release_summary(start, end)
+    except Exception as exc:  # noqa: BLE001 - try the fallback source
+        if tushare is None:
+            raise
+        rows = None
+        selected_error = exc
+    if not rows and tushare is not None:
+        try:
+            rows = tushare.fetch_release_summary(start, end)
+        except Exception as exc:  # noqa: BLE001 - report the first failure
+            raise SourceUnavailable(
+                f"release sync failed: eastmoney={selected_error!r}; "
+                f"tushare={exc}"
+            ) from exc
+    if rows is None:
+        rows = []
     count = store.upsert_restricted_release(rows)
     latest = max((row.release_date for row in rows), default=None)
     return MarketSyncResult(

@@ -44,12 +44,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "bars", "adjust", "calendar", "status", "futures", "margin",
             "turnover", "zt", "pcr", "cffex_rank", "sector", "etf_share",
-            "bond", "release", "valuation",
+            "bond", "release", "valuation", "breadth",
         ),
     )
     sync.add_argument("--code", action="append", default=[])
     sync.add_argument("--start", default="")
     sync.add_argument("--end", default="")
+    sync.add_argument(
+        "--via-tushare",
+        dest="via_tushare",
+        action="store_true",
+        help=(
+            "margin dataset: use the Tushare margin/margin_detail interfaces "
+            "(2000-point token) instead of the per-day exchange scrape; no "
+            "120-day range cap, one request per code"
+        ),
+    )
     sync.add_argument(
         "--cross-check",
         dest="cross_check",
@@ -289,7 +299,7 @@ def _info(settings) -> int:
 def _sync(settings, args) -> int:
     if args.dataset in (
         "futures", "margin", "turnover", "zt", "pcr", "cffex_rank",
-        "sector", "etf_share", "bond", "release", "valuation",
+        "sector", "etf_share", "bond", "release", "valuation", "breadth",
     ):
         return _sync_market(settings, args)
     codes = list(args.code) or list(settings.stock_list)
@@ -361,6 +371,7 @@ def _sync_market(settings, args) -> int:
         sync_index_valuation,
         sync_limit_up,
         sync_margin_balance,
+        sync_market_breadth,
         sync_option_pcr,
         sync_restricted_release,
         sync_sector_amount,
@@ -389,8 +400,13 @@ def _sync_market(settings, args) -> int:
     dispatch = {
         "futures": lambda store: sync_index_futures(store, start=start, end=end),
         "valuation": lambda store: sync_index_valuation(store),
+        "breadth": lambda store: sync_market_breadth(store, start=start, end=end),
         "margin": lambda store: sync_margin_balance(
-            store, start=start, end=end, stock_codes=margin_codes(store)
+            store,
+            start=start,
+            end=end,
+            stock_codes=margin_codes(store),
+            prefer_tushare=bool(getattr(args, "via_tushare", False)),
         ),
         "turnover": lambda store: sync_turnover(store, start=start, end=end),
         "zt": lambda store: sync_limit_up(store, start=start, end=end),

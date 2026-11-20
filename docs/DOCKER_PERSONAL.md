@@ -266,10 +266,28 @@ docker exec daily_stock_analysis-2 python -m personal.cli.main validate
   无历史可回补，序列从启用日起自建积累
 - Tushare 免费档 `opt_basic`/`opt_daily` 限频 **1 次/小时**（所以 PCR 用
   上交所官方统计接口，见 §7.7）
-- 乐咕乐股指数估值免费档只提供**周频**历史（日线为付费功能）；`valuation`
-  数据集每次拉全量并按 ISO 周去重，见使用手册 §4.6
+- 指数估值**主源为 Tushare `index_dailybasic` 日频**（2000 积分 token，
+  `TUSHARE_TOKEN`）；未配置 token、权限不足或失败时自动降级为乐咕乐股
+  **周频**。Tushare 同步按 ~380 天分块、间隔 ≥0.5 秒（每轮约 20 个请求），
+  成功后清理被替代的乐咕周频行，见使用手册 §4.6
+- `TUSHARE_TOKEN` 建议放在 `data/runtime.env`（`ENV_FILE` 机制，两个服务都会
+  加载）。**不要在 compose `environment:` 里注入 `TUSHARE_TOKEN=${TUSHARE_TOKEN}`
+  而让 `.env` 留空**：空字符串会遮蔽 runtime.env 里的真值（2026-11-20 实测，
+  personal-sync 因此拿不到 token；已从 NAS compose 删除该行）
+- 2000 积分档的 Tushare 深度复盘源：估值 `index_dailybasic`（日频主源）、
+  期指 `fut_mapping`+`fut_daily`（主源，官方 CFFEX）、两融
+  `margin`/`margin_detail`（兜底 + `--via-tushare` 回补，无 120 天上限）、
+  解禁 `share_float`（兜底）。历史重跑示例见使用手册 §5
 - 指数估值的官方交叉校验按需请求中证/国证接口；失败只把对应指数标为
   `不可用`，不影响估值卡片、定时同步或本地历史分位
+- 市场宽度 TRIN 已改为 Tushare 全市场 `daily` 本地计算（每交易日一次请求，
+  `breadth` 数据集随定时同步自动更新）；`import-arms` 快照导入保留为免费兜底。
+  NAS 上历史已用 Tushare 重跑覆盖（每交易日约 1 次请求，1.5 年 ≈ 3 分钟）
+- 2020-01-01 统一回补注意行数上限：`margin` 单次 4000 行（按 500 天分块）、
+  `share_float` 单次 6000 行且按持有人逐行（按 30 天分块）；日历表先补到位
+  （`sync --dataset calendar --start 2019-01-01`）否则 breadth/trading-day 循环
+  无日期可用。**补不了**：涨停梯队（东财 30 天）、行业拥挤度/ETF 份额（快照
+  自建）、期指会员持仓（中金所逐日 CSV，2020 回补 ≈ 5300 次请求，保持 1.5 年）
 - 长区间回填受 `MARGIN_MAX_DAYS=120` 保护，按 ≤120 天分块
 
 ## 10. 最小验证命令

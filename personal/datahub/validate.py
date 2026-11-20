@@ -444,13 +444,17 @@ def _check_margin(store, start, end, calendar):
     dates = [row.trade_date for row in rows]
     for bucket_date, items in _scopes_by_date(rows, lambda row: row.trade_date).items():
         by_scope = {row.scope: row for row in items}
-        if len(by_scope) < 7:
+        # Tushare 历史回补只产 market 行（3 口径）；板块行只来自交易所明细，
+        # 因此以该日是否已有板块行判定预期口径数。
+        has_board = any(row.scope_type == "board" for row in items)
+        expected_scopes = 7 if has_board else 3
+        if len(by_scope) < expected_scopes:
             findings.append(
                 Finding(
                     "margin",
                     "incomplete_scopes",
                     "warn",
-                    f"{bucket_date} 只有 {len(by_scope)} 个口径（预期 7）",
+                    f"{bucket_date} 只有 {len(by_scope)} 个口径（预期 {expected_scopes}）",
                     bucket_date,
                 )
             )

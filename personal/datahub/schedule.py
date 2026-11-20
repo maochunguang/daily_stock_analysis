@@ -29,6 +29,7 @@ from .market import (
     sync_index_valuation,
     sync_limit_up,
     sync_margin_balance,
+    sync_market_breadth,
     sync_option_pcr,
     sync_restricted_release,
     sync_sector_amount,
@@ -45,6 +46,7 @@ DEFAULT_DATASETS: tuple[str, ...] = (
     "adjust",
     "futures",
     "valuation",
+    "breadth",
     "turnover",
     "margin",
     "cffex_rank",
@@ -221,6 +223,11 @@ def _run_dataset(
         return sync_index_valuation(store).rows
     if dataset == "futures":
         return sync_index_futures(store, start=as_of - timedelta(days=10), end=as_of).rows
+    if dataset == "breadth":
+        # TRIN/Arms：Tushare 全市场 daily 计算（换月/节假日由日历控制）
+        return sync_market_breadth(
+            store, start=as_of - timedelta(days=10), end=as_of
+        ).rows
     if dataset == "margin":
         # 持仓股两融：自选股 ∪ 交割单持仓 ∪ 截图账户快照持仓 ∪ 已留档代码
         # （最后一组用于回填历史上缺少名称的沪市明细行）
