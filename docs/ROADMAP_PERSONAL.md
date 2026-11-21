@@ -74,6 +74,7 @@
 | RM-44 | 决策结果评估 D+N | done（CHG-0028） | `journal_outcomes` 按成交日后第 N 个交易日计算收益/超额/MAE/MFE；卖出方向取反；计划区间/数量偏差；UI「决策结果」tab + Wilson 区间 | 已完成/待观察/不可用三态；样本<30 提示；跨除权价格一致 |
 | RM-45 | 同花顺截图账户快照 | done（CHG-0029） | 本地 RapidOCR 识别资产/持仓页，草稿可编辑后确认；`account_snapshot`/`account_position_snapshot` 与交割单持仓分离；HEIC/PNG/JPEG/WebP | 真实截图识别总资产+持仓；原图/原始 OCR/账号不落库；同日同账户覆盖 |
 | RM-46 | 指数估值分位 | done（CHG-0030/0033） | `index_valuation` 存四个宽基指数估值：主源 Tushare `index_dailybasic` 日频（2000 积分），乐咕周频兜底，按指数取最新源且不混频；1/3/5 年窗口分位 + 「当前/窗口最高」比值；深度复盘「指数估值分位」卡 + `GET /api/market/index-valuation`；valuation 数据集纳入定时同步；「交叉校验」按中证/国证官方当前值做口径匹配校验 | 分位样本/窗口可追溯；分位后显示“当前/窗口最高”比值；卡片标注当前来源与频率；数据陈旧>7 天提示；token 缺失/失败时明确降级为周频；官方偏差分级显示 |
+| RM-47 | 自定义组合回测 Basket | done（CHG-0037/0038/0039） | `backtest/basket.py` 纯核心（权重归一、月/周再平衡先卖后买、个股区间收益）+ `run_basket_from_store` 单适配器可移植；`POST /api/backtest/basket`（缺线/陈旧窗口自动补同步，含沪深300基准）+ CLI `basket` + UI「自定义组合」模式与个股表现表 | 权重归一/余量均分正确；再平衡对账（135 笔=3 入场+22×(3卖+3买)）；基准/超额收益有值；pytest 231 绿；NAS 实测农行+137%/组合+86%/超额+67.5% |
 
 ## 4. P2：基金
 

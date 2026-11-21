@@ -2378,3 +2378,286 @@ python -c "... sync_index_valuation(start=2020-01-01)"
 ### Next
 - Optionally backfill `futures_rank` if the CFFEX archive proves tolerant to
   a long crawl.
+
+---
+
+## [2026-11-21] CHG-0037 — Custom basket backtest (portable core)
+
+### Metadata
+- id: CHG-0037
+- date: 2026-11-21
+- status: done
+- area: backtest | web | docs
+- related: CHG-0021 (backtest kernel), CHG-0025 (replay mode)
+
+### Summary
+Third mode for the personal backtest tab, answering "I pick a few codes and a
+date range — what would the returns look like?" — **自定义组合（Basket）**:
+
+- User enters `CODE` / `CODE:weight` entries (comma separated) plus a window
+  and an optional rebalance policy (`none` / `monthly` / `weekly`).
+- Weights: fully specified baskets normalize to 1; partially specified ones
+  keep the given ratios and split the remainder evenly (rejects specified
+  sums > 1 when unweighted codes remain). 1–30 codes, duplicates rejected.
+- Semantics follow the documented engine rules: entry signals are dated on
+  the window's first trading day with bars and fill at the next open;
+  rebalance dates are the first trading day of each later month / ISO week,
+  emitting sells **before** buys so same-day fills liquidate and re-buy at
+  target weights (sale proceeds usable same day, matching A-share cash
+  rules). Suspended codes skip a rebalance and heal on the next one.
+- Results add a per-stock table (window-first → window-last adjusted close
+  return, market caliber, independent of fills) and a `skipped` list for
+  codes without local bars (their budget stays in cash).
+- **Portability**: the core (`parse_basket_codes`, `build_basket_signals`,
+  `rebalance_dates`, `compute_per_stock`, `run_basket`, `statuses_for`) is
+  pure — plain bars/factors/statuses in, no store access — depending only on
+  the backtest kernel and the datahub pure helpers. `run_basket_from_store`
+  is the single PersonalStore adapter to swap when porting to another
+  project (documented in the module docstring and the user guide).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/backtest/basket.py` | New portable basket module (core + store adapter) |
+| `personal/api/app.py` | `BasketRequest` + `POST /api/backtest/basket` |
+| `personal/cli/main.py` | `basket` subcommand (`--codes/--start/--end/--rebalance/--save`) |
+| `personal/tests/test_basket.py` | 16 new unit tests (weights, signals, rebalance, per-stock, skips) |
+| `personal/tests/test_api.py` | 4 endpoint tests (run/save/validation) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | Third mode in the backtest tab: code/weight input (seeded from the stock list), rebalance select, per-stock table, skipped warning, zh/en COPY |
+| `apps/dsa-web/src/api/personal.ts` | `PersonalBasketRequest` + `personalApi.basket()` |
+| `apps/dsa-web/src/types/personal.ts` | `PersonalBasketStockRow`; optional basket fields on `PersonalBacktestResponse` |
+| `apps/dsa-web/src/api/__tests__/personal.test.ts` | Basket request payload test |
+| `patches/0001-personal-web-integration.patch` | Regenerated vs upstream base `c820915` (7,450 lines), reverse-apply verified |
+| `docs/USER_GUIDE_PERSONAL.md` | §0 nav row, §4.3 basket subsection, §5 CLI table/example, §6.1 rules |
+| `docs/AI_CONTEXT.md` | Module/endpoint/CLI/mode rows + portability note |
+
+### Commands
+```bash
+.venv/bin/python -m pytest personal/tests -q
+.venv/bin/python -m compileall -q personal
+cd apps/dsa-web && npm run test -- src/api/__tests__/personal.test.ts && npm run build
+# patch regeneration (vs upstream base, NOT HEAD)
+git diff c820915ea0119b1b7952652d7fb148575400f2d9 -- api/app.py api/middlewares/auth.py \
+  apps/dsa-web/src/App.tsx apps/dsa-web/src/api/__tests__/personal.test.ts \
+  apps/dsa-web/src/api/personal.ts apps/dsa-web/src/components/layout/ShellHeader.tsx \
+  apps/dsa-web/src/components/layout/SidebarNav.tsx \
+  apps/dsa-web/src/components/personal/... apps/dsa-web/src/pages/PersonalPage.tsx \
+  apps/dsa-web/src/types/personal.ts > patches/0001-personal-web-integration.patch
+git apply --check --reverse patches/0001-personal-web-integration.patch
+```
+
+### Verification
+- `pytest personal/tests -q`: **227 passed** (207 → 227; +16 basket, +4 API).
+- `compileall -q personal`: clean.
+- `npm run test` (dsa-web): personal api tests 7/7 green; the 2 failing files
+  (`tests/ui_governance.test.ts`, `DecisionSignalsPage.test.tsx`) fail on the
+  untouched upstream baseline too — unrelated to this change.
+- `npm run build` (`tsc -b` + vite): clean; eslint on the four touched files: clean.
+- Patch 0001 regenerated (7,450 lines) and `git apply --check --reverse` passed.
+- End-to-end: real-data CLI run + `/personal` UI run (see session record).
+
+### Notes / Migration
+- No schema change; saved runs use mode `"basket"` in the existing
+  `backtest_run`/`backtest_trade` tables.
+- Codes without bars are skipped with a warning (not an error) unless *all*
+  are missing; plan weights are kept as-is for the remaining codes.
+- Per-stock returns are market caliber (first→last adjusted close) and can
+  differ slightly from the portfolio's realized numbers (next-open fills,
+  fees, lot rounding) — both are labeled in the UI/guide.
+- The upstream backtest page (`/backtest`, AI-advice evaluation) and engine
+  (`src/core/backtest_engine.py`) are untouched.
+
+### Next
+- Optional: per-stock contribution chart and custom benchmark per run.
+- Optional: when porting, reuse the personal-layer `basket` module as-is and
+  replace only `run_basket_from_store`.
+
+---
+
+## [2026-11-21] CHG-0038 — Basket auto-syncs missing daily bars
+
+### Metadata
+- id: CHG-0038
+- date: 2026-11-21
+- status: done
+- area: backtest | web
+- related: CHG-0037
+
+### Summary
+First real use on the NAS hit `no local bars for basket codes`: the scheduled
+bars sync keeps only a ~24-bar rolling window per watchlist code, so any
+long-range basket request failed until codes were synced manually. The basket
+endpoint now self-heals:
+
+- Before running, each basket code is probed for coverage (`store.get_bars`);
+  a code needs syncing when it has no in-window bars **or** its first bar is
+  more than 10 calendar days past the window start (stale short window).
+- Missing codes are synced through the same auto source chain as
+  `/api/data/sync` (`bars` + `adjust`, one request per code per dataset,
+  source-level pacing, ≤30 codes, per-code fault isolation, best-effort —
+  sync failures never block the run).
+- The response reports `auto_synced` (codes actually synced); the UI shows an
+  info alert "已自动补同步日线（含复权因子）", keeps the skipped warning, and
+  the hint text no longer demands a manual pre-sync.
+- All-missing-after-sync still returns 400 with an actionable bilingual
+  message (数据同步 page / CLI sync).
+- CLI `basket` stays explicit (no auto-sync) for predictable scripted runs.
+- Portability untouched: the auto-sync lives in the API layer only; the
+  basket core and its store adapter remain pure.
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/api/app.py` | `_basket_codes_needing_sync` (coverage probe, 10-day slack) + `_auto_sync_basket_bars` (best-effort bars+adjust) + endpoint pre-sync + `auto_synced` in payload |
+| `personal/backtest/basket.py` | Missing-bars error message now actionable (数据同步 page / CLI sync) |
+| `personal/tests/test_api.py` | Offline tests: auto-sync populates missing codes, stale window top-up, unsyncable → 400 (monkeypatched `build_sources`) |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | `auto_synced` info alert + zh/en hint/hint-copy updates |
+| `apps/dsa-web/src/types/personal.ts` | `auto_synced?: string[]` |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.3 prereq rewritten (auto-sync semantics, CLI stays explicit) |
+| `docs/AI_CONTEXT.md` | Endpoint row notes auto-sync |
+| `patches/0001-personal-web-integration.patch` | Regenerated after UI edits, reverse-apply verified |
+
+### Commands
+```bash
+.venv/bin/python -m pytest personal/tests -q      # 229 passed
+cd apps/dsa-web && npm run build && npx vitest run src/api/__tests__/personal.test.ts
+# NAS redeploy + live check with a never-synced code (601398.SH)
+```
+
+### Verification
+- `pytest personal/tests -q`: **229 passed** (227 → 229).
+- Frontend build + eslint clean; personal api client tests green.
+- NAS live: basket request with 5 never-synced bank/energy codes failed before
+  the fix; after manually syncing those 5 (684 bars/adjust each) the exact user
+  request returned per-stock returns incl. dividend-adjusted 农行 +137.15%,
+  组合 +86.13%, 回撤 -13.36%, Sharpe 1.49. Post-redeploy the auto-sync path was
+  exercised with 601398.SH (never synced on NAS).
+
+### Notes / Migration
+- Auto-sync respects request frequency: at most one bars + one adjust request
+  per missing code, source pacing intact.
+- Codes that sync but still lack adjust factors (e.g. ETFs on Tushare
+  `adj_factor`) run unadjusted and appear in skipped-adjust silently — the
+  per-stock caliber note in §4.3 covers this.
+
+### Next
+- Optional: surface per-code sync errors (currently swallowed by design).
+
+---
+
+## [2026-11-21] CHG-0039 — Basket benchmark auto-sync + index bars routing
+
+### Metadata
+- id: CHG-0039
+- date: 2026-11-21
+- status: done
+- area: datahub | backtest | web
+- related: CHG-0037, CHG-0038
+
+### Summary
+User report: 基准收益/超额收益 showed `—` in basket results. Root cause chain:
+
+1. **Index codes could never sync**: `TushareSource.fetch_daily_bars` routed
+   ETFs to `fund_daily` and everything else to the stock `daily` interface,
+   which returns zero rows for index codes (`000300.SH` etc.). New
+   `normalize.is_index_code` (unambiguous prefix/suffix pairs: `000xxx.SH`,
+   `399xxx.SZ`, `899xxx.BJ` — no A-share stock shares them) routes index
+   codes to `index_daily`; vol (手→股) and amount (千元→元) conversions match
+   `daily`.
+2. **Benchmark was outside the basket auto-sync probe**: the endpoint now
+   appends the normalized benchmark code (`PERSONAL_BACKTEST_BENCHMARK`,
+   default `000300.SH`) to the coverage probe, so the first basket run pulls
+   沪深300 bars automatically and every later run has a benchmark curve —
+   基准收益 (benchmark total return) and 超额收益 (excess = strategy −
+   benchmark over the same window) populate, and the equity chart renders the
+   benchmark line.
+- `BASKET_MAX_AUTO_SYNC_CODES` 30 → 40 so 30 codes + benchmark still fit;
+  the `auto_synced` alert copy dropped the 复权因子 claim (indexes have none).
+
+### Files
+| Path | Change |
+|---|---|
+| `personal/datahub/normalize.py` | `is_index_code` helper |
+| `personal/datahub/sources/tushare_source.py` | `fetch_daily_bars` routes index codes to `index_daily` |
+| `personal/api/app.py` | Basket probe includes the benchmark code; auto-sync cap 40 |
+| `personal/tests/test_normalize.py` | `is_index_code` cases |
+| `personal/tests/test_tushare_source.py` | `000300.SH` → `index_daily` routing test (api_name captured) |
+| `personal/tests/test_api.py` | Basket auto-sync test asserts benchmark sync + benchmark/excess metrics |
+| `apps/dsa-web/src/pages/PersonalPage.tsx` | auto_synced copy neutral (no 复权因子 claim) |
+| `patches/0001-personal-web-integration.patch` | Regenerated, reverse-apply verified |
+| `docs/USER_GUIDE_PERSONAL.md` | §4.3 benchmark/excess explanation |
+
+### Commands
+```bash
+.venv/bin/python -m pytest personal/tests -q          # 231 passed
+cd apps/dsa-web && npm run build
+# NAS redeploy; live basket run then shows 基准收益/超额收益
+```
+
+### Verification
+- `pytest personal/tests -q`: **231 passed** (229 → 231).
+- NAS live: basket run after redeploy returns 基准收益/超额收益 with
+  000300.SH auto-synced on first use (see session record).
+
+### Notes / Migration
+- Index codes need no adjustment factors; the auto-sync adjust step reports
+  "no rows" for them and is ignored by design.
+- Benchmark bars land in `daily_bar` with source `tushare` like any code; the
+  benchmark curve uses closes only.
+
+### Next
+- Optional: show the benchmark name (沪深300) next to the metric label.
+
+---
+
+## [2026-11-21] CHG-0040 — Documentation pass: three backtest modes + basket architecture
+
+### Metadata
+- id: CHG-0040
+- date: 2026-11-21
+- status: done
+- area: docs
+- related: CHG-0037, CHG-0038, CHG-0039
+
+### Summary
+Consolidated documentation for the backtest feature set after CHG-0037..0039:
+
+- **User guide §4.3** opens with a three-mode comparison table (Demo / Replay
+  / Basket): the question each answers, where its signals come from, entry
+  points, and mode-specific outputs — all three share the §6 engine and fee
+  calibers and the same save behavior. Each mode keeps its own subsection
+  with UI steps, CLI, API, semantics, and prerequisites.
+- **Architecture doc**: the `personal/backtest/` module tree now matches
+  reality (engine/types/portfolio/execution/costs/metrics/replay/demo/basket
+  — the previous list still showed planned files like `data_portal.py`),
+  annotates each file's role, and marks `basket.py`'s portable layering
+  (pure core + single `run_basket_from_store` adapter). The layer diagram
+  names AI-advice replay and the custom basket among backtest capabilities.
+- **Roadmap**: RM-47 自定义组合回测 recorded as done (CHG-0037/0038/0039)
+  with delivery summary and acceptance evidence (rebalance trade-accounting
+  135 = 3 + 22×6, benchmark/excess populating, NAS live numbers, 231 tests).
+
+### Files
+| Path | Change |
+|---|---|
+| `docs/USER_GUIDE_PERSONAL.md` | §4.3 three-mode comparison table |
+| `docs/PERSONAL_EXTENSION_ARCHITECTURE.md` | Real backtest module tree + basket portability note + layer box |
+| `docs/ROADMAP_PERSONAL.md` | RM-47 done row |
+| `docs/CHANGELOG_PERSONAL.md` | This entry |
+
+### Commands
+```bash
+# docs-only change; verified by grep anchors and section renders
+```
+
+### Verification
+- Guide §0 nav rows for all three modes resolve to §4.3; comparison table
+  matches each subsection's actual UI/CLI parameters.
+- Architecture tree matches `ls personal/backtest` exactly.
+- Roadmap table renders with RM-47 row after RM-46.
+
+### Notes / Migration
+- Docs-only; no code or data changes.
+
+### Next
+- Optional: a rendered screenshot of the basket result cards in the guide.

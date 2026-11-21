@@ -2,6 +2,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -189,3 +190,145 @@ def test_market_validate_endpoint(client):
         "turnover", "margin", "futures", "pcr", "sector", "etf_share", "bond",
     }
     assert all(item["status"] == "empty" for item in payload["datasets"])
+
+
+def _sync_basket_bars(client) -> None:
+    response = client.post(
+        "/api/data/sync",
+        json={
+            "dataset": "bars",
+            "source": "synthetic",
+            "codes": ["600519", "000858"],
+            "start": "2025-06-02",
+            "end": "2025-08-29",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["results"][0]["rows"] > 0
+
+
+def test_basket_backtest_runs_and_reports_per_stock(client):
+    _sync_basket_bars(client)
+    response = client.post(
+        "/api/backtest/basket",
+        json={
+            "codes": ["600519:0.6", "000858"],
+            "start": "2025-06-02",
+            "end": "2025-08-29",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["kind"] == "basket"
+    assert payload["codes"] == ["600519.SH", "000858.SZ"]
+    assert payload["weights"]["600519.SH"] == pytest.approx(0.6)
+    assert payload["weights"]["000858.SZ"] == pytest.approx(0.4)
+    assert payload["skipped"] == []
+    assert payload["rebalance"] == "none"
+    assert len(payload["per_stock"]) == 2
+    assert {row["code"] for row in payload["per_stock"]} == {"600519.SH", "000858.SZ"}
+    assert all("return_pct" in row for row in payload["per_stock"])
+    assert len(payload["equity"]) > 1
+    assert any(trade["reason"] == "basket entry" for trade in payload["trades"])
+
+
+def test_basket_backtest_save_persists_run(client):
+    _sync_basket_bars(client)
+    response = client.post(
+        "/api/backtest/basket",
+        json={
+            "codes": ["600519", "000858"],
+            "start": "2025-06-02",
+            "end": "2025-08-29",
+            "rebalance": "monthly",
+            "save": True,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"].startswith("basket-")
+    assert payload["rebalance"] == "monthly"
+
+    runs = client.get("/api/backtest/runs").json()["runs"]
+    assert any(run["run_id"] == payload["run_id"] and run["mode"] == "basket" for run in runs)
+
+
+def test_basket_backtest_rejects_empty_and_unsyncable_codes(client, monkeypatch):
+    response = client.post("/api/backtest/basket", json={"codes": []})
+    assert response.status_code == 400
+    assert "no basket codes" in response.json()["detail"]
+
+    # Auto-sync runs before the "all missing" verdict; keep it offline and
+    # empty so the basket still reports the codes as missing.
+    monkeypatch.setattr(
+        "personal.api.app.build_sources", lambda settings, requested="auto": []
+    )
+    response = client.post(
+        "/api/backtest/basket",
+        json={"codes": ["999999"], "start": "2025-06-02", "end": "2025-08-29"},
+    )
+    assert response.status_code == 400
+    assert "no local bars for basket codes" in response.json()["detail"]
+
+
+def test_basket_auto_syncs_missing_codes(client, monkeypatch):
+    from personal.datahub.sources.base import SyntheticSource
+
+    monkeypatch.setattr(
+        "personal.api.app.build_sources",
+        lambda settings, requested="auto": [SyntheticSource()],
+    )
+    response = client.post(
+        "/api/backtest/basket",
+        json={"codes": ["600519"], "start": "2025-06-02", "end": "2025-08-29"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    # the benchmark (000300.SH) is probed and auto-synced alongside the codes
+    assert payload["auto_synced"] == ["600519.SH", "000300.SH"]
+    assert payload["skipped"] == []
+    assert len(payload["per_stock"]) == 1
+    assert payload["per_stock"][0]["code"] == "600519.SH"
+    assert payload["per_stock"][0]["first_date"] == "2025-06-02"
+    assert len(payload["equity"]) > 1
+    assert payload["benchmark"] is not None
+    assert payload["metrics"]["benchmark_return"] is not None
+    assert payload["metrics"]["excess_return"] is not None
+
+
+def test_basket_top_ups_stale_window(client, monkeypatch):
+    from personal.datahub.sources.base import SyntheticSource
+
+    # Seed only the tail of the requested window (like the scheduled sync).
+    tail = client.post(
+        "/api/data/sync",
+        json={
+            "dataset": "bars",
+            "source": "synthetic",
+            "codes": ["600519"],
+            "start": "2025-07-01",
+            "end": "2025-08-29",
+        },
+    )
+    assert tail.status_code == 200
+
+    monkeypatch.setattr(
+        "personal.api.app.build_sources",
+        lambda settings, requested="auto": [SyntheticSource()],
+    )
+    response = client.post(
+        "/api/backtest/basket",
+        json={"codes": ["600519"], "start": "2025-06-02", "end": "2025-08-29"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["auto_synced"] == ["600519.SH", "000300.SH"]
+    assert payload["per_stock"][0]["first_date"] == "2025-06-02"
+    # full window now covered (Jun+Jul+Aug weekdays), not just the July tail
+    assert len(payload["equity"]) > 60
+
+
+def test_basket_backtest_rejects_bad_weight(client):
+    response = client.post("/api/backtest/basket", json={"codes": ["600519:abc"]})
+    assert response.status_code == 400
+    assert "invalid weight" in response.json()["detail"]

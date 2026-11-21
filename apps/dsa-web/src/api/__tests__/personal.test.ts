@@ -128,3 +128,30 @@ describe('personalApi account/plan endpoints', () => {
     ).rejects.toThrow('must be positive');
   });
 });
+
+describe('personalApi basket backtest endpoint', () => {
+  it('posts basket codes with weights and rebalance', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ kind: 'basket', per_stock: [], skipped: [] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await personalApi.basket({
+      codes: ['600519:0.5', '000858', '510050'],
+      start: '2025-06-02',
+      end: '2025-08-29',
+      rebalance: 'monthly',
+      save: false,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe('/personal-api/api/backtest/basket');
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      codes: ['600519:0.5', '000858', '510050'],
+      start: '2025-06-02',
+      end: '2025-08-29',
+      rebalance: 'monthly',
+      save: false,
+    });
+  });
+});

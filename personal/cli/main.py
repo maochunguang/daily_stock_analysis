@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
 
+from personal.backtest.basket import run_basket_from_store
 from personal.backtest.demo import DEMO_CODES, run_demo_backtest
 from personal.backtest.replay import replay_upstream
 from personal.backtest.types import BacktestConfig
@@ -85,6 +86,27 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("both", "analyses", "signals"),
     )
     replay.add_argument("--save", action="store_true")
+
+    basket = subparsers.add_parser(
+        "basket", help="backtest a custom basket of codes (optional weights/rebalance)"
+    )
+    basket.add_argument(
+        "--codes",
+        required=True,
+        help=(
+            'comma separated codes with optional weights, e.g. '
+            '"600519:0.5,000858,510050"; unweighted codes split the remainder'
+        ),
+    )
+    basket.add_argument("--start", default="")
+    basket.add_argument("--end", default="")
+    basket.add_argument(
+        "--rebalance",
+        default="none",
+        choices=("none", "monthly", "weekly"),
+        help="restore target weights on the first trading day of each month/week",
+    )
+    basket.add_argument("--save", action="store_true")
 
     import_arms = subparsers.add_parser(
         "import-arms",
@@ -254,6 +276,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "replay":
         return _replay(settings, args)
+
+    if args.command == "basket":
+        return _basket(settings, args)
 
     if args.command == "import-arms":
         return _import_arms(settings, args)
@@ -493,6 +518,65 @@ def _replay(settings, args) -> int:
     print(f"replay: {start} -> {end}, signals={len(signals)}")
     _print_metrics(result.metrics)
     print(f"final_cash={result.final_cash:.2f} positions={result.final_positions}")
+    return 0
+
+
+def _basket(settings, args) -> int:
+    end = date.fromisoformat(args.end) if args.end else date.today()
+    start = date.fromisoformat(args.start) if args.start else end - timedelta(days=365)
+    entries = [item for item in str(args.codes).replace("，", ",").split(",") if item.strip()]
+    store = PersonalStore(settings.personal_db)
+    config = BacktestConfig(
+        start=start,
+        end=end,
+        initial_cash=settings.backtest_initial_cash,
+        benchmark=settings.backtest_benchmark or None,
+        adjust_mode=settings.backtest_adjust_mode,
+    )
+    try:
+        run = run_basket_from_store(
+            store,
+            config,
+            entries=entries,
+            rebalance=args.rebalance,
+            preferred_sources=settings.data_source_priority,
+        )
+        if args.save:
+            run_id = f"basket-{uuid.uuid4().hex[:12]}"
+            store.save_backtest_run(
+                run_id,
+                "basket",
+                start,
+                end,
+                {
+                    "benchmark": settings.backtest_benchmark,
+                    "codes": run.codes,
+                    "weights": run.weights,
+                    "rebalance": args.rebalance,
+                },
+                run.result.metrics,
+            )
+            store.save_backtest_trades(run_id, run.result.trades)
+            print(f"saved run: {run_id}")
+    except ValueError as exc:
+        print(f"basket failed: {exc}")
+        return 1
+    finally:
+        store.close()
+
+    skipped = ", ".join(run.skipped) if run.skipped else "none"
+    print(
+        f"basket: {start} -> {end}, rebalance={args.rebalance}, "
+        f"codes={len(run.codes)}, skipped={skipped}"
+    )
+    for row in run.per_stock:
+        print(
+            f"  {row.code}  weight={row.weight:.2%}  "
+            f"{row.first_date} {row.first_close:.4f} -> {row.last_date} {row.last_close:.4f}  "
+            f"return={row.return_pct:+.2f}%"
+        )
+    _print_metrics(run.result.metrics)
+    print(f"final_cash={run.result.final_cash:.2f} positions={run.result.final_positions}")
     return 0
 
 

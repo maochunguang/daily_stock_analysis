@@ -101,7 +101,7 @@
 │  contracts/   上游 DB 视图、API client、Pydantic 模型           │
 │  datahub/     采集、标准化、复权、交易性标记、质量校验、存储       │
 │  analytics/   自定义指标、基金指标、组合风险                      │
-│  backtest/    组合回测、成本模型、基准、归因、统计                 │
+│  backtest/    组合回测、成本模型、AI 建议回放、自定义组合、统计      │
 │  journal/     交易日志、复盘、错误分类                           │
 │  reporting/   个人报告（HTML/PDF/Markdown）、通知                 │
 │  plugins/     插件 SDK、registry、loader、内置示例                │
@@ -230,15 +230,16 @@ daily_stock_analysis/                 # 个人工作区（顶层）
 │   │   ├── fund.py
 │   │   └── portfolio.py
 │   ├── backtest/
-│   │   ├── engine.py
-│   │   ├── data_portal.py
-│   │   ├── portfolio.py
-│   │   ├── execution.py
-│   │   ├── costs.py
-│   │   ├── constraints.py
-│   │   ├── metrics.py
-│   │   ├── benchmark.py
-│   │   └── report.py
+│   │   ├── engine.py                 # 事件驱动组合回测（D 收盘出信号，次日开盘成交，T+1）
+│   │   ├── types.py                  # Signal / BacktestConfig / BacktestResult
+│   │   ├── portfolio.py              # FIFO 持仓、T+1 可用、现金与盈亏
+│   │   ├── execution.py              # 成交模拟（整手、涨跌停、停牌、ST、滑点）
+│   │   ├── costs.py                  # A 股费用模型（佣金/印花税/过户费/滑点/红利税）
+│   │   ├── metrics.py                # 收益/风险/交易指标 + Wilson 区间
+│   │   ├── replay.py                 # 上游 AI 建议 → 买卖信号回放
+│   │   ├── demo.py                   # 合成数据演练（验证流程）
+│   │   └── basket.py                 # 自定义组合（权重/再平衡/个股区间收益）：
+│   │                                 #   纯核心 + run_basket_from_store 单适配器，可整体移植
 │   ├── journal/
 │   │   ├── models.py
 │   │   ├── service.py

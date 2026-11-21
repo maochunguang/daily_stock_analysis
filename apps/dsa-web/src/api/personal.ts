@@ -108,6 +108,14 @@ export interface PersonalReplayRequest {
   save: boolean;
 }
 
+export interface PersonalBasketRequest {
+  codes: string[];
+  start: string | null;
+  end: string | null;
+  rebalance: 'none' | 'monthly' | 'weekly';
+  save: boolean;
+}
+
 export interface PersonalMarketSyncRequest {
   dataset:
     | 'futures'
@@ -140,6 +148,11 @@ export const personalApi = {
     }),
   replay: (body: PersonalReplayRequest) =>
     request<PersonalBacktestResponse>('/backtest/replay', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  basket: (body: PersonalBasketRequest) =>
+    request<PersonalBacktestResponse>('/backtest/basket', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

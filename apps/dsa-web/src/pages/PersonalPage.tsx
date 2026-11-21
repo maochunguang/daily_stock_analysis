@@ -131,6 +131,16 @@ const COPY = {
     backtestKind: '类型',
     demo: 'Demo（合成数据）',
     replay: 'Replay（上游 AI 建议）',
+    basket: '自定义组合',
+    basketCodes: '组合代码（可带权重）',
+    basketHint: '逗号分隔，如 600519:0.5,000858,510050；未带权重的代码均分剩余资金，最终权重归一化。缺少日线的代码会自动补同步。',
+    rebalance: '再平衡',
+    rebalanceNone: '买入持有（不调仓）',
+    rebalanceMonthly: '每月再平衡',
+    rebalanceWeekly: '每周再平衡',
+    perStock: '个股区间表现',
+    skippedCodes: '以下代码缺少日线，已跳过：',
+    autoSynced: '已自动补同步日线：',
     days: '历史天数',
     include: '信号来源',
     includeBoth: '分析 + 决策信号',
@@ -218,6 +228,16 @@ const COPY = {
     backtestKind: 'Type',
     demo: 'Demo (synthetic)',
     replay: 'Replay (upstream AI advice)',
+    basket: 'Custom basket',
+    basketCodes: 'Basket codes (weights optional)',
+    basketHint: 'Comma separated, e.g. 600519:0.5,000858,510050; unweighted codes split the remaining budget and weights are normalized. Codes without daily bars are auto-synced first.',
+    rebalance: 'Rebalance',
+    rebalanceNone: 'Buy & hold (no rebalance)',
+    rebalanceMonthly: 'Monthly rebalance',
+    rebalanceWeekly: 'Weekly rebalance',
+    perStock: 'Per-stock period returns',
+    skippedCodes: 'Skipped (no daily bars): ',
+    autoSynced: 'Auto-synced daily bars: ',
     days: 'History days',
     include: 'Signal source',
     includeBoth: 'Analyses + decision signals',
@@ -310,11 +330,13 @@ const PersonalPage: React.FC = () => {
   const [syncResult, setSyncResult] = useState<PersonalSyncResponse | null>(null);
   const [syncError, setSyncError] = useState('');
 
-  const [kind, setKind] = useState<'demo' | 'replay'>('demo');
+  const [kind, setKind] = useState<'demo' | 'replay' | 'basket'>('demo');
   const [days, setDays] = useState(400);
   const [btStart, setBtStart] = useState(isoDaysAgo(365));
   const [btEnd, setBtEnd] = useState(isoDaysAgo(0));
   const [include, setInclude] = useState<'both' | 'analyses' | 'signals'>('both');
+  const [basketCodes, setBasketCodes] = useState('');
+  const [rebalance, setRebalance] = useState<'none' | 'monthly' | 'weekly'>('none');
   const [saveRun, setSaveRun] = useState(false);
   const [btBusy, setBtBusy] = useState(false);
   const [btResult, setBtResult] = useState<PersonalBacktestResponse | null>(null);
@@ -482,7 +504,10 @@ const PersonalPage: React.FC = () => {
     if (status && !syncCodes) {
       setSyncCodes(status.settings.stock_list.join(','));
     }
-  }, [status, syncCodes]);
+    if (status && !basketCodes) {
+      setBasketCodes(status.settings.stock_list.join(','));
+    }
+  }, [status, syncCodes, basketCodes]);
 
   const chartData = useMemo(() => {
     if (!btResult || btResult.equity.length === 0) return [];
@@ -529,12 +554,23 @@ const PersonalPage: React.FC = () => {
       const result =
         kind === 'demo'
           ? await personalApi.demo({ days, save: saveRun })
-          : await personalApi.replay({
-              start: btStart || null,
-              end: btEnd || null,
-              include,
-              save: saveRun,
-            });
+          : kind === 'basket'
+            ? await personalApi.basket({
+                codes: basketCodes
+                  .split(/[,，\s]+/)
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+                start: btStart || null,
+                end: btEnd || null,
+                rebalance,
+                save: saveRun,
+              })
+            : await personalApi.replay({
+                start: btStart || null,
+                end: btEnd || null,
+                include,
+                save: saveRun,
+              });
       setBtResult(result);
       if (saveRun) await loadStatus();
     } catch (err) {
@@ -1046,9 +1082,14 @@ const PersonalPage: React.FC = () => {
             <form className="grid gap-3 md:grid-cols-3" onSubmit={(event) => void handleBacktest(event)}>
               <label>
                 <span className={LABEL_CLASS}>{copy.backtestKind}</span>
-                <select className={INPUT_CLASS} value={kind} onChange={(event) => setKind(event.target.value as 'demo' | 'replay')}>
+                <select
+                  className={INPUT_CLASS}
+                  value={kind}
+                  onChange={(event) => setKind(event.target.value as 'demo' | 'replay' | 'basket')}
+                >
                   <option value="demo">{copy.demo}</option>
                   <option value="replay">{copy.replay}</option>
+                  <option value="basket">{copy.basket}</option>
                 </select>
               </label>
               {kind === 'demo' ? (
@@ -1063,7 +1104,42 @@ const PersonalPage: React.FC = () => {
                     onChange={(event) => setDays(Number(event.target.value) || 400)}
                   />
                 </label>
-              ) : (
+              ) : null}
+              {kind === 'basket' ? (
+                <>
+                  <label className="md:col-span-3">
+                    <span className={LABEL_CLASS}>{copy.basketCodes}</span>
+                    <input
+                      className={INPUT_CLASS}
+                      value={basketCodes}
+                      placeholder="600519:0.5,000858,510050"
+                      onChange={(event) => setBasketCodes(event.target.value)}
+                    />
+                    <span className="mt-1 block text-xs text-secondary-text">{copy.basketHint}</span>
+                  </label>
+                  <label>
+                    <span className={LABEL_CLASS}>{copy.start}</span>
+                    <input className={INPUT_CLASS} type="date" value={btStart} onChange={(event) => setBtStart(event.target.value)} />
+                  </label>
+                  <label>
+                    <span className={LABEL_CLASS}>{copy.end}</span>
+                    <input className={INPUT_CLASS} type="date" value={btEnd} onChange={(event) => setBtEnd(event.target.value)} />
+                  </label>
+                  <label>
+                    <span className={LABEL_CLASS}>{copy.rebalance}</span>
+                    <select
+                      className={INPUT_CLASS}
+                      value={rebalance}
+                      onChange={(event) => setRebalance(event.target.value as 'none' | 'monthly' | 'weekly')}
+                    >
+                      <option value="none">{copy.rebalanceNone}</option>
+                      <option value="monthly">{copy.rebalanceMonthly}</option>
+                      <option value="weekly">{copy.rebalanceWeekly}</option>
+                    </select>
+                  </label>
+                </>
+              ) : null}
+              {kind === 'replay' ? (
                 <>
                   <label>
                     <span className={LABEL_CLASS}>{copy.start}</span>
@@ -1082,7 +1158,7 @@ const PersonalPage: React.FC = () => {
                     </select>
                   </label>
                 </>
-              )}
+              ) : null}
               <label className="flex items-end gap-2 pb-3 text-sm text-foreground">
                 <input type="checkbox" checked={saveRun} onChange={(event) => setSaveRun(event.target.checked)} />
                 {copy.saveRun}
@@ -1097,6 +1173,13 @@ const PersonalPage: React.FC = () => {
             {btError ? <InlineAlert className="mt-4" variant="danger" title={copy.tabs.backtest} message={btError} /> : null}
           </Card>
 
+          {btResult?.auto_synced && btResult.auto_synced.length ? (
+            <InlineAlert variant="info" title={copy.tabs.backtest} message={`${copy.autoSynced}${btResult.auto_synced.join(', ')}`} />
+          ) : null}
+          {btResult?.skipped && btResult.skipped.length ? (
+            <InlineAlert variant="warning" title={copy.tabs.backtest} message={`${copy.skippedCodes}${btResult.skipped.join(', ')}`} />
+          ) : null}
+
           {btResult ? (
             <>
               <Card title={copy.metrics} variant="bordered">
@@ -1106,6 +1189,7 @@ const PersonalPage: React.FC = () => {
                     {btResult.start} → {btResult.end}
                   </span>
                   <span>signals={btResult.signals}</span>
+                  {btResult.rebalance ? <span>rebalance={btResult.rebalance}</span> : null}
                   {btResult.run_id ? <span>run={btResult.run_id}</span> : null}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
@@ -1129,6 +1213,42 @@ const PersonalPage: React.FC = () => {
                   })}
                 </div>
               </Card>
+
+              {btResult.per_stock && btResult.per_stock.length ? (
+                <Card title={copy.perStock} variant="bordered">
+                  <div className="max-h-96 overflow-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className={TABLE_HEAD_CLASS}>
+                          <th className="py-2 pr-4">Code</th>
+                          <th className="py-2 pr-4 text-right">Weight</th>
+                          <th className="py-2 pr-4 text-right">First close</th>
+                          <th className="py-2 pr-4 text-right">Last close</th>
+                          <th className="py-2 text-right">Return</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {btResult.per_stock.map((row) => (
+                          <tr key={row.code}>
+                            <td className={TABLE_CELL_CLASS}>{row.code}</td>
+                            <td className={`${TABLE_CELL_CLASS} text-right`}>{(row.weight * 100).toFixed(1)}%</td>
+                            <td className={`${TABLE_CELL_CLASS} text-right`}>
+                              {row.first_date} · {row.first_close.toFixed(2)}
+                            </td>
+                            <td className={`${TABLE_CELL_CLASS} text-right`}>
+                              {row.last_date} · {row.last_close.toFixed(2)}
+                            </td>
+                            <td className={`${TABLE_CELL_CLASS} text-right ${row.return_pct >= 0 ? 'text-success' : 'text-danger'}`}>
+                              {row.return_pct >= 0 ? '+' : ''}
+                              {row.return_pct.toFixed(2)}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              ) : null}
 
               <Card title={copy.equity} variant="bordered">
                 {chartData.length > 1 ? (

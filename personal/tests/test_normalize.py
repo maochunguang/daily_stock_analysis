@@ -24,3 +24,19 @@ def test_parse_date_formats():
     assert parse_date("2026-11-12") == date(2026, 11, 12)
     assert parse_date("20261112") == date(2026, 11, 12)
     assert parse_date(date(2026, 11, 12)) == date(2026, 11, 12)
+
+
+def test_is_index_code():
+    from personal.datahub.normalize import is_index_code
+
+    assert is_index_code("000300.SH")
+    assert is_index_code("000001.SH")  # 上证指数
+    assert is_index_code("000852.SH")
+    assert is_index_code("399106.SZ")  # 深证综指
+    assert is_index_code("899050.BJ")  # 北证50
+    assert not is_index_code("600519.SH")  # 贵州茅台
+    assert not is_index_code("000858.SZ")  # 五粮液（000 前缀深市主板）
+    assert not is_index_code("000001.SZ")  # 平安银行
+    assert not is_index_code("510050.SH")  # ETF
+    assert not is_index_code("000300")  # 无后缀不判定
+    assert not is_index_code("399106")

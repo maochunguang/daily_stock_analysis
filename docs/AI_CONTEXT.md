@@ -19,7 +19,7 @@
 | `python` | 3.11 |
 | `personal_db` | `data/personal.db` (SQLite, WAL) |
 | `upstream_db` | `data/stock_analysis.db` (read-only) |
-| `test_count` | 207 |
+| `test_count` | 231 |
 | `last_updated` | 2026-11-19 |
 | `web_console` | Integrated: `python main.py --webui` → `/personal` |
 | `standalone_web` | `.venv/bin/dsa-personal web --host 127.0.0.1 --port 8765` |
@@ -124,13 +124,14 @@ multi-asset derivatives beyond future ETF options.
 | `personal/datahub/sources/cffex_source.py` | CFFEX top-20 member position rank (official GBK CSV) |
 | `personal/datahub/status.py` | Derive suspension/ST/limit-up/down rows from bars/calendar/name/factors |
 | `personal/datahub/sync.py` | Source fallback, bars/adjust/calendar/status sync, cross-check |
-| `personal/datahub/sources/` | `synthetic`, `tushare`, `akshare`, `baostock` adapters |
+| `personal/datahub/sources/` | `synthetic`, `tushare`, `akshare`, `baostock` adapters; tushare routes ETF→`fund_daily`, index (`000xxx.SH`/`399xxx.SZ`/`899xxx.BJ` via `normalize.is_index_code`)→`index_daily`, stocks→`daily` |
 | `personal/backtest/costs.py` | Commission, stamp duty, transfer fee, slippage, dividend tax |
 | `personal/backtest/portfolio.py` | FIFO lots, T+1 availability, cash/P&L |
 | `personal/backtest/execution.py` | Next-open execution, limit/suspension checks |
 | `personal/backtest/engine.py` | Daily event-driven portfolio backtest |
 | `personal/backtest/metrics.py` | Return/risk/trade metrics, Wilson interval |
 | `personal/backtest/replay.py` | Upstream advice/signal → backtest signals |
+| `personal/backtest/basket.py` | Custom basket backtest (weights/rebalance/per-stock); pure core + `run_basket_from_store` adapter — portable: copy with the backtest kernel + datahub pure helpers, swap only the adapter |
 | `personal/backtest/demo.py` | Synthetic demo shared by CLI/Web |
 | `personal/plugins/api.py` | Stable plugin protocols |
 | `personal/plugins/manifest.py` | `plugin.yaml` validation |
@@ -203,6 +204,7 @@ This prevents a short priority sync from shadowing a longer fallback series.
 | `python -m personal.cli.main sync --dataset calendar --source baostock ...` | Trading calendar |
 | `python -m personal.cli.main sync --dataset status --code C ...` | Trading status |
 | `python -m personal.cli.main replay --start D --end D` | Replay upstream signals |
+| `python -m personal.cli.main basket --codes "600519:0.5,000858" --start D --end D [--rebalance monthly]` | Custom basket backtest (weights normalized, per-stock returns) |
 | `python -m personal.cli.main sync --dataset futures` | CFFEX main-contract futures + basis |
 | `python -m personal.cli.main sync --dataset margin` | Margin balance (market + board scopes, T+1, ≤120d/run) |
 | `python -m personal.cli.main import-arms --dir D` | Import TRIN snapshots (easy-daily-trading `cache/arms_index/daily`) |
@@ -262,6 +264,7 @@ the page route is `/personal`.
 | GET | `/api/backtest/runs` | Recent runs |
 | POST | `/api/backtest/demo` | Synthetic demo backtest |
 | POST | `/api/backtest/replay` | Upstream signal replay |
+| POST | `/api/backtest/basket` | Custom basket backtest (`codes` with optional `:weight`, `rebalance none\|monthly\|weekly`); auto-syncs missing/stale bars+adjust first (API layer only, `auto_synced` in response) |
 | GET | `/api/upstream/recent` | Recent analyses/signals |
 | GET | `/api/qmt/health` | QMT bridge health |
 
@@ -272,7 +275,7 @@ member rank, margin, limit-up, PCR, flows, crowding, macro — registry
 (LedgerPanel: statement import + plan link + journal + Tonghuashun screenshot
 snapshot), `交易计划` (TradePlanPanel: risk card + plan CRUD/preview),
 `决策结果` (DecisionOutcomePanel: D+N summary/table/detail), `数据` (sync +
-coverage), `回测` (demo/replay + metrics/SVG chart/trades), `插件`, `上游`
+coverage), `回测` (demo/replay/basket + metrics/chart/trades + per-stock table), `插件`, `上游`
 (analyses/signals), `QMT` (health check).
 
 Sync request body:
@@ -526,3 +529,6 @@ instrument name; limit prices from previous close + board rules.
 | `CHG-0034` | Tushare 2000-point sources for futures/margin/release + history backfill path |
 | `CHG-0035` | TRIN breadth computed from Tushare full-market daily; import-arms demoted to fallback |
 | `CHG-0036` | Deep-review history uniformly backfilled to 2020-01-01 (chunked Tushare sources, turnover fallback, margin scope rule) |
+| `CHG-0037` | Custom basket backtest (portable core, weights/rebalance/per-stock, UI third mode, CLI `basket`) |
+| `CHG-0038` | Basket auto-syncs missing/stale daily bars+adjust before running (API layer, best-effort, `auto_synced` field) |
+| `CHG-0039` | Index bars routing (`index_daily`) + basket benchmark auto-sync → 基准/超额收益 populate |

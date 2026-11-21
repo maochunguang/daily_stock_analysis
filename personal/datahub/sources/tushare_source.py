@@ -14,7 +14,7 @@ from datetime import date
 from typing import Any
 
 from ..models import AdjustFactor, DailyBar
-from ..normalize import is_etf_code, normalize_code, parse_date
+from ..normalize import is_etf_code, is_index_code, normalize_code, parse_date
 from .base import SourceUnavailable
 
 API_URL = "http://api.tushare.pro"
@@ -91,7 +91,14 @@ class TushareSource:
     def fetch_daily_bars(self, code: str, start: date, end: date) -> list[DailyBar]:
         full = normalize_code(code)
         body, suffix = full.split(".")
-        api_name = "fund_daily" if is_etf_code(full) else "daily"
+        # Index codes must use `index_daily`: the stock `daily` interface
+        # returns zero rows for them. vol/amount units match `daily`.
+        if is_etf_code(full):
+            api_name = "fund_daily"
+        elif is_index_code(full):
+            api_name = "index_daily"
+        else:
+            api_name = "daily"
         rows = self._call(
             api_name,
             {

@@ -102,6 +102,16 @@ export interface PersonalTrade {
   reason: string;
 }
 
+export interface PersonalBasketStockRow {
+  code: string;
+  weight: number;
+  first_date: string;
+  first_close: number;
+  last_date: string;
+  last_close: number;
+  return_pct: number;
+}
+
 export interface PersonalBacktestResponse {
   kind: string;
   start: string;
@@ -114,6 +124,14 @@ export interface PersonalBacktestResponse {
   final_cash: number;
   final_positions: Record<string, number>;
   run_id?: string;
+  /** basket mode only */
+  codes?: string[];
+  weights?: Record<string, number>;
+  skipped?: string[];
+  rebalance?: string;
+  per_stock?: PersonalBasketStockRow[];
+  /** codes auto-synced because local bars were missing/stale */
+  auto_synced?: string[];
 }
 
 export interface PersonalUpstreamRecent {

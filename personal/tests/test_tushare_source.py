@@ -63,3 +63,45 @@ def test_tushare_permission_error(monkeypatch):
         TushareSource("token").fetch_daily_bars(
             "600519", date(2026, 1, 1), date(2026, 1, 31)
         )
+
+
+def test_tushare_index_codes_use_index_daily(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_urlopen(request, *args, **kwargs):
+        body = json.loads(request.data.decode("utf-8"))
+        calls.append(body["api_name"])
+        payload = {
+            "code": 0,
+            "msg": None,
+            "data": {
+                "fields": [
+                    "trade_date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "vol",
+                    "amount",
+                ],
+                "items": [["20260105", 3900.0, 3920.0, 3880.0, 3910.0, 200000, 300000]],
+            },
+        }
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(
+        "personal.datahub.sources.tushare_source.urllib.request.urlopen",
+        _fake_urlopen,
+    )
+    bars = TushareSource("token").fetch_daily_bars(
+        "000300.SH", date(2026, 1, 1), date(2026, 1, 31)
+    )
+    assert calls == ["index_daily"]  # stock `daily` returns nothing for indexes
+    assert bars[0].code == "000300.SH"
+    assert bars[0].close == 3910.0
+    assert bars[0].volume == 20_000_000  # 手 -> 股
+    assert bars[0].amount == 300_000_000.0  # 千元 -> 元
+
+    # sanity: a stock still uses `daily`
+    TushareSource("token").fetch_daily_bars("600519", date(2026, 1, 1), date(2026, 1, 31))
+    assert calls == ["index_daily", "daily"]

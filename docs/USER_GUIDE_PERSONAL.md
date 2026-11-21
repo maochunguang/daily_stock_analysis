@@ -23,6 +23,7 @@
 | 同步日线 / 复权因子 / 交易日历 / 交易状态 | `/personal` → 数据同步，或 `sync` | §4.2、§5 |
 | 用合成数据验证回测流程 | `/personal` → 个人回测 → Demo | §4.3 |
 | 用上游 AI 建议做组合回测 | `/personal` → 个人回测 → Replay | §4.3 |
+| 自己选几只票看区间收益 | `/personal` → 个人回测 → 自定义组合，或 `basket` | §4.3 |
 | 看深度复盘（TRIN/期指/融资余额/指数估值分位） | `/personal` → 深度复盘 | §4.6 |
 | 导入同花顺账户/持仓截图 | `/personal` → 账本 → 同花顺截图导入 | §4.8.1 |
 | 做盘前交易计划、看组合风险 | `/personal` → 交易计划 | §4.9 |
@@ -288,6 +289,18 @@ python -m personal.cli.main info
 
 ### 4.3 个人回测
 
+三种模式共用同一个组合回测引擎和费用口径（T+1、整手、佣金/印花税/滑点，详见 §6），
+输出都是绩效指标 + 净值曲线 + 逐笔交易；区别只在**信号从哪来**：
+
+| 模式 | 回答的问题 | 信号来源 | 入口 | 特有输出 |
+|---|---|---|---|---|
+| **Demo**（合成数据） | 引擎、费用、T+1、页面是否正常 | 随机合成行情，无真实含义 | 页面选 `Demo` / `demo --days N` | — |
+| **Replay**（上游 AI 建议） | 「照着上游 AI 的建议建组合会怎样」 | 上游 `analysis_history.operation_advice` + `decision_signals.action` 关键词映射 | 页面选 `Replay` / `replay` | signals 计数与信号映射规则 |
+| **自定义组合**（Basket） | 「我自己选的几只票，这段时间收益如何」 | 期初等权/自定义权重买入，可选每月/每周再平衡，无 AI 参与 | 页面选 `自定义组合` / `basket` | **个股区间表现表**（每只票区间涨跌幅）+ 缺线自动补同步 |
+
+三种模式都可以勾选「保存到个人库」（CLI 加 `--save`），保存后出现在「总览 → 最近回测」；
+不勾选则只返回结果不落库。
+
 #### Demo（合成数据）
 
 用途：验证回测引擎、费用、T+1、页面渲染是否正常。**不是投资结论。**
@@ -329,6 +342,55 @@ python -m personal.cli.main info
 | `decision_signals.action` 为 `sell/reduce/avoid` | 卖 |
 
 同一 `(日期, 代码, 动作)` 会去重。
+
+#### 自定义组合（Basket）
+
+用途：**自己选几只票 + 指定时间段**，看组合收益、每只票的区间涨跌、净值曲线和逐笔交易。
+不依赖上游 AI 建议，信号就是"期初买入、按所选方式持有"。
+
+1. 类型选 `自定义组合`。
+2. 组合代码框输入代码，逗号分隔，可带权重：`600519:0.5,000858,510050`。
+   - 未带权重的代码**均分剩余资金**；全部带权重则按比例归一化（`600519:2,000858:1` 等价于 2/3 + 1/3）。
+   - 输入框为空时会用「总览 → 自选股」列表预填。
+3. 选起止日期和再平衡方式：`买入持有` / `每月再平衡` / `每周再平衡`。
+4. 点「运行」（可选勾「保存到个人库」）。
+
+结果包含：绩效指标、净值曲线（策略 vs 基准）、**个股区间表现**表（每只票的期初/期末收盘与区间涨跌幅）、逐笔交易。
+
+**缺日线自动补同步**：运行的票在个人库没有日线（或日线没有覆盖到窗口起点，比如定时同步只留了
+最近一个月滚动窗口）时，接口会用与「数据同步」相同的 auto 数据源链**自动补同步日线和复权因子**
+（每只票各 1 次请求，带限速；最多 30 只）。同步结果在运行后以提示条展示；个别代码同步失败或代码
+无效时会跳过并警告（其余票按计划权重继续，被跳过的资金留作现金）；全部失败才报
+`no local bars for basket codes ...`。
+
+**基准与超额收益**：基准默认沪深 300（`PERSONAL_BACKTEST_BENCHMARK`，可在配置改）。基准代码也会被
+自动补同步（首次运行自动拉取指数日线，指数无复权概念）；基准收益 = 基准同期累计涨跌，
+**超额收益 = 组合累计收益 − 基准收益**（衡量跑赢/跑输大盘多少个百分点），净值曲线同时画出基准线。
+
+前置条件：本机可用的数据源（Tushare token 或免费源）；窗口内代码有除权因子时收益口径更准（高股息
+股票建议确认复权因子已同步）。复权、费用、T+1 等口径与 Demo/Replay 相同（见 §6）。
+
+成交时点口径：
+
+- 期初：窗口内**首个有行情交易日**收盘设定买入，**次日开盘**成交（与引擎 T+1 规则一致）。
+- 个股区间涨跌幅按窗口首尾收盘价（后复权）计算，是行情口径，与实际成交无关。
+- 再平衡：每个再平衡日收盘发信号，**次日开盘先卖后买**恢复目标权重（卖出资金当日可用，与 A 股一致）；
+  停牌的票自动跳过，下次再平衡自愈。
+
+CLI：
+
+```bash
+.venv/bin/dsa-personal basket --codes "600519:0.5,000858,510050" \
+  --start 2025-01-01 --end 2025-12-31 [--rebalance monthly] [--save]
+```
+
+> CLI 的 `basket` **不做**自动补同步；缺日线时按报错提示先 `sync` 再重跑。
+
+API：`POST /personal-api/api/backtest/basket`，请求体 `{"codes": ["600519:0.5", "000858"], "start": "...", "end": "...", "rebalance": "none|monthly|weekly", "save": false}`。
+
+移植提示：核心逻辑集中在 `personal/backtest/basket.py`，纯函数部分
+（`parse_basket_codes` / `build_basket_signals` / `compute_per_stock` / `run_basket`）不依赖个人库，
+连同回测内核拷到其他项目只需替换 `run_basket_from_store` 这一个取数适配函数。
 
 #### 保存与查看
 
@@ -741,6 +803,7 @@ python -m personal.cli.main <command> [options]
 | `demo` | 合成数据组合回测 | `--days N`（默认 500）、`--save` |
 | `sync` | 同步全部个人数据集 | `--dataset bars\|adjust\|calendar\|status\|futures\|margin\|turnover\|zt\|pcr\|cffex_rank\|sector\|etf_share\|bond\|release`、`--source`、`--code`（可重复）、`--start`、`--end`、`--cross-check` / `--no-cross-check` |
 | `replay` | 回放上游建议 | `--start`、`--end`、`--include both\|analyses\|signals`、`--save` |
+| `basket` | 自定义组合回测 | `--codes "600519:0.5,000858"`、`--start`、`--end`、`--rebalance none\|monthly\|weekly`、`--save` |
 | `import-arms` | 导入阿姆氏（TRIN）日快照（免费兜底；正式路径为 `sync --dataset breadth`） | `--dir`（easy-daily-trading 的 `cache/arms_index/daily`） |
 | `breadth` | 查看已导入的市场宽度 | `--days N`（默认 5） |
 | `schedule` | 定时增量同步（默认 06:00 每日循环，可多时点） | `--at HH:MM[,HH:MM]`、`--datasets`、`--arms-dir`、`--once`（立即跑一轮并退出） |
@@ -786,6 +849,12 @@ python -m personal.cli.main sync --dataset status --code 600519 \
 python -m personal.cli.main replay --start 2025-01-01 --end 2026-11-16 \
   --include both --save
 
+# 自定义组合回测（等权买入持有 / 带权重 + 每月再平衡）
+python -m personal.cli.main basket --codes "600519,000858,510050" \
+  --start 2025-01-01 --end 2025-12-31
+python -m personal.cli.main basket --codes "600519:0.5,000858:0.3,510050:0.2" \
+  --start 2025-01-01 --end 2025-12-31 --rebalance monthly --save
+
 # 插件
 python -m personal.cli.main plugins
 
@@ -811,7 +880,7 @@ python -m personal.cli.main sync --dataset valuation
 python -m personal.cli.main schedule --once --at 06:00
 ```
 
-日期参数省略时：`sync` 默认最近 730 天；`replay` 默认最近 365 天。
+日期参数省略时：`sync` 默认最近 730 天；`replay` / `basket` 默认最近 365 天。
 
 ---
 
@@ -823,6 +892,8 @@ python -m personal.cli.main schedule --once --at 06:00
 |---|---|
 | 信号时点 | 收盘后产生信号（日 D） |
 | 成交时点 | **下一交易日开盘** |
+| 组合期初（Basket） | 窗口内首个有行情交易日收盘设定买入，次日开盘成交 |
+| 组合再平衡（Basket） | 再平衡日收盘发信号，次日开盘**先卖后买**恢复目标权重；卖出资金当日可用 |
 | 整手 | 100 股整数倍 |
 | T+1 | 当日买入的股份当日不可卖 |
 | 停牌 | 跳过，不成交 |

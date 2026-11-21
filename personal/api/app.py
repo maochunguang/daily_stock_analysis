@@ -10,7 +10,7 @@ import uuid
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Sequence
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -28,6 +28,7 @@ from personal.analytics.trade_plans import (
     plan_to_dict,
     preview_trade_plan,
 )
+from personal.backtest.basket import parse_basket_codes, run_basket_from_store
 from personal.backtest.demo import run_demo_backtest
 from personal.backtest.replay import replay_upstream
 from personal.backtest.types import BacktestConfig, BacktestResult
@@ -80,6 +81,15 @@ class ReplayRequest(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
     include: Literal["both", "analyses", "signals"] = "both"
+    save: bool = False
+    adjust: Optional[Literal["hfq", "qfq", "none"]] = None
+
+
+class BasketRequest(BaseModel):
+    codes: list[str]
+    start: Optional[str] = None
+    end: Optional[str] = None
+    rebalance: Literal["none", "monthly", "weekly"] = "none"
     save: bool = False
     adjust: Optional[Literal["hfq", "qfq", "none"]] = None
 
@@ -169,6 +179,72 @@ def _parse_date(value: Optional[str], default: date) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"invalid date: {value}") from exc
+
+
+BASKET_SYNC_SLACK_DAYS = 10
+BASKET_MAX_AUTO_SYNC_CODES = 40
+
+
+def _basket_codes_needing_sync(
+    store: PersonalStore,
+    codes: Sequence[str],
+    start: date,
+    end: date,
+    *,
+    preferred_sources: Optional[Sequence[str]] = None,
+) -> list[str]:
+    """Codes with no in-window bars, or whose bars start well past the window.
+
+    The scheduled bars sync keeps a short rolling window for watchlist codes,
+    so a long-range basket request would otherwise run on partial history.
+    """
+
+    stale: list[str] = []
+    slack = start + timedelta(days=BASKET_SYNC_SLACK_DAYS)
+    for code in codes:
+        bars = store.get_bars(code, start, end, preferred_sources=preferred_sources)
+        if not bars or bars[0].trade_date > slack:
+            stale.append(code)
+    return stale
+
+
+def _auto_sync_basket_bars(
+    store: PersonalStore,
+    codes: Sequence[str],
+    start: date,
+    end: date,
+    settings: Any,
+) -> list[str]:
+    """Best-effort bars+adjust sync for codes missing coverage.
+
+    Uses the same auto source chain as the data-sync endpoint (one request
+    per code per dataset, throttled by each source). Failures are isolated
+    per code; the basket proceeds with whatever coverage exists and reports
+    the rest as skipped.
+    """
+
+    attempted: list[str] = []
+    try:
+        sources = build_sources(settings, "auto")
+        if not sources:
+            return attempted
+        service = DataSyncService(
+            store,
+            sources,
+            cross_check=False,
+            preferred_sources=settings.data_source_priority,
+        )
+        for code in codes[:BASKET_MAX_AUTO_SYNC_CODES]:
+            try:
+                results = service.sync_daily_bars([code], start, end)
+                service.sync_adjust_factors([code], start, end)
+            except Exception:  # noqa: BLE001 - per-code fault isolation
+                continue
+            if results and results[0].rows > 0:
+                attempted.append(code)
+    except Exception:  # noqa: BLE001 - auto-sync must never block the run
+        return attempted
+    return attempted
 
 
 def _decode_base64_image(content_b64: str, max_mb: float) -> bytes:
@@ -1332,6 +1408,108 @@ def create_app(settings_override: Optional[Settings] = None) -> FastAPI:
                 store.save_backtest_trades(run_id, result.trades)
             finally:
                 store.close()
+            payload["run_id"] = run_id
+        return _json_safe(payload)
+
+    @app.post("/api/backtest/basket")
+    def basket(request: BasketRequest) -> dict[str, Any]:
+        end = _parse_date(request.end, date.today())
+        start = _parse_date(request.start, end - timedelta(days=365))
+        if start >= end:
+            raise HTTPException(status_code=400, detail="start must be before end")
+        try:
+            plan = parse_basket_codes(request.codes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        store = PersonalStore(settings.personal_db)
+        config = BacktestConfig(
+            start=start,
+            end=end,
+            initial_cash=settings.backtest_initial_cash,
+            benchmark=settings.backtest_benchmark or None,
+            adjust_mode=request.adjust or settings.backtest_adjust_mode,
+        )
+        try:
+            # Auto-sync codes without (enough) local bars so a fresh basket
+            # request does not fail on the short scheduled-sync window. The
+            # benchmark index is included so benchmark/excess returns work.
+            auto_synced: list[str] = []
+            try:
+                probe_codes = list(plan.codes)
+                benchmark_code = normalize_code(config.benchmark) if config.benchmark else ""
+                if benchmark_code and benchmark_code not in probe_codes:
+                    probe_codes.append(benchmark_code)
+                stale = _basket_codes_needing_sync(
+                    store,
+                    probe_codes,
+                    start,
+                    end,
+                    preferred_sources=settings.data_source_priority,
+                )
+                if stale:
+                    auto_synced = _auto_sync_basket_bars(
+                        store, stale, start, end, settings
+                    )
+            except Exception:  # noqa: BLE001 - auto-sync is best effort
+                auto_synced = []
+            try:
+                run = run_basket_from_store(
+                    store,
+                    config,
+                    entries=request.codes,
+                    rebalance=request.rebalance,
+                    preferred_sources=settings.data_source_priority,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            store.close()
+
+        payload = _result_payload(run.result)
+        payload.update(
+            {
+                "kind": "basket",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "codes": run.codes,
+                "weights": run.weights,
+                "skipped": run.skipped,
+                "rebalance": run.rebalance,
+                "signals": len(run.signals),
+                "auto_synced": auto_synced,
+                "per_stock": [
+                    {
+                        "code": row.code,
+                        "weight": row.weight,
+                        "first_date": row.first_date.isoformat(),
+                        "first_close": row.first_close,
+                        "last_date": row.last_date.isoformat(),
+                        "last_close": row.last_close,
+                        "return_pct": row.return_pct,
+                    }
+                    for row in run.per_stock
+                ],
+            }
+        )
+        if request.save:
+            run_id = f"basket-{uuid.uuid4().hex[:12]}"
+            save_store = PersonalStore(settings.personal_db)
+            try:
+                save_store.save_backtest_run(
+                    run_id,
+                    "basket",
+                    start,
+                    end,
+                    {
+                        "codes": run.codes,
+                        "weights": run.weights,
+                        "rebalance": request.rebalance,
+                    },
+                    payload["metrics"],
+                )
+                save_store.save_backtest_trades(run_id, run.result.trades)
+            finally:
+                save_store.close()
             payload["run_id"] = run_id
         return _json_safe(payload)
 

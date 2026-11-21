@@ -51,6 +51,24 @@ def is_etf_code(code: str) -> bool:
     return len(body) == 6 and body.startswith(ETF_PREFIXES)
 
 
+def is_index_code(code: str) -> bool:
+    """Tushare-style index codes: ``000xxx.SH`` (上证系列), ``399xxx.SZ``
+    (深证系列), ``899xxx.BJ`` (北证系列). No A-share stock shares these
+    prefix/suffix combinations, so the test is unambiguous."""
+
+    body = code.split(".")[0]
+    suffix = code.rsplit(".", 1)[-1].upper() if "." in code else ""
+    if len(body) != 6 or not body.isdigit():
+        return False
+    if suffix == "SH":
+        return body.startswith("000")
+    if suffix == "SZ":
+        return body.startswith("399")
+    if suffix == "BJ":
+        return body.startswith("899")
+    return False
+
+
 def is_fund_code(code: str) -> bool:
     return code.upper().endswith(".OF")
 
